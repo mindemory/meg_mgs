@@ -6,7 +6,7 @@ close all; clc;
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Initialization
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-p.subjID = subjID;
+p.subjID = [num2str(subjID,'%02d') 'MGS'];
 
 % Initialize all the relevant paths
 [p] = initialization(p, 'eye');
@@ -23,17 +23,9 @@ p.stim_dir = [p.subjDIR '/stimfiles'];
 tar_dir = dir(p.stim_dir);
 tar_list = {tar_dir.name};
 
-if strcmp(p.subjID, 'NY098')
-    tar_list = tar_list(endsWith(tar_list, 'mat'));
-elseif strcmp(p.subjID, 'NY272')
-    tar_list               = tar_list(startsWith(tar_list, '10071'));
-elseif strcmp(p.subjID, 'NY190')
-    tar_list               = tar_list(startsWith(tar_list, '101017'));
-elseif strcmp(p.subjID, 'NY276')
-    tar_list               = tar_list(startsWith(tar_list, '101024'));
-    tar_list               = tar_list(~contains(tar_list, 'stimorig'));
-    fNames_edf             = fNames_edf(startsWith(fNames_edf, '04'));
-    num_blocks = length(fNames_edf);
+% Creating conditions for each subject
+if subjID == 1
+    tar_list = tar_list(startsWith(tar_list, '091104'));
 end
 
 % Copy edf and stimfiles to datc
@@ -54,7 +46,7 @@ if exist(ii_sess_saveName_mat, 'file') == 2
     load(ii_sess_saveName_mat);
 else
     disp('ii_sess file does not exist. running ieye')        
-    ii_sess = RuniEye(p);
+    ii_sess = RuniEye(p, num_blocks);
     save(ii_sess_saveName,'ii_sess')
 end
 end
