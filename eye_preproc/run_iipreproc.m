@@ -71,10 +71,16 @@ if exist(matfile_iEye, 'file') == 2
     load(matfile_iEye);
 else
     [ii_data,ii_cfg] = ii_import_edf_meg(edf_fn,cfg_fn,[edf_fn(1:end-4) '_iEye.mat'], ii_params, stiminfo);
-    fig = figure; plot(ii_data.XDAT, 'ro-'); xlabel('Time (ms)'); ylabel('XDAT'); title('Sanity check of XDAT');
+    
+    
+
+    fig = figure('visible','off'); plot(ii_data.XDAT, 'ro-'); xlabel('Time (ms)'); ylabel('XDAT'); title('Sanity check of XDAT');
     saveas(fig, [preproc_fn '_sanitycheck.png'],'png');
 end
 %imported_plot = plot_data(ii_data,{'X','Y', 'TarX', 'TarY'})
+
+% ii_data.TarY = ii_params.resolution(2)/2 - (ii_data.TarY - ii_params.resolution(2)/2);
+ii_data = scaleGaze(ii_data, ii_params, preproc_fn);
 
 % truncate data to relevant XDATs
 [ii_data,ii_cfg] = ii_trim(ii_data,ii_cfg,ii_params.valid_epochs,ii_params.epoch_chan);
