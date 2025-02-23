@@ -18,8 +18,7 @@ if strcmp(p.hostname, 'syndrome') || strcmp(p.hostname, 'vader') || strcmp(p.hos
         || strcmp(p.hostname, 'zod.psych.nyu.edu') || strcmp(p.hostname, 'loki.psych.nyu.edu') % If running on Syndrome or Vader
     p.raw_dir            = '/d/DATD/datd/MEG_MGS';
     p.save_dir           = '/d/DATD/datd/MEG_MGS/mrugankAnalysis';
-    p.fieldtrip          = '/d/DATA/hyper/software/fieldtrip-20220104/';
-    p.nspike             = '/d/DATA/hyper/toolboxes/sangi-matlab/NSpike_Code';
+    p.fieldtrip          = '/d/DATD/hyper/software/fieldtrip-20220104/';
 else 
     disp('Device not identified!')
 end
@@ -35,7 +34,7 @@ end
 
 % Add toolbox to path (either iEye or fieldtrip)
 if strcmp(analysis_type, 'eye')
-    p.iEye               = [p.master '/Mrugank/TMS/mgs_stimul/iEye'];
+    p.iEye               = [p.master '/Mrugank/iEye'];
     p.save_eyedata       = [p.save '/EyeData'];
     if ~exist(p.save_eyedata, 'dir')
         mkdir(p.save_eyedata);
