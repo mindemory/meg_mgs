@@ -2,7 +2,7 @@ import os, mne
 import numpy as np
 import matplotlib.pyplot as plt
 from preprocFuncs import importData
-from flagger import badChanFixer, icaFixer
+from deprecated.flagger import badChanFixer, icaFixer
 
 # Define the path to the raw data
 bidsRoot = os.path.join(os.sep, 'd', 'DATD', 'datd', 'MEG_MGS', 'MEG_BIDS')

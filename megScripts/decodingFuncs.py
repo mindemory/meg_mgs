@@ -3,9 +3,10 @@ from itertools import product
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from scipy.signal import butter, sosfiltfilt
-from sklearn.model_selection import StratifiedKFold
-from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.model_selection import StratifiedKFold, LeaveOneOut
+from sklearn.svm import SVC, LinearSVC
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
 
 def filter_and_downsample(trial_arr, time_arr, Fs):
@@ -146,6 +147,231 @@ def crossTemporalDecoding(X, trlInfo_, classCats):
 
     return accuracy_matrix, f1score_matrix
 
+# def crossTemporalDecodingWithConfidence(X, trlInfo_, performance, classCats):
+#     # Run classification
+#     if classCats == 'quadrant':
+#         y = np.select(
+#             condlist = [
+#                 (trlInfo_ == 2) | (trlInfo_ == 3),
+#                 (trlInfo_ == 4) | (trlInfo_ == 5),
+#                 (trlInfo_ == 7) | (trlInfo_ == 8),
+#                 (trlInfo_ == 9) | (trlInfo_ == 10)   
+#             ],
+#             choicelist = [1, 2, 3, 4],
+#             default = 0
+#         )
+#     elif classCats == 'locGroups':
+#         y = np.select(
+#             condlist = [
+#                 (trlInfo_ == 1),
+#                 (trlInfo_ == 2) | (trlInfo_ == 3),
+#                 (trlInfo_ == 4) | (trlInfo_ == 5),
+#                 (trlInfo_ == 6),
+#                 (trlInfo_ == 7) | (trlInfo_ == 8),
+#                 (trlInfo_ == 9) | (trlInfo_ == 10)
+#             ],
+#             choicelist = [1, 2, 3, 4, 5, 6],
+#             default = 0
+#         )
+
+#     # Remove unlabeled trials (if any)
+#     valid_trials = y != 0
+#     X = X[valid_trials]
+#     y = y[valid_trials]
+#     # y -= y.min() # Make labels start from 0
+     
+#     performance_valid = performance[valid_trials]
+#     print('We are here')
+
+#     n_trials, _, n_timepoints = X.shape
+#     auc_matrix = np.zeros((n_timepoints, n_timepoints))  # Train-time x Test-time
+#     accuracy_matrix = np.zeros((n_timepoints, n_timepoints))  # Train-time x Test-time
+#     f1score_matrix = np.zeros((n_timepoints, n_timepoints))  # Train-time x Test-time
+#     y_guessed = np.zeros((n_timepoints, n_timepoints, n_trials))  # Train-time x Test-time x n_trials
+#     y_guessed_proba = np.zeros((n_timepoints, n_timepoints, n_trials, len(np.unique(y)))) # Train-time x Test-time x n_trials x n_classes
+
+#     # Stratified K-Fold Cross-Validation
+#     skf = StratifiedKFold(n_splits=3, random_state=42, shuffle=True)
+
+#     for train_time in range(n_timepoints):
+#         if (train_time / n_timepoints * 100) % 10 == 0:
+#             print('     Finished training ' + str(round(train_time / n_timepoints * 100)) + '%')
+
+#         X_train_time = X[:, :, train_time].reshape(n_trials, -1)
+
+#         for fold, (train_idx, test_idx) in enumerate(skf.split(X_train_time, y)):
+#             X_train = X_train_time[train_idx]
+
+#             # Train SVM
+#             clf = CalibratedClassifierCV(LinearSVC(max_iter=10000))
+#             clf.fit(X_train, y[train_idx])
+
+#             # Predict for all test samples in fold
+#             for test_time in range(n_timepoints):
+#                 X_test_time = X[:, :, test_time].reshape(n_trials, -1)
+#                 y_proba_this = clf.predict_proba(X_test_time[test_idx])
+#                 y_guessed_proba[train_time, test_time, test_idx, :] = y_proba_this
+#                 y_guessed[train_time, test_time, test_idx] = clf.predict(X_test_time[test_idx])
+#                 auc_matrix[train_time, test_time] += roc_auc_score(y[test_idx], y_proba_this,  multi_class='ovo', average='macro')
+#                 accuracy_matrix[train_time, test_time] += accuracy_score(y[test_idx], y_guessed[train_time, test_time, test_idx])
+#                 f1score_matrix[train_time, test_time] += f1_score(y[test_idx], y_guessed[train_time, test_time, test_idx], average='macro')
+
+#     # Avererage acorss folds
+#     auc_matrix /= skf.n_splits
+#     accuracy_matrix /= skf.n_splits
+#     f1score_matrix /= skf.n_splits
+
+#     return auc_matrix, accuracy_matrix, f1score_matrix, y_guessed, y_guessed_proba, performance_valid
+
+
+def crossTemporalDecodingWithConfidence(X, trlInfo_, performance, classCats):
+    from joblib import Parallel, delayed
+    import multiprocessing
+    import numpy as np
+    from sklearn.model_selection import StratifiedKFold
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.svm import LinearSVC
+    from sklearn.metrics import roc_auc_score, accuracy_score, f1_score
+    
+    # Run classification
+    if classCats == 'quadrant':
+        y = np.select(
+            condlist = [
+                (trlInfo_ == 2) | (trlInfo_ == 3),
+                (trlInfo_ == 4) | (trlInfo_ == 5),
+                (trlInfo_ == 7) | (trlInfo_ == 8),
+                (trlInfo_ == 9) | (trlInfo_ == 10)   
+            ],
+            choicelist = [1, 2, 3, 4],
+            default = 0
+        )
+    elif classCats == 'locGroups':
+        y = np.select(
+            condlist = [
+                (trlInfo_ == 1),
+                (trlInfo_ == 2) | (trlInfo_ == 3),
+                (trlInfo_ == 4) | (trlInfo_ == 5),
+                (trlInfo_ == 6),
+                (trlInfo_ == 7) | (trlInfo_ == 8),
+                (trlInfo_ == 9) | (trlInfo_ == 10)
+            ],
+            choicelist = [1, 2, 3, 4, 5, 6],
+            default = 0
+        )
+
+    # Remove unlabeled trials (if any)
+    valid_trials = y != 0
+    X = X[valid_trials]
+    y = y[valid_trials]
+    # y -= y.min() # Make labels start from 0
+     
+    performance_valid = performance[valid_trials]
+    print('We are here')
+
+    n_trials, _, n_timepoints = X.shape
+    n_classes = len(np.unique(y))
+    
+    # Define a worker function for processing a single train_time
+    def process_train_time(train_time):
+        if (train_time / n_timepoints * 100) % 10 == 0:
+            print(f'     Processing training time {train_time} ({round(train_time / n_timepoints * 100)}%)')
+        
+        X_train_time = X[:, :, train_time].reshape(n_trials, -1)
+        
+        # Initialize local arrays for this train_time
+        local_auc = np.zeros(n_timepoints)
+        local_accuracy = np.zeros(n_timepoints)
+        local_f1score = np.zeros(n_timepoints)
+        local_y_guessed = np.zeros((n_timepoints, n_trials))
+        local_y_guessed_proba = np.zeros((n_timepoints, n_trials, n_classes))
+        
+        # Stratified K-Fold Cross-Validation
+        skf = StratifiedKFold(n_splits=10, random_state=42, shuffle=True)
+        
+        for fold, (train_idx, test_idx) in enumerate(skf.split(X_train_time, y)):
+            X_train = X_train_time[train_idx]
+            
+            # Train SVM
+            clf = CalibratedClassifierCV(LinearSVC(max_iter=10000))
+            clf.fit(X_train, y[train_idx])
+            
+            # Predict for all test samples in fold
+            for test_time in range(n_timepoints):
+                X_test_time = X[:, :, test_time].reshape(n_trials, -1)
+                y_pred = clf.predict(X_test_time[test_idx])
+                y_proba_this = clf.predict_proba(X_test_time[test_idx])
+                
+                # Store predictions for the test indices of this fold
+                local_y_guessed[test_time, test_idx] = y_pred
+                local_y_guessed_proba[test_time, test_idx, :] = y_proba_this
+                
+                # Calculate metrics
+                local_auc[test_time] += roc_auc_score(y[test_idx], y_proba_this, multi_class='ovo', average='macro')
+                local_accuracy[test_time] += accuracy_score(y[test_idx], y_pred)
+                local_f1score[test_time] += f1_score(y[test_idx], y_pred, average='macro')
+        
+        # Average metrics across folds
+        local_auc /= skf.n_splits
+        local_accuracy /= skf.n_splits
+        local_f1score /= skf.n_splits
+        
+        return train_time, local_auc, local_accuracy, local_f1score, local_y_guessed, local_y_guessed_proba
+    
+    # Use joblib to parallelize across train_time
+    num_cores = multiprocessing.cpu_count()
+    print(f"Parallelizing across {num_cores} cores")
+    results = Parallel(n_jobs=num_cores)(
+        delayed(process_train_time)(train_time) for train_time in range(n_timepoints)
+    )
+    
+    # Initialize result matrices
+    auc_matrix = np.zeros((n_timepoints, n_timepoints))
+    accuracy_matrix = np.zeros((n_timepoints, n_timepoints))
+    f1score_matrix = np.zeros((n_timepoints, n_timepoints))
+    y_guessed = np.zeros((n_timepoints, n_timepoints, n_trials))
+    y_guessed_proba = np.zeros((n_timepoints, n_timepoints, n_trials, n_classes))
+    
+    # Combine results from all workers
+    for train_time, local_auc, local_accuracy, local_f1score, local_y_guessed, local_y_guessed_proba in results:
+        auc_matrix[train_time, :] = local_auc
+        accuracy_matrix[train_time, :] = local_accuracy
+        f1score_matrix[train_time, :] = local_f1score
+        for test_time in range(n_timepoints):
+            y_guessed[train_time, test_time, :] = local_y_guessed[test_time, :]
+            y_guessed_proba[train_time, test_time, :, :] = local_y_guessed_proba[test_time, :, :]
+    
+    return auc_matrix, accuracy_matrix, f1score_matrix, y_guessed, y_guessed_proba, performance_valid
+
+
+    
+    # for train_time in range(n_timepoints):
+    #     if (train_time / n_timepoints * 100) % 10 == 0:
+    #         print('     Finished training ' + str(round(train_time / n_timepoints * 100)) + '%')
+
+    #     X_train_time = X[:, :, train_time].reshape(n_trials, -1)
+
+    #     # Leave-One-Trial-Out Cross-Validation
+    #     loo = LeaveOneOut()
+
+    #     for train_trl_idx, test_trl_idx in loo.split(X_train_time, y):
+    #         X_train = X_train_time[train_trl_idx]
+
+    #         # Train SVM
+    #         clf = CalibratedClassifierCV(LinearSVC(max_iter=10000))
+    #         clf.fit(X_train, y[train_trl_idx])
+
+    #         # Predict for all test samples in fold
+    #         for test_time in range(n_timepoints):
+    #             X_test_time = X[:, :, test_time].reshape(n_trials, -1)
+    #             y_guessed_proba[train_time, test_time, test_trl_idx, :] = clf.predict_proba(X_test_time[test_trl_idx])
+    #             y_guessed[train_time, test_time, test_trl_idx] = clf.predict(X_test_time[test_trl_idx])
+
+    # # Compute AUC
+    # for train_time, test_time in product(range(n_timepoints), repeat=2):
+    #     auc_matrix[train_time, test_time] = roc_auc_score(y, y_guessed_proba[train_time, test_time, :, :],  multi_class='ovo', average='macro')
+
+    # return auc_matrix, y_guessed, y_guessed_proba, performance_valid
+
 
 def temporalDecoding(X, trlInfo_, classCats):
     # Run classification
@@ -255,171 +481,6 @@ def generate_pc_timeseries(data, time, tinfo, n_groups=2, n_components=2):
         pc_timeseries[:, :, t] = pca.transform(D_t)
 
     return pc_timeseries, groups
-
-
-def runBinaryClassification(TFRmat, v73=False, freqband='alpha', basecorr=True):
-    if v73:
-        freqs = np.array(TFRmat['TFRleft_power']['freq']).T[0]
-        times = np.array(TFRmat['TFRleft_power']['time']).T[0]
-        powspctrm_left = np.array(TFRmat['TFRleft_power']['powspctrm']).T
-        powspctrm_right = np.array(TFRmat['TFRright_power']['powspctrm']).T
-    else:
-        freqs = TFRmat['TFRleft_power'][0][0][2][0]
-        times = TFRmat['TFRleft_power'][0][0][3][0]
-        powspctrm_left = TFRmat['TFRleft_power'][0][0][7]
-        powspctrm_right = TFRmat['TFRright_power'][0][0][7]
-
-    # Extract features
-    if freqband == 'theta':
-        freq_idx = np.where((freqs >= 4) & (freqs <= 8))[0]
-    elif freqband == 'alpha':
-        freq_idx = np.where((freqs >= 8) & (freqs <= 12))[0]
-    elif freqband == 'beta':
-        freq_idx = np.where((freqs >= 12) & (freqs <= 35))[0]
-    time_idx = np.where((times >= -0.5) & (times <= 2))[0]
-    times_crop = times[time_idx]
-    powspctrm_left_ = np.nanmean(powspctrm_left[:, :, freq_idx, :], axis=2)
-    powspctrm_right_ = np.nanmean(powspctrm_right[:, :, freq_idx, :], axis=2)
-
-    if basecorr:
-        # Subtract average power
-        avgMat = np.nanmean(np.concatenate((powspctrm_left_, powspctrm_right_), axis=0), axis=0)
-        avgMatLeft = np.repeat(avgMat[np.newaxis, :, :], powspctrm_left_.shape[0], axis=0)
-        avgMatRight = np.repeat(avgMat[np.newaxis, :, :], powspctrm_right_.shape[0], axis=0)
-        powspctrm_left_ = 10**(powspctrm_left_ / 10) / 10**(avgMatLeft / 10)
-        powspctrm_right_ = 10**(powspctrm_right_ / 10) / 10**(avgMatRight / 10)
-    powspctrm_left_ = powspctrm_left_[:, :, time_idx]
-    powspctrm_right_ = powspctrm_right_[:, :, time_idx]
-
-    # Run classification
-    X = np.concatenate((powspctrm_left_, powspctrm_right_), axis=0)
-    y = np.concatenate((np.zeros((powspctrm_left_.shape[0], 1)), np.ones((powspctrm_right_.shape[0], 1))), axis=0).reshape(-1)
-
-    n_trials, n_channels, n_timepoints = X.shape
-    accuracy_matrix = np.zeros((n_timepoints, n_timepoints))  # Train-time x Test-time
-    f1score_matrix = np.zeros((n_timepoints, n_timepoints))  # Train-time x Test-time
-
-    # # Leave-One-Out Cross-Validation
-    # loo = LeaveOneOut()
-    # Stratified K-Fold Cross-Validation
-    skf = StratifiedKFold(n_splits=3, random_state=42, shuffle=True)
-
-    for train_time in range(n_timepoints):
-        if (train_time / n_timepoints * 100) % 10 == 0:
-            print('     Finished training ' + str(round(train_time / n_timepoints * 100)) + '%')
-
-        ground_truth = np.empty(len(y), dtype=int)
-        predictions = np.empty((len(y), n_timepoints), dtype=int)
-        
-        # # Loop through LOOCV splits
-        # for train_idx, test_idx in loo.split(X):
-        #     # Split data into training and testing
-        #     X_train = X[train_idx, :, train_time]  # (n_train_trials, n_channels)
-        #     y_train = y[train_idx]
-        #     X_test = X[test_idx, :, :]  # (1, n_channels, n_timepoints)
-        #     y_test = y[test_idx]
-            
-        #     # Train SVM
-        #     clf = SVC(kernel='linear')
-        #     clf.fit(X_train, y_train)
-            
-        #     # Test SVM on all time points
-        #     y_pred = clf.predict(X_test[0].T)  # (n_timepoints,)
-
-        #     # Store ground truth and predictions
-        #     ground_truth[test_idx] = y_test[0]
-        #     predictions[test_idx, :] = y_pred
-
-        # Loop through K-Fold splits
-        for train_idx, test_idx in skf.split(X, y):
-            # Split data into training and testing
-            X_train = X[train_idx, :, train_time]  # (n_train_trials, n_channels)
-            y_train = y[train_idx]
-            X_test = X[test_idx, :, :]  # (n_test_trials, n_channels, n_timepoints)
-            y_test = y[test_idx]
-
-            # Train SVM
-            clf = SVC(kernel='linear')
-            clf.fit(X_train, y_train)
-
-            # Predict for all test samples in fold
-            for i in range(len(test_idx)):
-                y_pred = clf.predict(X_test[i].T)
-                predictions[test_idx[i], :] = y_pred
-
-            ground_truth[test_idx] = y_test
-
-        
-        # Repeat ground truth for all time points
-        ground_truth = np.repeat(ground_truth, n_timepoints).reshape(-1, n_timepoints)
-        
-        # Compute accuracy and f1 score
-        accuracy_matrix[train_time, :] = (ground_truth == predictions).mean(axis=0)
-        f1_scores = [
-            f1_score(ground_truth[:, time_point], predictions[:, time_point], average="binary")
-            for time_point in range(n_timepoints)
-        ]
-        f1score_matrix[train_time, :] = f1_scores
-
-    # Clear memory
-    del X, y, X_train, y_train, X_test, y_test, clf, y_pred, ground_truth, predictions, TFRmat, powspctrm_left_, powspctrm_right_
-
-    return accuracy_matrix, f1score_matrix, times_crop
-
-def runMCC_singleChannel(TFRmat, v73=False, classCats='quadrant', freqband='alpha', basecorr=True):
-    if v73:
-        ch_label_array = np.array(TFRmat['TFRleft_power']['label']).T[0]
-        ch_label = []
-        for i in range(len(ch_label_array)):
-            ch_label.append(ch_label_array[i][0][0])
-        freqs = np.array(TFRmat['TFRleft_power']['freq']).T[0]
-        times = np.array(TFRmat['TFRleft_power']['time']).T[0]
-        trialInfo_left = np.array(TFRmat['TFRleft_power']['trialinfo']).T
-        powspctrm_left = np.array(TFRmat['TFRleft_power']['powspctrm']).T
-        trialInfo_right = np.array(TFRmat['TFRright_power']['trialinfo']).T
-        powspctrm_right = np.array(TFRmat['TFRright_power']['powspctrm']).T
-    else:
-        ch_label_array = TFRmat['TFRleft_power'][0][0][0]
-        ch_label = []
-        for i in range(len(ch_label_array)):
-            ch_label.append(ch_label_array[i][0][0])
-        freqs = TFRmat['TFRleft_power'][0][0][2][0]
-        times = TFRmat['TFRleft_power'][0][0][3][0]
-        trialInfo_left = TFRmat['TFRleft_power'][0][0][5]
-        powspctrm_left = TFRmat['TFRleft_power'][0][0][7]
-        trialInfo_right = TFRmat['TFRright_power'][0][0][5]
-        powspctrm_right = TFRmat['TFRright_power'][0][0][7]
-
-    # Combine powspctrm and trialinfo
-    powspctrm_combined = np.concatenate((powspctrm_left, powspctrm_right), axis=0)
-    trialInfo_combined = np.concatenate((trialInfo_left, trialInfo_right), axis=0)
-
-    # Time Of Interest
-    if freqband == 'broadband':
-        time_idx = np.where((times >= -0.1) & (times <= 1.7))[0]
-    else:
-        time_idx = np.where((times >= -0.5) & (times <= 2))[0]
-    times_crop = times[time_idx]
-
-    # Extract features
-    powspctrm_combined_ = extract_freqband(freqband, freqs, powspctrm_combined, basecorr)
-    powspctrm_combined_ = powspctrm_combined_[:, :, time_idx]
-
-    ######################################################## CLASSIFICATION ########################################################
-    trlInfo_ = trialInfo_combined[:, 1]
-    accuracy_matrix = np.empty((len(ch_label), len(times_crop), 1))
-    f1score_matrix = np.empty((len(ch_label), len(times_crop), 1))
-    for ch_idx in range(len(ch_label)):
-        if (ch_idx / len(ch_label) * 100) % 10 == 0:
-            print('     Finished ' + str(round(ch_idx / len(ch_label) * 100)) + '%')
-        thisPowMat = powspctrm_combined_[:, ch_idx, :]#[:, np.newaxis, :]
-        accuracy_matrix[ch_idx, :, :], f1score_matrix[ch_idx, :, :] = temporalDecoding(thisPowMat, trlInfo_, classCats)
-        #accuracy_matrix, f1score_matrix = temporalDecoding(powspctrm_combined_, trlInfo_, classCats)
-
-    # Clear memory
-    del TFRmat, powspctrm_combined_
-
-    return accuracy_matrix, f1score_matrix, times_crop
 
 
 def runMultiClassClassification(TFRmat, v73=False, classCats='quadrant', freqband='alpha', basecorr=True):
@@ -634,3 +695,124 @@ def runMultiClassClassificationByPerformance(subjID, ii_sess, epocStimLocked, TF
     # accuracy_matrix_highPerf, f1score_matrix_highPerf, accuracy_matrix_lowPerf, f1score_matrix_lowPerf = None, None, None, None
     # times_crop = None
     return accuracy_matrix_highPerf, f1score_matrix_highPerf, accuracy_matrix_lowPerf, f1score_matrix_lowPerf, times_crop
+
+
+def runMCCbyConfidence(subjID, ii_sess, epocStimLocked, TFRmat, v73=False, metric='ierr', classCats='quadrant', freqband='alpha'):
+    ######################################################## EXTRACTION ########################################################
+    # Extract ii_sess data
+    if metric == 'ierr':
+        performance = ii_sess['ii_sess']['i_sacc_err'][0, 0].T[0]
+    elif metric == 'ferr':
+        performance = ii_sess['ii_sess']['f_sacc_err'][0, 0].T[0]
+    elif metric == 'irt':
+        performance = ii_sess['ii_sess']['i_sacc_rt'][0, 0].T[0]
+    elif metric == 'frt':
+        performance = ii_sess['ii_sess']['f_sacc_rt'][0, 0].T[0]
+    else:
+        raise ValueError('Invalid performance metric, should be one of ierr, ferr, irt, frt')
+    tarlocGaze = ii_sess['ii_sess']['tarlocCode'][0, 0].T[0]
+    
+    # Account for special cases
+    rnum = ii_sess['ii_sess']['r_num'][0, 0].T[0]
+    if subjID == 4: # Trial 1 from run10 is missing
+        badTrials = [np.where(rnum == 10)[0][0]]
+    elif subjID == 5: # Remove run 1 and 9
+        badTrials = np.where((rnum == 1) | (rnum == 9))[0]
+    elif subjID == 10: # Remove run 2 and 7
+        badTrials = np.where((rnum == 2) | (rnum == 7))[0]
+    elif subjID == 11: # Remove run 1, 3 and 8
+        badTrials = np.where((rnum == 1) | (rnum == 3) | (rnum == 8))[0]
+    elif subjID == 12: # Trial 1 from run 8 is missing
+        badTrials = [np.where(rnum == 8)[0][0]]
+    elif subjID == 13: # Trials 1, 2 from run 2 are missing
+        badTrials = np.where(rnum == 2)[0][:2]
+    elif subjID == 19: # Remove run 8 and 9
+        badTrials = np.where((rnum == 8) | (rnum == 9))[0]
+    elif subjID == 23: # Remove run 1
+        badTrials = np.where(rnum == 1)[0]
+    elif subjID == 25: # Remove run 8
+        badTrials = np.where(rnum == 8)[0]
+    elif subjID == 31: # Remove run 2; Also remove the last 17 trials from run 4
+        badTrials = np.where(rnum == 2)[0]
+        badTrials = np.concatenate((badTrials, np.where(rnum == 4)[0][-17:]))
+    elif subjID == 32: # Remove run 2
+        badTrials = np.where(rnum == 2)[0]
+    else:
+        badTrials = []
+        
+    # Remove the bad trials
+    if len(badTrials) > 0:
+        performance = np.delete(performance, badTrials)
+        tarlocGaze = np.delete(tarlocGaze, badTrials)
+
+    # Extract epocStimLocked data
+    trialEpoched_info = epocStimLocked['epocStimLocked'][0][0][1]
+    tarlocEpoched = trialEpoched_info[:, 1]
+    trialEpoched = epocStimLocked['epocStimLocked'][0][0][4][0]
+    trialsEpoched_list = [np.array(t) for t in trialEpoched]
+    trialEpoched_arr = np.stack(trialsEpoched_list, axis=0)
+    # Extract TFR data
+    if v73:
+        freqs = np.array(TFRmat['TFRleft_power']['freq']).T[0]
+        times = np.array(TFRmat['TFRleft_power']['time']).T[0]
+        trialInfo_left = np.array(TFRmat['TFRleft_power']['trialinfo']).T
+        powspctrm_left = np.array(TFRmat['TFRleft_power']['powspctrm']).T
+        trialInfo_right = np.array(TFRmat['TFRright_power']['trialinfo']).T
+        powspctrm_right = np.array(TFRmat['TFRright_power']['powspctrm']).T
+    else:
+        # ch_label = TFRmat['TFRleft_power'][0][0][0]
+        # dimord = TFRmat['TFRleft_power'][0][0][1]
+        freqs = TFRmat['TFRleft_power'][0][0][2][0]
+        times = TFRmat['TFRleft_power'][0][0][3][0]
+        trialInfo_left = TFRmat['TFRleft_power'][0][0][5]
+        powspctrm_left = TFRmat['TFRleft_power'][0][0][7]
+        trialInfo_right = TFRmat['TFRright_power'][0][0][5]
+        powspctrm_right = TFRmat['TFRright_power'][0][0][7]
+    
+    ######################################################## DIVIDING DATA ########################################################
+    left_trials = []
+    right_trials = []
+    for ijk in range(trialEpoched_arr.shape[0]):
+        if trialEpoched_info[ijk, 1] == 4 or trialEpoched_info[ijk, 1] == 5 or trialEpoched_info[ijk, 1] == 6 or trialEpoched_info[ijk, 1] == 7 or trialEpoched_info[ijk, 1] == 8:
+            # Check if there is any nan in the data
+            if ~np.isnan(trialEpoched_arr[ijk, :, :]).any():
+                left_trials.append(ijk)
+        elif trialEpoched_info[ijk, 1] == 1 or trialEpoched_info[ijk, 1] == 2 or trialEpoched_info[ijk, 1] == 3 or trialEpoched_info[ijk, 1] == 9 or trialEpoched_info[ijk, 1] == 10:
+
+            if ~np.isnan(trialEpoched_arr[ijk, :, :]).any():
+                right_trials.append(ijk)
+
+    # Indices of left and right trials with non-nan performance
+    leftValidTrls = np.where(~np.isnan(performance[left_trials]))[0]
+    rightValidTrls = np.where(~np.isnan(performance[right_trials]))[0]
+    performance_left = performance[left_trials][leftValidTrls]
+    performance_right = performance[right_trials][rightValidTrls]
+    powspctrm_left = powspctrm_left[leftValidTrls]
+    powspctrm_right = powspctrm_right[rightValidTrls]
+    trialInfo_left = trialInfo_left[leftValidTrls]
+    trialInfo_right = trialInfo_right[rightValidTrls]
+
+    # Combine powspctrm, trialinfo and performance
+    powspctrm_combined = np.concatenate((powspctrm_left, powspctrm_right), axis=0)
+    trialInfo_combined = np.concatenate((trialInfo_left, trialInfo_right), axis=0)
+    performance_combined = np.concatenate((performance_left, performance_right), axis=0)
+
+    # Time Of Interest
+    if freqband == 'broadband':
+        time_idx = np.where((times >= -0.1) & (times <= 1.7))[0]
+    else:
+        time_idx = np.where((times >= -0.5) & (times <= 2))[0]
+        # time_idx = np.where((times >= -0.2) & (times <= 1.7))[0]
+    times_crop = times[time_idx]
+
+    # Extract features
+    powspctrm_combined_ = extract_freqband(freqband, freqs, powspctrm_combined, True)
+    powspctrm_combined_ = powspctrm_combined_[:, :, time_idx]
+
+    trlInfo_ = trialInfo_combined[:, 1]
+    auc_matrix, accuracy_matrix, f1score_matrix, y_guessed, y_guessed_proba, performance_valid = crossTemporalDecodingWithConfidence(powspctrm_combined_, 
+                                                                                                    trlInfo_, 
+                                                                                                    performance_combined, 
+                                                                                                    classCats)
+
+    return auc_matrix, accuracy_matrix, f1score_matrix, y_guessed, y_guessed_proba, performance_valid, times_crop

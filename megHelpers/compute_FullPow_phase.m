@@ -34,8 +34,15 @@ if strcmp(output, 'lowFreqPhase')
     outputTFR                                  = TFR_phase;
 
 elseif strcmp(output, 'highFreqPow')
+    % Remove line noise
+    % cfg                                        = [];
+    % cfg.channel                                = 'all';
+    % cfg.dftfilter                              = 'yes';
+    % cfg.dftfreq                                = [60 120 180];
+    % data                                       = ft_preprocessing(cfg, data);
+
     % frequencies                                = [41:55 65:1:115 125:1:175];
-    frequencies                                
+    frequencies                                = 41:180;
     time_points                                = linspace(min(data.time{1}), max(data.time{1}), 200);
 
     % Compute the full Fourier spectrogram for all trials

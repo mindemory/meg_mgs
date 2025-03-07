@@ -3,8 +3,8 @@ import numpy as np
 from scipy.io import loadmat
 import mne
 import mne.io.kit as kit
-from hackerFuncs import read_elp, read_hsp, extractEvents
-from flagger import badChanFixer
+from deprecated.hackerFuncs import read_elp, read_hsp, extractEvents
+from deprecated.flagger import badChanFixer
 import pandas as pd
 
 

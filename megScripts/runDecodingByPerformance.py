@@ -1,7 +1,7 @@
 import os
 import numpy as np
 from scipy.io import loadmat
-from decodingFuncs import runBinaryClassification, runMultiClassClassificationByPerformance
+from decodingFuncs import runMultiClassClassificationByPerformance
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import seaborn as sns
@@ -21,7 +21,7 @@ def main():
                18, 19, 23, 24, 25, 26, 27, 28, 29, 31, 32]
     # subList = [1, 2, 3, 4, 5, 6, 7, 9, 10]
     freqband = 'theta'
-    performanceMetric = 'irt'
+    performanceMetric = 'ierr'
     classifType = 'quadrant' # valid options: hemifield, quadrant, locGroups
     classifName = 'classif_' + classifType + '_' + freqband + '_' + performanceMetric + '.pkl'
     if freqband == 'broadband':

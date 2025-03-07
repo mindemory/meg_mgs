@@ -2,7 +2,7 @@ import os, shutil, mne
 import numpy as np
 from mne_bids import BIDSPath, print_dir_tree, write_raw_bids
 from mne_bids.stats import count_events
-from hackerFuncs import read_elp
+from deprecated.hackerFuncs import read_elp
 
 
 # Define the path to the raw data
