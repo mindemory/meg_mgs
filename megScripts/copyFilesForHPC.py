@@ -22,16 +22,21 @@ for subjID in subList:
         os.makedirs(megHPCdir)
 
     # Copy eyetracking file
-    iiOrigPath = os.path.join(bidsRoot, subjRoot, 'eyetracking', subjRoot + '_task-mgs-iisess.mat')
-    iiHPCpath = os.path.join(eyetrackHPCdir, subjRoot + '_task-mgs-iisess.mat')
-    copyfile(iiOrigPath, iiHPCpath)
+    # iiOrigPath = os.path.join(bidsRoot, subjRoot, 'eyetracking', subjRoot + '_task-mgs-iisess.mat')
+    # iiHPCpath = os.path.join(eyetrackHPCdir, subjRoot + '_task-mgs-iisess.mat')
+    # copyfile(iiOrigPath, iiHPCpath)
 
-    # Copy Epoched Data
-    epocOrigPath = os.path.join(bidsRoot, subjRoot, 'meg', subjRoot + '_task-mgs_stimlocked.mat')
-    epocHPCpath = os.path.join(megHPCdir, subjRoot + '_task-mgs_stimlocked.mat')
-    copyfile(epocOrigPath, epocHPCpath)
+    # # Copy Epoched Data
+    # epocOrigPath = os.path.join(bidsRoot, subjRoot, 'meg', subjRoot + '_task-mgs_stimlocked.mat')
+    # epocHPCpath = os.path.join(megHPCdir, subjRoot + '_task-mgs_stimlocked.mat')
+    # copyfile(epocOrigPath, epocHPCpath)
 
-    # Copy TFR Data
-    tfrOrigPath = os.path.join(bidsRoot, subjRoot, 'meg', subjRoot + '_task-mgs_TFR.mat')
-    tfrHPCpath = os.path.join(megHPCdir, subjRoot + '_task-mgs_TFR.mat')
-    copyfile(tfrOrigPath, tfrHPCpath)
+    # # Copy TFR Data
+    # tfrOrigPath = os.path.join(bidsRoot, subjRoot, 'meg', subjRoot + '_task-mgs_TFR.mat')
+    # tfrHPCpath = os.path.join(megHPCdir, subjRoot + '_task-mgs_TFR.mat')
+    # copyfile(tfrOrigPath, tfrHPCpath)
+
+    # Copy Phase Data
+    phaseOrigPath = os.path.join(bidsRoot, subjRoot, 'meg', subjRoot + '_task-mgs_TFR_phase.mat')
+    phaseHPCpath = os.path.join(megHPCdir, subjRoot + '_task-mgs_TFR_phase.mat')
+    copyfile(phaseOrigPath, phaseHPCpath)

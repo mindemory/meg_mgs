@@ -1,20 +1,15 @@
-
 clear; close all; clc;
 warning('off', 'all');
 %% Initialization
-% p.subjID          = subjID;
-% [p]               = initialization(p, 'ecog');
-
 addpath('/d/DATD/hyper/software/fieldtrip-20220104/');
 ft_defaults;
 
-% subjID = 13; % change this to run a different subject
-
 subList = [1 2 3 4 5 6 7 8 9 10 11 12 13 15 16 17 18 19 20 22 23 24 25 26 27 28 29 30 31 32];
-% subList = [17];
+% subList = [18 19 20 22];
 
 TFRleft = {};
 TFRright = {};
+load('NYUKIT_helmet.mat');
 % for subjID = subList
 for sIdx = 1:length(subList)
 
@@ -32,19 +27,20 @@ for sIdx = 1:length(subList)
     stimRoot = [bidsRoot filesep subName filesep 'stimfiles'];
     fNameRoot = [subName '_task-' taskName];
 
-    if sIdx == subList(1)
-        rawdata_path = [derivativesRoot filesep fNameRoot '_run-01_raw.mat'];
-        load(rawdata_path, 'lay');
-    end
+    % if sIdx == subList(1)
+    %     rawdata_path = [derivativesRoot filesep fNameRoot '_run-01_raw.mat'];
+    %     load(rawdata_path, 'lay');
+    % end
+    
 
     stimLocked_fpath = [derivativesRoot filesep fNameRoot '_stimlocked.mat'];
-    TFR_fpath = [derivativesRoot filesep fNameRoot '_TFR.mat'];
-    if ~exist(TFR_fpath, 'file')
+    TFRphase_fpath = [derivativesRoot filesep fNameRoot '_TFR_phase.mat'];
+    if ~exist(TFRphase_fpath, 'file')
         disp('TFR does not exist, creating it.')
-        load(stimLocked_fpath);
+        epocStimLocked = load(stimLocked_fpath);
     
         % Load the data
-        epocThis = epocStimLocked;
+        epocThis = epocStimLocked.epocStimLocked;
     
         % Logical mask to find epochs matching your criteria
         trial_criteria_left = (epocThis.trialinfo(:,2) == 4) | ...
@@ -84,45 +80,49 @@ for sIdx = 1:length(subList)
         epocLeft = ft_preprocessing(cfg, epocLeft);
         epocRight = ft_preprocessing(cfg, epocRight);
     
-        TFRleft_power       = compute_TFRs(epocLeft);
-        TFRright_power       = compute_TFRs(epocRight);
+        TFRleft_phase       = compute_phase(epocLeft);
+        TFRright_phase       = compute_phase(epocRight);
 
-        save(TFR_fpath, 'TFRleft_power', 'TFRright_power', '-v7.3')
+        save(TFRphase_fpath, 'TFRleft_phase', 'TFRright_phase', '-v7.3')
     else
         disp('Loading existing TFR. If this is not desired, delete the existing file.')
-        load(TFR_fpath);
+        load(TFRphase_fpath);
     end
     cfg = [];
     cfg.avgoverrpt = 'yes';  % This averages over the rpttap dimension (trials)
-    TFRleft{sIdx} = ft_freqdescriptives(cfg, TFRleft_power);
-    TFRright{sIdx} = ft_freqdescriptives(cfg, TFRright_power);
+    TFRleft{sIdx} = ft_freqdescriptives(cfg, TFRleft_phase);
+    TFRright{sIdx} = ft_freqdescriptives(cfg, TFRright_phase);
     
 end
+
+% cfg = [];
+% cfg.layout = lay;
+% ft_multiplotER(cfg, rightERP)
 
 
 cfg = [];
 cfg.keepindividual = 'no';
 TFRleft_grandavg = ft_freqgrandaverage(cfg, TFRleft{:});
 TFRright_grandavg = ft_freqgrandaverage(cfg, TFRright{:});
-TFRleft_grandavg.grad = TFRleft_power.grad;
-TFRright_grandavg.grad = TFRright_power.grad;
-
-
-cfg = [];
-cfg.parameter = 'powspctrm';  % Specify the parameter to operate on
-% cfg.operation = 'x1 / x2'; %/(x1+x2)';   % Element-wise subtraction
-cfg.operation = '(10^(x1/10) - 10^(x2/10)) / (10^(x1/10) + 10^(x2/10))';
-% cfg.operation = '(10^(x2/10) ) / (10^(x1/10) + 10^(x2/10))';
-TFRdiff = ft_math(cfg, TFRright_grandavg, TFRleft_grandavg);
-
-cfg = [];
-% cfg.baseline = [-1.0 0];
-% cfg.baselinetype = 'absolute';
-% cfg.maskparameter = 0;
-cfg.xlim = 0:0.5:2;
-% cfg.xlim = [0 0.5];
-cfg.ylim = [8 12];
-cfg.marker = 'on';
-cfg.layout = lay;
-cfg.colormap = '*RdBu';
-ft_topoplotTFR(cfg, TFRdiff)
+TFRleft_grandavg.grad = TFRleft_phase.grad;
+TFRright_grandavg.grad = TFRright_phase.grad;
+% 
+% 
+% cfg = [];
+% cfg.parameter = 'powspctrm';  % Specify the parameter to operate on
+% % cfg.operation = 'x1 / x2'; %/(x1+x2)';   % Element-wise subtraction
+% cfg.operation = '(10^(x1/10) - 10^(x2/10)) / (10^(x1/10) + 10^(x2/10))';
+% % cfg.operation = '(10^(x2/10) ) / (10^(x1/10) + 10^(x2/10))';
+% TFRdiff = ft_math(cfg, TFRright_grandavg, TFRleft_grandavg);
+% 
+% cfg = [];
+% % cfg.baseline = [-1.0 0];
+% % cfg.baselinetype = 'absolute';
+% % cfg.maskparameter = 0;
+% cfg.xlim = 0:0.5:2;
+% % cfg.xlim = [0 0.5];
+% cfg.ylim = [8 12];
+% cfg.marker = 'on';
+% cfg.layout = lay;
+% cfg.colormap = '*RdBu';
+% ft_topoplotTFR(cfg, TFRdiff)

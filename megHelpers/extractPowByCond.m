@@ -14,7 +14,7 @@ for cond                                           = 4:8
     eval(['p' num2str(cond) ' = ft_freqdescriptives(cfg, powData);']);
 end
 
-for cond                                           = [1 2 3 5 9 10]
+for cond                                           = [1 2 3 9 10]
     cfg                                            = [];
     cfg.trials                                     = find(TFRright.trialinfo(:, 2) == cond);
     powData                                        = ft_selectdata(cfg, TFRright);

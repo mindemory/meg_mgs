@@ -23,6 +23,5 @@ unset -f which
 source /opt/apps/lmod/lmod/init/sh
 source /ext3/env.sh
 conda activate eegmne
-export CUPY_CACHE_DIR=/scratch/mdd9787/meg_prf_greene/overlay_img/cupy_cache
 ${args}
 "

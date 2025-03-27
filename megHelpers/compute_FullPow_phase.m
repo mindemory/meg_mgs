@@ -22,7 +22,7 @@ if strcmp(output, 'lowFreqPhase')
     cfg.width                                  = cycles;
     cfg.toi                                    = time_points;
     cfg.keeptrials                             = 'yes';
-    cfg.polyremoval                            = -1;
+    cfg.polyremoval                            = 1;
     TFR_fourier                                = ft_freqanalysis(cfg, data);
     
     % Compute phase

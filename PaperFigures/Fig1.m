@@ -28,10 +28,11 @@ xlim([-10, 10])
 ylim([-10, 10])
 
 %% Figure 1B (MEG part)
-subList = [1 2 3 4 5 6 7 8 9 10 11 12 13 15 16 17 18 19 20 22 23 24 25 26 27 28 29 30 31 32];
-
+% subList = [1 2 3 4 5 6 7 8 9 10 11 12 13 15 16 17 18 19 20 22 23 24 25 26 27 28 29 30 31 32];
+subList = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, ...
+               18, 19, 23, 24, 25, 26, 27, 28, 29, 31, 32];
 metaTFRpath = '/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-meta/sub-meta_task-mgs_TFRbyCond.mat';
-load('/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-01/meg/sub-01_task-mgs_run-01_raw.mat', 'lay');
+load('NYUKIT_helmet.mat');
 if ~exist(metaTFRpath, 'file')
     for i                                              = 1:10
         eval(['TFR' num2str(i) ' = {};']);
@@ -82,14 +83,24 @@ end
 %%
 cfg                                = [];
 cfg.keepindividual                 = 'no';
-TFRbaseline                        = ft_freqgrandaverage(cfg, TFR1{:}, TFR2{:}, TFR3{:}, TFR4{:}, ...
+TFRbaseline                        = ft_freqgrandaverage(cfg, TFR1{:}, TFR2{:}, TFR3{:}, TFR4{:}, TFR5{:}, ...
                                         TFR6{:}, TFR7{:}, TFR8{:}, TFR9{:}, TFR10{:});
 TFRbaseline.grad                   = TFR1{1,1}.grad;
+%%
+freqband = 'beta';
+delayCat = 'Middle';
+% 
+% layNew = lay;
+% 
+% layNew.mask{1, 1} = lay.mask{1, 1} .* 1.7;
+% layNew.outline{1, 5} = lay.mask{1, 1};
+% layNew.pos = lay.pos .* 2;
 
 figure();
-pltVec                             = [28 20 12 10 16 22 30 38 40 34];
-for ii                             = [1 2 3 4 6 7 8 9 10]
-    subplot(7, 7, pltVec(ii))
+sgtitle([freqband ': ' delayCat])
+pltVec                             = [18 11 4 3 8 13 20 27 28 23];
+for ii                             = [1 2 3 4 5 6 7 8 9 10]
+    subplot(5, 6, pltVec(ii))
 
     cfg                            = [];
     cfg.keepindividual             = 'no';
@@ -106,23 +117,44 @@ for ii                             = [1 2 3 4 6 7 8 9 10]
     cfg.figure                     = 'gcf';
     % cfg.baseline                   = [-1.0 -0.5];
     % cfg.baselinetype               = 'absolute';
-    cfg.xlim                       = [0.5 1];
-    cfg.ylim                       = [8 12];
-    cfg.marker                     = 'off';
-    cfg.layout                     = lay;
+    if strcmp(delayCat, 'ITI')
+        cfg.xlim                   = [-0.3 0];
+    elseif strcmp(delayCat, 'StimOn')
+        cfg.xlim                   = [0.1 0.3];
+    elseif strcmp(delayCat, 'Early')
+        cfg.xlim                   = [0.5 1];
+    elseif strcmp(delayCat, 'Middle')
+        cfg.xlim                   = [1 1.5];
+    elseif strcmp(delayCat, 'Late')
+        cfg.xlim                   = [1.5 1.7];
+    end
+
+    if strcmp(freqband, 'theta')
+        cfg.ylim                   = [4 8];
+    elseif strcmp(freqband, 'alpha')
+        cfg.ylim                   = [8 12];
+    elseif strcmp(freqband, 'beta')
+        cfg.ylim                   = [14 30];
+    end
+    cfg.marker                     = 'on';
+    cfg.layout                     = layNew;
+    % cfg.layout = 'CTF157_helmet';
+    cfg.interplimits               = 'electrodes';
     cfg.colormap                   = '*RdBu';
     ft_topoplotTFR(cfg, TFRdiff);
 
     clearvars TFRgrandavg TFRdiff;
+    % pause(0.1);
 end
 
 %%
+TFRtemp = TFR1{1};
 cfg = [];
 cfg.keepindividual = 'no';
 TFRg = ft_freqgrandaverage(cfg, TFR1{:});
 TFRg.grad = TFRtemp.grad;
 
-TFRbase = ft_freqgrandaverage(cfg, TFR1{:}, TFR2{:}, TFR3{:}, TFR4{:}, ...
+TFRbase = ft_freqgrandaverage(cfg, TFR1{:}, TFR2{:}, TFR3{:}, TFR4{:}, TFR5{:},...
                              TFR6{:}, TFR7{:}, TFR8{:}, TFR9{:}, TFR10{:});
 TFRbase.grad = TFRtemp.grad;
 
@@ -132,6 +164,12 @@ cfg.parameter = 'powspctrm';  % Specify the parameter to operate on
 cfg.operation = '(10^(x1/10) - 10^(x2/10)) / (10^(x1/10) + 10^(x2/10))';
 % cfg.operation = '(10^(x1/10) ) / (10^(x1/10) + 10^(x2/10))';
 TFRdiff = ft_math(cfg, TFRg, TFRl);
+
+cfg = [];
+cfg.parameter = 'powspctrm';  % Specify the parameter to operate on
+cfg.operation = '(10^(x1/10) ) / (10^(x1/10) + 10^(x2/10))';
+TFRdiff = ft_math(cfg, TFRg, TFRl);
+
 
 cfg                            = [];
 % cfg.figure                     = 'gcf';
@@ -149,11 +187,13 @@ ft_topoplotTFR(cfg, TFRdiff);
 
 %% Figure 1C
 % Perform cluster-stats to identify top-channels that capture alpha topography
-TFRleft                                  = cell(1, 30);
-TFRright                                 = cell(1, 30);
-for ii                                   = 1:30 % numsubs
+TFRleft                                  = cell(1, length(subList));
+TFRright                                 = cell(1, length(subList));
+for ii                                   = 1:length(subList) % numsubs
     leftTargs                            = [4 5 6 7 8];
     rightTargs                           = [1 2 3 9 10];
+    % leftTargs                            = [7 8];
+    % rightTargs                           = [9 10];
     for jj                               = 1:length(leftTargs)
         
         if jj                            == 1
@@ -178,6 +218,33 @@ TFRright_grandavg                        = ft_freqgrandaverage(cfg, TFRright{:})
 TFRleft_grandavg.grad                    = TFRleft{1}.grad;
 TFRright_grandavg.grad                   = TFRright{1}.grad;
 
+left_sensors = {'AG013', 'AG014', 'AG015', 'AG016', 'AG023', 'AG025', 'AG026', ...
+                'AG027', 'AG028', 'AG041', 'AG042', 'AG043', 'AG059', 'AG060', ...
+                'AG066', 'AG092'};
+leftModulChanIdx = find(ismember(TFRleft_grandavg.label, left_sensors));
+% Visualize powerspectra
+figure();
+timeOn                                       = [-0.3 0.1 0.5 1   1.5];
+timeOff                                      = [ 0   0.3 1   1.5 1.7];
+plttitles                                    = {'ITI', 'Stim On', 'Early Delay', ...
+                                                'Middle Delay', 'Late Delay'};
+for tIdx = 1:5
+subplot(2, 3, tIdx)
+timeIdx                                  = find((TFRleft_grandavg.time >= timeOn(tIdx)) & (TFRleft_grandavg.time <= timeOff(tIdx)));
+
+hold on;
+plot(TFRleft_grandavg.freq, 10.^(squeeze(mean(TFRleft_grandavg.powspctrm(leftModulChanIdx, :, timeIdx), [1, 3], 'omitnan'))./10), 'LineWidth', 2);
+plot(TFRright_grandavg.freq, 10.^(squeeze(mean(TFRright_grandavg.powspctrm(leftModulChanIdx, :, timeIdx), [1, 3], 'omitnan'))./10), 'LineWidth', 2);
+legend('Ipsi', 'Contra');
+xlabel('Frequency (Hz)')
+ylabel('Power (fT^2)')
+title(plttitles{tIdx})
+% ylim([0.98 1.01]);
+% yline(1, '--')
+% suptitle('Power spectra for occipital channels')
+end
+
+
 
 cfg                                      = [];
 cfg.parameter                            = 'powspctrm';
@@ -190,11 +257,30 @@ cfg.operation                            = '(10^(x1/10) ) / (10^(x1/10) + 10^(x2
 TFRleft_basecorr                         = ft_math(cfg, TFRleft_grandavg, TFRright_grandavg);
 TFRright_basecorr                        = ft_math(cfg, TFRright_grandavg, TFRleft_grandavg);
 
+cfg = [];
+cfg.layout = lay;
+cfg.xlim = [-0.5 1.7];
+cfg.ylim = [4 40];
+cfg.colormap                             = '*RdBu';
 
-freqIdx                                  = find((TFRdiff.freq >= 8) & (TFRdiff.freq <= 12));
-timeIdx                                  = find((TFRdiff.time >= 0.5) & (TFRdiff.time <= 1));
+ft_multiplotTFR(cfg, TFRleft_basecorr)
+
+
+freqband                                 = 'theta'; % 'theta', 'alpha', 'beta', 'all'
+if strcmp(freqband, 'theta')
+    freqBounds                           = [4 8];
+elseif strcmp(freqband, 'alpha')
+    freqBounds                           = [8 12];
+elseif strcmp(freqband, 'beta')
+    freqBounds                           = [12 35];
+elseif strcmp(freqband, 'all')
+    freqBounds                           = [2 40];
+end
+timeBounds                               = [1 1.5];
+freqIdx                                  = find((TFRdiff.freq >= freqBounds(1)) & (TFRdiff.freq <= freqBounds(2)));
+timeIdx                                  = find((TFRdiff.time >= timeBounds(1)) & (TFRdiff.time <= timeBounds(2)));
 avgPowAcrossChan                         = mean(TFRdiff.powspctrm(:, freqIdx, timeIdx), [2, 3], 'omitnan');
-qt                                       = 0.25;
+qt                                       = 0.1;
 lowBound                                 = quantile(avgPowAcrossChan, qt);
 highBound                                = quantile(avgPowAcrossChan, 1-qt);
 highModulChanIdx                         = find((avgPowAcrossChan <= lowBound | avgPowAcrossChan >= highBound));
@@ -202,19 +288,19 @@ highModulChan                            = arrayfun(@(x) TFRdiff.label{x}, highM
 
 
 cfg                                      = [];
-cfg.xlim                                 = [0.5 1];
-cfg.ylim                                 = [8 12];
+cfg.xlim                                 = timeBounds; %[0.5 1];
+cfg.ylim                                 = freqBounds; %[8 12];
 cfg.zlim                                 = [-0.04 0.04];
 cfg.marker                               = 'off';
 cfg.layout                               = lay;
 cfg.colormap                             = '*RdBu';
 cfg.colorbar                             = 'yes';
-cfg.highlight                            = 'off'; 
+cfg.highlight                            = 'on'; 
 cfg.highlightchannel                     = highModulChan;
 cfg.highlightsymbol                      = '+';
-cfg.highlightcolor                       = [0 0 0];
-cfg.hightlightsize                       = 20;
-cfg.hightlightfontsize                   = 10;
+cfg.highlightcolor                       = [1 1 0];
+cfg.hightlightsize                       = 40;
+cfg.hightlightfontsize                   = 20;
 ft_topoplotTFR(cfg, TFRdiff)
 
 %% Visualize
