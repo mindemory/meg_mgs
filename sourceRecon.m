@@ -2,6 +2,7 @@ clear; close all; clc;
 %% Initialization
 % addpath('/d/DATD/hyper/software/fieldtrip-20220104/');
 addpath('/d/DATD/hyper/software/fieldtrip-20250318/'); % 2022 doesn't work well for sourerecon
+% addpath('/d/DATD/home/sangi/matlab/fieldtrip_recent/fieldtrip-20120508');
 
 addpath(genpath('/d/DATD/hyper/experiments/Mrugank/meg_mgs'))
 ft_defaults;
@@ -33,21 +34,32 @@ anatMRI.coordsys     = coordsys.coordsys;
 
 %% Read headshape file
 hspPath              = '/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_headshape.hsp';
-hspData              = ft_read_headshape(hspPath);
-hspData.unit         = 'm';
-hspData.fid.label    = {'Nasion', 'LPA', 'RPA'}';
+% hspPath              = '/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-29/meg/sub-29_task-mgs_headshape.hsp';
+
+hspData              = ft_read_headshape(hspPath, 'unit', 'm');
+hspData              = ft_convert_units(hspData, 'cm');
+% hspData.unit         = 'm';
+% hspData.fid.label    = {'Nasion', 'LPA', 'RPA'}';
+hspData.fid.label    = {'Nasion', 'LPA', 'RPA'};
 
 % Read raw data for gradiometers
-load('/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-12/meg/sub-12_task-mgs_run-01_raw.mat')
-gradData             = data.grad;
-gradData             = ft_convert_units(gradData, 'm');
-clearvars data;
-
+% load('/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-12/meg/sub-12_task-mgs_run-01_raw.mat')
+% load('/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-29/meg/sub-29_task-mgs_run-01_raw.mat')
+% 
+% gradData             = data.grad;
+% gradData             = ft_convert_units(gradData, 'm');
+% clearvars data;
+rawSqdPath           = '/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_run-01_meg.con';
+gradData             = ft_read_sens(rawSqdPath, 'senstype', 'meg');
+% gradData     = interp.grad;
+% gradData             = ft_convert_units(gradData, 'm');
 % Load layout
 load('NYUKIT_helmet.mat')
 
 figure;
-ft_plot_mesh(hspData, 'vertexcolor', 'k', 'facealpha', 0.5);
+% ft_plot_mesh(hspData, 'vertexcolor', 'k', 'facealpha', 0.5);
+plot3(hspData.pos(:,1), hspData.pos(:,2), hspData.pos(:,3), ...
+        'ko', 'MarkerSize', 2, 'LineWidth', 2);
 hold on;
 if isfield(hspData, 'fid') && ~isempty(hspData.fid)
     plot3(hspData.fid.pos(:,1), hspData.fid.pos(:,2), hspData.fid.pos(:,3), ...
@@ -58,6 +70,77 @@ if isfield(hspData, 'fid') && ~isempty(hspData.fid)
 end
 ft_plot_sens(gradData, 'box', 1)
 
+%% Read marker data
+% elpPath              = '/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_electrodes.elp';
+% fid                  = fopen(elpPath, 'r');
+% fgetl(fid); fgetl(fid); fgetl(fid); fgetl(fid); 
+% initData             = fscanf(fid, '%f', [inf])
+
+elpData              = [0.010757  0.071798 -0.0040955; ...
+                        0.008311 -0.068209 -0.0062268; ...
+                        0.109662 -0.006658  0.0434818; ...
+                        0.095443  0.036879  0.0412703; ...
+                        0.089769 -0.044712  0.0452798];
+elpData = elpData .* 100;
+
+% elpData              = ft_read_sens(elpPath)
+headshape.pos        = [hspData.fid.pos; hspData.pos];
+headshape.unit       = 'm';
+% headshape.label{1}   = 'Nasion';
+% headshape.label{2}   = 'LPA';
+% headshape.label{3}   = 'RPA';
+num_remaining_points = size(hspData.pos, 1); 
+remaining_labels     = cell(num_remaining_points, 1);
+for i                = 1:num_remaining_points
+    remaining_labels{i} ...
+                     = sprintf('head_%d', i);
+end
+headshape.label      = [{'Nasion', 'RPA', 'LPA'}, remaining_labels']';
+
+
+% }, 'LPA', 'RPA'}';
+
+elec_dummy           = headshape;
+elec_dummy.elecpos   = headshape.pos;
+elec_dummy.chanpos   = elec_dummy.elecpos;
+
+elec_coil.elecpos    = elpData;%(1:3, :);
+elec_coil.label      = {'RPA', 'LPA', 'Nasion', 'l_extra', 'r_extra'}';
+elec_coil.unit       = 'm';
+
+cfg                  = [];
+cfg.method           = 'fiducial';
+cfg.template         = elec_coil;
+cfg.elec             = elec_dummy;
+cfg.feedback         = 'yes';
+cfg.fiducial         = {'Nasion', 'LPA', 'RPA'}';
+elec_aligned         = ft_electroderealign(cfg);
+%%
+hspCorrected         = hspData;
+hspCorrected.pos     = elec_aligned.chanpos(4:end, :);
+hspCorrected.fid.pos = elec_aligned.chanpos(1:3, :);
+
+figure;
+ft_plot_mesh(hspCorrected, 'vertexcolor', 'k', 'facealpha', 0.5);
+% ft_plot_mesh(hspCorrected, 'vertexcolor', 'k', 'facealpha', 0.5);
+
+hold on;
+if isfield(hspCorrected, 'fid') && ~isempty(hspCorrected.fid)
+    plot3(hspCorrected.fid.pos(:,1), hspCorrected.fid.pos(:,2), hspCorrected.fid.pos(:,3), ...
+          'go', 'MarkerSize', 5, 'LineWidth', 2);
+    text(hspCorrected.fid.pos(:,1), hspCorrected.fid.pos(:,2), hspCorrected.fid.pos(:,3), ...
+         hspCorrected.fid.label, 'FontSize', 12, 'Color', 'r');
+end
+ft_plot_sens(gradData, 'box', 1)
+ft_plot_mesh(elpData, 'vertexcolor', 'b', 'vertexsize', 20)
+
+
+%%
+mrkPth = '/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_marker_01.sqd';
+cfg = [];
+cfg.dataset = mrkPth;
+ss = ft_read_sens(mrkPth);
+ss = ft_convert_units(ss, 'm');
 
 %% Align anatomical with hsp
 cfg                  = [];
@@ -144,7 +227,7 @@ cfg.smooth           = 5;
 cfg.resolution       = 0.004; % in m
 cfg.sourcemodel.unit = 'm';
 cfg.tight            = 'yes';
-% cfg.inwardshift      = -0.002;
+cfg.inwardshift      = 0.002; % Around 5mm inward shift
 cfg.headmodel        = singleShellHeadModel;
 grid                 = ft_prepare_sourcemodel(cfg);
 %%
@@ -240,8 +323,11 @@ epocRight                         = ft_selectdata(cfg, epocThis);
 % cfg                               = [];
 % cfg.covariance                    = 'yes';
 % cfg.covariancewindow              = 'all';
+% cfg.keeptrials                    = 'yes';
 % timelockedLeft                    = ft_timelockanalysis(cfg, epocLeft);
 % timelockedRight                   = ft_timelockanalysis(cfg, epocRight);
+% timelockedCombined                = ft_appenddata([], timelockedLeft,
+% timelockedRight);
 
 %%        
 cfg                               = [];
@@ -253,8 +339,8 @@ cfg.keepleadfield                 = 'yes';
 cfg.lcmv.keepfilter               = 'yes';
 cfg.lcmv.fixedori                 = 'yes';
 cfg.lcmv.lambda                   = '1%';  % must be '1%' not 1
-cfg.normalize                     = 'yes'; % normalize LF to attenuate depth bias
-cfg.normalizeparam                = 0.5; % default = 0.5
+% cfg.normalize                     = 'yes'; % normalize LF to attenuate depth bias
+% cfg.normalizeparam                = 0.5; % default = 0.5
 source                            = ft_sourceanalysis(cfg, timelockedLeft);
 inside_pos                        = find(source.inside);
 
@@ -457,18 +543,89 @@ TFR_fourier_alpha          = ft_appendfreq(cfg, TFR_fourier_left_alpha, TFR_four
 cfg                  = [];
 cfg.grad             = gradData;
 cfg.channel          = gradData.label;
-cfg.grid             = grid;
+cfg.sourcemodel      = grid;
 cfg.headmodel        = singleShellHeadModel;
-leadfield            = ft_prepare_leadfield(cfg, epocThis);
+leadfield            = ft_prepare_leadfield(cfg, epocCombined);
 
 
-cfg                        = [];
-cfg.frequency              = freqThis.freq;
-cfg.method                 = 'pcc';
-cfg.grid                   = leadfield;
-cfg.headmodel              = singleShellHeadModel;
-cfg.keeptrials             = 'yes';
-cfg.pcc.lambda             = '10%';
-cfg.pcc.projectnoise       = 'yes';
-cfg.pcc.fixedori           = 'yes';
-sourceFreq                 = ft_sourceanalysis(cfg, freqThis);
+% cfg                        = [];
+% cfg.frequency              = freqThis.freq;
+% cfg.method                 = 'pcc';
+% cfg.grid                   = g;
+% cfg.headmodel              = singleShellHeadModel;
+% cfg.keeptrials             = 'yes';
+% cfg.pcc.lambda             = '10%';
+% cfg.pcc.projectnoise       = 'yes';
+% cfg.pcc.fixedori           = 'yes';
+% sourceFreq                 = ft_sourceanalysis(cfg, freqThis);
+
+
+cfg              = [];
+cfg.method       = 'dics';
+cfg.frequency    = 6.0;
+cfg.sourcemodel  = leadfield;
+cfg.grad         = gradData;
+cfg.channel      = gradData.label;
+cfg.headmodel    = singleShellHeadModel;
+cfg.dics.projectnoise = 'yes';
+cfg.dics.lambda       = '5%';
+cfg.dics.keepfilter   = 'yes';
+cfg.dics.realfilter   = 'yes';
+sourceCombined = ft_sourceanalysis(cfg, freqCombined);
+
+cfg.sourcemodel.filter = sourceCombined.avg.filter;
+
+sourceLeft  = ft_sourceanalysis(cfg, freqLeft );
+sourceRight = ft_sourceanalysis(cfg, freqRight);
+
+sourceDiff = sourceLeft;
+sourceDiff.avg.pow = (sourceLeft.avg.pow - sourceRight.avg.pow) ./ (sourceLeft.avg.pow + sourceRight.avg.pow);
+
+
+cfg            = [];
+cfg.downsample = 2;
+cfg.parameter  = 'pow';
+sourceDiff_interp  = ft_sourceinterpolate(cfg, sourceDiff, mri_reslice);
+
+cfg              = [];
+cfg.method       = 'slice';
+cfg.funparameter = 'pow';
+cfg.funcolorlim   = [-0.02 0.02];
+cfg.opacitylim    = [-0.02 0.02];
+cfg.opacitymap    = 'rampup';
+ft_sourceplot(cfg, sourceDiff_interp);
+
+
+pial.coordsys = 'ras';
+
+
+cfg = [];
+cfg.parameter = 'pow';
+cfg.interpmethod = 'nearest';
+cfg.sphereradius = 20; % Adjust based on your needs
+sourceDiffPial = ft_sourceinterpolate(cfg, sourceDiff, pial);
+
+cfg = [];
+cfg.method = 'surface';
+cfg.funparameter = 'pow';
+cfg.funcolormap = 'parula';
+cfg.funcolorlim   = [-0.02 0.02];
+cfg.opacitylim = [0 1];
+cfg.opacitymap = 'rampup';  % Add transparency effect
+
+ft_sourceplot(cfg, sourceDiffPial);
+
+
+cfg = [];
+cfg.method         = 'surface';
+cfg.funparameter   = 'pow';
+cfg.maskparameter  = cfg.funparameter;
+% cfg.funcolorlim    = [0.0 maxval];
+cfg.funcolormap    = 'parula';
+% cfg.opacitylim     = [0.0 maxval];
+cfg.opacitymap     = 'rampup';
+cfg.projmethod     = 'nearest';
+% cfg.surffile       = pial;
+cfg.surface        = pial;
+cfg.surfdownsample = 10;
+ft_sourceplot(cfg, sourceDiff_interp);

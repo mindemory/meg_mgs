@@ -37,6 +37,6 @@ for subjID in subList:
     # copyfile(tfrOrigPath, tfrHPCpath)
 
     # Copy Phase Data
-    phaseOrigPath = os.path.join(bidsRoot, subjRoot, 'meg', subjRoot + '_task-mgs_TFR_phase.mat')
-    phaseHPCpath = os.path.join(megHPCdir, subjRoot + '_task-mgs_TFR_phase.mat')
+    phaseOrigPath = os.path.join(bidsRoot, subjRoot, 'meg', subjRoot + '_task-mgs_TFR_evoked_lineremoved.mat')
+    phaseHPCpath = os.path.join(megHPCdir, subjRoot + '_task-mgs_TFR_evoked_lineremoved.mat')
     copyfile(phaseOrigPath, phaseHPCpath)

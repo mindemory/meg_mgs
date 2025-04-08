@@ -1,7 +1,8 @@
 clear; close all; clc;
 warning('off', 'all');
+addpath('/d/DATD/hyper/software/fieldtrip-20250318/'); 
 
-addpath('/d/DATD/hyper/software/fieldtrip-20220104/');
+% addpath('/d/DATD/hyper/software/fieldtrip-20220104/');
 ft_defaults;
 addpath(genpath('/d/DATD/hyper/experiments/Mrugank/meg_mgs'));
 
@@ -31,7 +32,7 @@ ylim([-10, 10])
 % subList = [1 2 3 4 5 6 7 8 9 10 11 12 13 15 16 17 18 19 20 22 23 24 25 26 27 28 29 30 31 32];
 subList = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, ...
                18, 19, 23, 24, 25, 26, 27, 28, 29, 31, 32];
-metaTFRpath = '/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-meta/sub-meta_task-mgs_TFRbyCond.mat';
+metaTFRpath = '/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-meta/sub-meta_task-mgs_TFRbyCond_lineremoved.mat';
 load('NYUKIT_helmet.mat');
 if ~exist(metaTFRpath, 'file')
     for i                                              = 1:10
@@ -59,8 +60,8 @@ if ~exist(metaTFRpath, 'file')
             load(rawdata_path, 'lay');
         end
     
-        stimLocked_fpath = [derivativesRoot filesep fNameRoot '_stimlocked.mat'];
-        TFR_fpath = [derivativesRoot filesep fNameRoot '_TFR.mat'];
+        stimLocked_fpath = [derivativesRoot filesep fNameRoot '_stimlocked_lineremoved.mat'];
+        TFR_fpath = [derivativesRoot filesep fNameRoot '_TFR_evoked_lineremoved.mat'];
         load(TFR_fpath);
         if sIdx == 1
             TFRtemp = TFRleft_power;
@@ -265,7 +266,7 @@ cfg.colormap                             = '*RdBu';
 
 ft_multiplotTFR(cfg, TFRleft_basecorr)
 
-
+%%
 freqband                                 = 'theta'; % 'theta', 'alpha', 'beta', 'all'
 if strcmp(freqband, 'theta')
     freqBounds                           = [4 8];
@@ -484,56 +485,3 @@ cfg.fontsize                             = 12;
 ft_singleplotTFR(cfg, data2)
 
 
-%% Perform cluster stats
-cfg                       = [];
-cfg.spmversion            = 'spm12';
-cfg.method                = 'montecarlo';
-cfg.latency               = [0.5 1];
-cfg.frequency             = [8 12];
-cfg.statistic             = 'ft_statfun_depsamplesT';
-cfg.correctm              = 'cluster';
-cfg.clusteralpha          = 0.1;
-cfg.clusterstatistic      = 'maxsum';
-cfg.numrandomization      = 100;
-cfg.minnbchan             = 2;
-cfg.tail                  = 0; % two-tailed
-cfg.alpha                 = 0.05;
-% cfg.correcttail           = 'alpha';
-numSubj                   = numel(subList);
-% cfg.design                = [ones(1, numSubj) 2*ones(1, numSubj);
-%                              1:numSubj 1:numSubj];
-cfg.design                = [1:numSubj 1:numSubj;
-                             ones(1, numSubj) 2*ones(1, numSubj)];
-cfg.ivar                  = 2;
-cfg.uvar                  = 1;
-cfg_neighbor              = [];
-cfg_neighbor.method       = 'triangulation';
-cfg.neighbours            = ft_prepare_neighbours(cfg_neighbor, TFRleft{1});
-stats                     = ft_freqstatistics(cfg, TFRright{:}, TFRleft{:});
-
-% Significant clusters
-pos_clusters              = find([stats.posclusters.prob] < cfg.alpha);
-neg_clusters              = find([stats.negclusters.prob] < cfg.alpha);
-% Mask
-stats.mask                = false(size(stats.stat));
-for cl                    = pos_clusters
-    stats.mask            = stats.mask | (stats.posclusterslabelmat == cl);
-end
-for cl                    = neg_clusters
-    stats.mask            = stats.mask | (stats.negclusterslabelmat == cl);
-end
-
-% Visualize the topography with clusters
-cfg                       = [];
-cfg.parameter             = 'stat';
-cfg.maskparameter         = 'mask';
-cfg.xlim                  = [0.5 1];
-cfg.ylim                  = [8 12];
-cfg.layout                = lay;
-cfg.colormap              = '*RdBu';
-cfg.colorbar              = 'yes';
-cfg.highlight             = 'on';
-cfg.highlightchannel      = find(any(stats.mask, [2 3]));
-cfg.markersymbol          = '*';
-cfg.markercolor           = [0 0 0];
-ft_topoplotTFR(cfg, stats);

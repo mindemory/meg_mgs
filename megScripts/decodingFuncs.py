@@ -83,10 +83,12 @@ def extract_freqband(freqband, freqs, powspctrm_combined, powOphase='power', bas
 def process_train_time(train_time, X, y, n_timepoints, n_trials, n_freqs=None):
     print(f'Processing training time point {train_time}/{n_timepoints}')
     
-    n_splits = 5
+    n_splits = 10
     random_state = 42
     if n_freqs is not None:
-        auc_row = np.zeros(n_freqs)
+        # auc_row = np.zeros(n_freqs)
+        f1_row = np.zeros(n_freqs)
+        f1_chance_row = np.zeros(n_freqs)
         for freq_idx in range(n_freqs):
             X_train_freq = X[:, :, freq_idx, train_time].reshape(n_trials, -1)
             skf = StratifiedKFold(n_splits=n_splits, random_state=random_state, shuffle=True)
@@ -96,16 +98,21 @@ def process_train_time(train_time, X, y, n_timepoints, n_trials, n_freqs=None):
                 X_train = sc.fit_transform(X_train)
 
                 # Train SVM
-                clf = CalibratedClassifierCV(SVC(kernel='linear', decision_function_shape='ovo', max_iter=10000), cv=3)
+                # clf = CalibratedClassifierCV(SVC(kernel='linear', decision_function_shape='ovo', max_iter=10000), cv=3)
+                clf = SVC(kernel='linear', decision_function_shape='ovo', max_iter=10000)
                 clf.fit(X_train, y[train_idx])
 
                 
                 X_test = X_train_freq[test_idx, :]
                 X_test = sc.transform(X_test)
-                auc_row[freq_idx] += roc_auc_score(y[test_idx], clf.predict_proba(X_test), multi_class='ovo', average='macro')
+                # auc_row[freq_idx] += roc_auc_score(y[test_idx], clf.predict_proba(X_test), multi_class='ovo', average='macro')
+                f1_row += f1_score(y[test_idx], clf.predict(X_test), average='macro')
+                f1_chance_row = f1_score(y[test_idx], np.random.permutation(y[test_idx]), average='macro')
         
     else:
-        auc_row = np.zeros(n_timepoints)
+        # auc_row = np.zeros(n_timepoints)
+        f1_row = np.zeros(n_timepoints)
+        f1_chance_row = np.zeros(n_timepoints)
         X_train_time = X[:, :, train_time].reshape(n_trials, -1)
         
         # Stratified K-Fold Cross-Validation
@@ -116,23 +123,30 @@ def process_train_time(train_time, X, y, n_timepoints, n_trials, n_freqs=None):
             X_train = sc.fit_transform(X_train)
             
             # clf = SVC(kernel='linear', decision_function_shape='ovo', probability=True)
-            clf = CalibratedClassifierCV(SVC(kernel='linear', decision_function_shape='ovo', max_iter=10000), cv=3)
+            # clf = CalibratedClassifierCV(SVC(kernel='linear', decision_function_shape='ovo', max_iter=10000), cv=3)
+            clf = SVC(kernel='linear', decision_function_shape='ovo', max_iter=10000)
             clf.fit(X_train, y[train_idx])
             
             # Test on all timepoints
             for t_test in range(n_timepoints):
-                X_test = X[:, :, t_test].reshape(n_trials, -1)
+                X_test_time = X[:, :, t_test].reshape(n_trials, -1)
+                X_test = X_test_time[test_idx, :]
                 X_test = sc.transform(X_test)
-                auc_row[t_test] += roc_auc_score(
-                    y[test_idx], 
-                    clf.predict_proba(X_test[test_idx]), 
-                    multi_class='ovo', 
-                    average='macro'
-                )
+                # auc_row[t_test] += roc_auc_score(
+                #     y[test_idx], 
+                #     clf.predict_proba(X_test[test_idx]), 
+                #     multi_class='ovo', 
+                #     average='macro'
+                # )
+                f1_row[t_test] += f1_score(y[test_idx], clf.predict(X_test), average='macro')
+                f1_chance_row[t_test] += f1_score(y[test_idx], np.random.permutation(y[test_idx]), average='macro')
     
     # Average across folds
-    auc_row /= skf.n_splits
-    return train_time, auc_row
+    # auc_row /= skf.n_splits
+    f1_row /= skf.n_splits
+    f1_chance_row /= skf.n_splits
+    # return train_time, auc_row
+    return train_time, f1_row, f1_chance_row
 
 
 def crossTemporalDecoding(X, trlInfo_, classCats, parallel=True):
@@ -186,7 +200,9 @@ def crossTemporalDecoding(X, trlInfo_, classCats, parallel=True):
     y -= y.min() # Make labels start from 0
 
     n_trials, _, n_timepoints = X.shape
-    auc_matrix = np.zeros((n_timepoints, n_timepoints))  # Train-time x Test-time
+    # auc_matrix = np.zeros((n_timepoints, n_timepoints))  # Train-time x Test-time
+    f1_matrix = np.zeros((n_timepoints, n_timepoints))  # Train-time x Test-time
+    f1_chance_matrix = np.zeros((n_timepoints, n_timepoints))  # Train-time x Test-time
 
     if parallel:
         from joblib import Parallel, delayed
@@ -200,8 +216,11 @@ def crossTemporalDecoding(X, trlInfo_, classCats, parallel=True):
         )
         
         # Collect results
-        for train_time, auc_row in results:
-            auc_matrix[train_time, :] = auc_row
+        # for train_time, auc_row in results:
+        #     auc_matrix[train_time, :] = auc_row
+        for train_time, f1_row, f1_chance_row in results:
+            f1_matrix[train_time, :] = f1_row
+            f1_chance_matrix[train_time, :] = f1_chance_row
     else:
         # from sklearn.preprocessing import label_binarize
         for train_time in range(n_timepoints):
@@ -214,24 +233,33 @@ def crossTemporalDecoding(X, trlInfo_, classCats, parallel=True):
             skf = StratifiedKFold(n_splits=5, random_state=42, shuffle=True)
             for fold, (train_idx, test_idx) in enumerate(skf.split(X_train_time, y)):
                 sc = StandardScaler()
-                X_train = X_train_time[train_idx]
+                X_train = X_train_time[train_idx, :]
                 X_train = sc.fit_transform(X_train)
 
                 # Train SVM
-                clf = CalibratedClassifierCV(SVC(kernel='linear', decision_function_shape='ovo', max_iter=10000), cv=3)
+                # clf = CalibratedClassifierCV(SVC(kernel='linear', decision_function_shape='ovo', max_iter=10000), cv=3)
+                clf = SVC(kernel='linear', decision_function_shape='ovo', max_iter=10000)
                 clf.fit(X_train, y[train_idx])
 
                 # Predict for all test samples in fold
                 for test_time in range(n_timepoints):
-                    X_test = X[:, :, test_time].reshape(n_trials, -1)
+                    X_test_time = X[:, :, test_time].reshape(n_trials, -1)
+                    X_test = X_test_time[test_idx, :]
                     X_test = sc.transform(X_test)
-                    auc_matrix[train_time, test_time] += roc_auc_score(y[test_idx], clf.predict_proba(X_test[test_idx]), multi_class='ovo', average='macro')
+                    y_pred = clf.predict(X_test)
+                    f1_matrix[train_time, test_time] += f1_score(y[test_idx], y_pred, average='macro')
+                    f1_chance_matrix[train_time, test_time] += f1_score(y[test_idx], np.random.permutation(y[test_idx]), average='macro')
+                    # auc_matrix[train_time, test_time] += roc_auc_score(y[test_idx], clf.predict_proba(X_test[test_idx]), multi_class='ovo', average='macro')
+                    # f1_matrix[train_time, test_time] += f1_score(y[test_idx], clf.predict(X_test), average='macro')
 
         # Avererage acorss folds
-        auc_matrix /= skf.n_splits
+        # auc_matrix /= skf.n_splits
+        f1_matrix /= skf.n_splits
+        f1_chance_matrix /= skf.n_splits
 
     # return accuracy_matrix, f1score_matrix, auc_matrix
-    return auc_matrix
+    # return auc_matrix
+    return f1_matrix, f1_chance_matrix
 
 def TimeFrequencyDecoding(X, trlInfo_, classCats, crossTemporal=False, parallel=True):
     # Run classification
@@ -285,9 +313,13 @@ def TimeFrequencyDecoding(X, trlInfo_, classCats, crossTemporal=False, parallel=
 
     n_trials, n_channels, n_freqs, n_timepoints = X.shape
     if crossTemporal:
-        auc_matrix = np.zeros((n_timepoints, n_timepoints, n_freqs))  # Train-time x Test-time x Freq
+        # auc_matrix = np.zeros((n_timepoints, n_timepoints, n_freqs))  # Train-time x Test-time x Freq
+        f1_matrix = np.zeros((n_timepoints, n_timepoints, n_freqs))  # Train-time x Test-time x Freq
+        f1_chance_matrix = np.zeros((n_timepoints, n_timepoints, n_freqs))
     else:
-        auc_matrix = np.zeros((n_timepoints, n_freqs))  # Time x Freq
+        # auc_matrix = np.zeros((n_timepoints, n_freqs))  # Time x Freq
+        f1_matrix = np.zeros((n_timepoints, n_freqs))  # Time x Freq
+        f1_chance_matrix = np.zeros((n_timepoints, n_freqs))
 
     if parallel:
         from joblib import Parallel, delayed
@@ -305,8 +337,11 @@ def TimeFrequencyDecoding(X, trlInfo_, classCats, crossTemporal=False, parallel=
             )
 
             # Collect results
-            for train_time, auc_row in results:
-                auc_matrix[train_time, :] = auc_row
+            # for train_time, auc_row in results:
+            #     auc_matrix[train_time, :] = auc_row
+            for train_time, f1_row, f1_chance_row in results:
+                f1_matrix[train_time, :] = f1_row
+                f1_chance_matrix[train_time, :] = f1_chance_row
     else:
         for train_time in range(n_timepoints):
             if (train_time / n_timepoints * 100) % 10 == 0:
@@ -320,7 +355,8 @@ def TimeFrequencyDecoding(X, trlInfo_, classCats, crossTemporal=False, parallel=
                     X_train = sc.fit_transform(X_train)
 
                     # Train SVM
-                    clf = CalibratedClassifierCV(SVC(kernel='linear', decision_function_shape='ovo', max_iter=10000), cv=3)
+                    # clf = CalibratedClassifierCV(SVC(kernel='linear', decision_function_shape='ovo', max_iter=10000), cv=3)
+                    clf = SVC(kernel='linear', decision_function_shape='ovo', max_iter=10000)
                     clf.fit(X_train, y[train_idx])
 
                     if crossTemporal == True:
@@ -328,16 +364,23 @@ def TimeFrequencyDecoding(X, trlInfo_, classCats, crossTemporal=False, parallel=
                         for test_time in range(n_timepoints):
                             X_test = X[:, :, freq_idx, test_time].reshape(n_trials, -1)
                             X_test = sc.transform(X_test)
-                            auc_matrix[train_time, test_time, freq_idx] += roc_auc_score(y[test_idx], clf.predict_proba(X_test[test_idx]), multi_class='ovo', average='macro')
+                            # auc_matrix[train_time, test_time, freq_idx] += roc_auc_score(y[test_idx], clf.predict_proba(X_test[test_idx]), multi_class='ovo', average='macro')
+                            f1_matrix[train_time, test_time, freq_idx] += f1_score(y[test_idx], clf.predict(X_test), average='macro')
+                            f1_chance_matrix[train_time, test_time, freq_idx] += f1_score(y[test_idx], np.random.permutation(y[test_idx]), average='macro')
                     else:
                         X_test = X_train_freq[test_idx, :]
                         X_test = sc.transform(X_test)
-                        auc_matrix[train_time, freq_idx] += roc_auc_score(y[test_idx], clf.predict_proba(X_test), multi_class='ovo', average='macro')
+                        # auc_matrix[train_time, freq_idx] += roc_auc_score(y[test_idx], clf.predict_proba(X_test), multi_class='ovo', average='macro')
+                        f1_matrix[train_time, freq_idx] = f1_score(y[test_idx], clf.predict(X_test), average='macro')
+                        f1_chance_matrix[train_time, freq_idx] = f1_score(y[test_idx], np.random.permutation(y[test_idx]), average='macro')
 
         # Avererage acorss folds
-        auc_matrix /= skf.n_splits
+        # auc_matrix /= skf.n_splits
+        f1_matrix /= skf.n_splits
+        f1_chance_matrix /= skf.n_splits
 
-    return auc_matrix
+    # return auc_matrix
+    return f1_matrix, f1_chance_matrix
 
 def runMultiClassClassification(TFRmat, v73=False, powOphase='power', classCats='quadrant', freqband='alpha', basecorr=True):
     import gc
@@ -390,24 +433,28 @@ def runMultiClassClassification(TFRmat, v73=False, powOphase='power', classCats=
         avgMat = np.repeat(avgMat[np.newaxis, :, :, :], powspctrm_combined.shape[0], axis=0)
         powspctrm_combined = 10**(powspctrm_combined / 10) / 10**(avgMat / 10)
         powspctrm_combined_ = powspctrm_combined[:, :, :, time_idx]
-        auc_matrix = TimeFrequencyDecoding(powspctrm_combined_, trlInfo_, classCats, crossTemporal=False, parallel=True)
+        # auc_matrix = TimeFrequencyDecoding(powspctrm_combined_, trlInfo_, classCats, crossTemporal=False, parallel=True)
+        f1_matrix, f1_chance_matrix = TimeFrequencyDecoding(powspctrm_combined_, trlInfo_, classCats, crossTemporal=False, parallel=True)
         # Clear memory
         del powspctrm_combined_
         gc.collect()
 
-        return auc_matrix, times_crop, valFreqs
+        # return auc_matrix, times_crop, valFreqs
+        return f1_matrix, f1_chance_matrix, times_crop, valFreqs
     else:
         # This outputs auc_matrix of (time x time)
         # Extract features
         powspctrm_combined_ = extract_freqband(freqband, freqs, powspctrm_combined, powOphase, basecorr)
         powspctrm_combined_ = powspctrm_combined_[:, :, time_idx]
         print('Starting decoding')
-        auc_matrix = crossTemporalDecoding(powspctrm_combined_, trlInfo_, classCats, parallel=True)
+        # auc_matrix = crossTemporalDecoding(powspctrm_combined_, trlInfo_, classCats, parallel=True)
+        f1_matrix, f1_chance_matrix = crossTemporalDecoding(powspctrm_combined_, trlInfo_, classCats, parallel=True)
 
         # Clear memory
         del powspctrm_combined_
         gc.collect()
 
-        return auc_matrix, times_crop
+        # return auc_matrix, times_crop
+        return f1_matrix, f1_chance_matrix, times_crop
 
 

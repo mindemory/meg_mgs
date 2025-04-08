@@ -4,7 +4,9 @@ warning('off', 'all');
 % p.subjID          = subjID;
 % [p]               = initialization(p, 'ecog');
 
-addpath('/d/DATD/hyper/software/fieldtrip-20220104/');
+% addpath('/d/DATD/hyper/software/fieldtrip-20220104/');
+addpath('/d/DATD/hyper/software/fieldtrip-20250318/'); 
+
 ft_defaults;
 
 % subjID = 13; % change this to run a different subject
@@ -13,13 +15,13 @@ ft_defaults;
 subList = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, ... 
                18, 19, 23, 24, 25, 26, 27, 28, 29, 31, 32];
 
-TFRleft = {};
-TFRright = {};
+ERFleft = {};
+ERFright = {};
 load('NYUKIT_helmet.mat');
 
 
-ERFmetaFile = '/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-meta/sub-meta_task-mgs_ERFAcrossSubjects.mat';
-if ~exist(ERFmetaFile, 'file')
+% ERFmetaFile = '/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-meta/sub-meta_task-mgs_ERFAcrossSubjects.mat';
+% if ~exist(ERFmetaFile, 'file')
     for sIdx = 1:length(subList)
     
         disp(['Running ' num2str(sIdx) ' of ' num2str(length(subList)) ' subjects.'])
@@ -42,7 +44,7 @@ if ~exist(ERFmetaFile, 'file')
         % end
         
     
-        stimLocked_fpath = [derivativesRoot filesep fNameRoot '_stimlocked.mat'];
+        stimLocked_fpath = [derivativesRoot filesep fNameRoot '_stimlocked_lineremoved.mat'];
         disp('Creating ERF')
         load(stimLocked_fpath);
     
@@ -83,10 +85,10 @@ if ~exist(ERFmetaFile, 'file')
         ERFright{sIdx} = ft_timelockanalysis([], epocRight);
     
     end
-    save(ERFmetaFile, 'ERFleft', 'ERFright');
-else
-    load(ERFmetaFile)
-end
+%     save(ERFmetaFile, 'ERFleft', 'ERFright');
+% else
+%     load(ERFmetaFile)
+% end
 
 
 cfg = [];
