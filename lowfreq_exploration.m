@@ -1,7 +1,7 @@
 subList = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, ...
                18, 19, 23, 24, 25, 26, 27, 28, 29, 31, 32];
 % subList = [1, 2, 3, 4];
-metaTFRpath = '/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-meta/sub-meta_task-mgs_TFRhighFreqbyCond_lineremoved.mat';
+metaTFRpath = '/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-meta/sub-meta_task-mgs_TFRbyCond_lineremoved.mat';
 load('NYUKIT_helmet.mat');
 if ~exist(metaTFRpath, 'file')
     for i                                              = 1:10
@@ -23,9 +23,9 @@ if ~exist(metaTFRpath, 'file')
         megRoot = [bidsRoot filesep subName filesep 'meg'];
         stimRoot = [bidsRoot filesep subName filesep 'stimfiles'];
         fNameRoot = [subName '_task-' taskName];
-    
+   
         stimLocked_fpath = [derivativesRoot filesep fNameRoot '_stimlocked_lineremoved.mat'];
-        TFR_fpath = [derivativesRoot filesep fNameRoot '_TFR_highfreq_lineremoved.mat'];
+        TFR_fpath = [derivativesRoot filesep fNameRoot '_TFR_lineremoved.mat'];
         load(TFR_fpath);
         if sIdx == 1
             TFRtemp = powHigh_left;
@@ -91,14 +91,14 @@ right_sensors               = {'AG001', 'AG002', 'AG007', 'AG008', 'AG020', 'AG0
 left_sensors                = {'AG013', 'AG014', 'AG015', 'AG016', 'AG023', 'AG025', 'AG026', ...
                                'AG027', 'AG028', 'AG041', 'AG042', 'AG043', 'AG059', 'AG060', ...
                                'AG066', 'AG092'};
-left_idx                                 = find(ismember(left_sensors, TFRleft_grandavg.label));
-right_idx                                = find(ismember(right_sensors, TFRleft_grandavg.label));
-
-cfg                                      = [];
-cfg.parameter                            = 'powspctrm';
-cfg.operation                            = '(10^(x1/10) - 10^(x2/10)) / (10^(x1/10) + 10^(x2/10))';
-TFRleftSensorsDiff                       = ft_math(cfg, TFRright_grandavg, TFRleft_grandavg);
-TFRrightSensorsDiff                      = ft_math(cfg, TFRleft_grandavg, TFRright_grandavg);
+% left_idx                                 = find(ismember(left_sensors, TFRleft_grandavg.label));
+% right_idx                                = find(ismember(right_sensors, TFRleft_grandavg.label));
+% 
+% cfg                                      = [];
+% cfg.parameter                            = 'powspctrm';
+% cfg.operation                            = '(10^(x1/10) - 10^(x2/10)) / (10^(x1/10) + 10^(x2/10))';
+% TFRleftSensorsDiff                       = ft_math(cfg, TFRright_grandavg, TFRleft_grandavg);
+% TFRrightSensorsDiff                      = ft_math(cfg, TFRleft_grandavg, TFRright_grandavg);
 %%
 TFRleft_grandavg_rawPow                  = TFRleft_grandavg;
 TFRright_grandavg_rawPow                 = TFRright_grandavg;
@@ -127,9 +127,9 @@ cfg                                      = [];
 cfg.figure                               = 'gcf';
 cfg.layout                               = lay;
 cfg.xlim                                 = [-0.3 1.7];
-cfg.ylim                                 = [40 150];
+cfg.ylim                                 = [4 40];
 % cfg.zlim                                 = [-0.06 0.06];
-cfg.zlim                                 = [0.98 1.02];
+cfg.zlim                                 = [0.8 1.2];
 cfg.colormap                             = '*RdBu';%'jet'; %'*RdBu';
 cfg.channel                              = left_sensors;
 cfg.title                                = 'Left Hemisphere';
@@ -148,7 +148,7 @@ cfg.channel                              = right_sensors;
 cfg.title                                = 'Right Hemisphere';
 ft_singleplotTFR(cfg, TFRright_basecorr)
 % Plot the difference
-cfg.zlim                                 = [-.02 0.02];
+cfg.zlim                                 = [-.1 0.1];
 subplot(3, 3, 7)
 cfg.channel                              = left_sensors;
 cfg.title                                = 'Left Hemisphere';
@@ -162,10 +162,10 @@ subplot(3, 3, 2)
 cfg                                      = [];
 cfg.figure                               = 'gcf';
 cfg.layout                               = lay;
-cfg.xlim                                 = [0.0 0.5];
-cfg.ylim                                 = [40 120];
+cfg.xlim                                 = [1 1.5];
+cfg.ylim                                 = [15 25];
 % cfg.zlim                                 = [-0.08 0.08];
-cfg.zlim                                 = [0.98 1.02];
+cfg.zlim                                 = [0.8 1.2];
 cfg.colormap                             = '*RdBu';%'jet'; %'*RdBu';
 cfg.interpolation                        = 'v4';
 cfg.comment                              = 'no';

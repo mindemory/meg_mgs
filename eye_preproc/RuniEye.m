@@ -27,7 +27,7 @@ ii_params.drift_fixation_mode  = 'mode';
 %ii_params.calibrate_epoch = [11 12 13 14 15 16 17 18 19 20]; % XDAT value for when we calibrate (feedback stim)
 ii_params.calibrate_epoch = [5]; % XDAT value for when we calibrate (feedback stim)
 
-ii_params.calibrate_select_mode = 'nearest'; % how do we select fixation with which to calibrate?
+ii_params.calibrate_select_mode = 'nearest_longdwell'; % how do we select fixation with which to calibrate?
 ii_params.calibrate_mode = 'scale'; % scale: trial-by-trial, rescale each trial; 'run' - run-wise polynomial fit
 ii_params.blink_thresh = 0.1;
 ii_params.blink_window = [100 100]; % how long before/after blink (ms) to drop?

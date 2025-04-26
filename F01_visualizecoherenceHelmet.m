@@ -30,44 +30,55 @@ for iii                 = 1:4
 end
 
 %%
+
+%% Normalized coh
+TFR_coh_norm = TFR_coh;
+for iii = 1:4
+    thisPow = TFR_coh_norm.(fieldNames{iii}).TFR_coh.powspctrm;
+    thisPowMean = mean(thisPow(:), "all", 'omitnan');
+    thisPowStd = std(thisPow(:), [], 'all', 'omitnan');
+    thisPowNorm = (thisPow - thisPowMean) / thisPowStd;
+    TFR_coh_norm.(fieldNames{iii}).TFR_coh.powspctrm = thisPowNorm;
+end
 % freqbands                       = {'theta', 'alpha', 'beta'};
-freqbands                       = {'theta'};
+freqbands                       = {'beta'};
 for ifx                         = 1:length(freqbands)
     freqband                    = freqbands{ifx};
     % ff                          = figure('Visible', 'off', 'Renderer','painters');
-    ff                          = figure;
+    ff                          = figure('Renderer', 'painters');
     tOnset                      = [-0.5 0.1 0.5 1  ];
     tOffset                     = [ 0   0.3 1   1.5];
     titleDict                   = {'Fixation', 'StimOn', 'Early Delay', 'Late Delay'};
     sgtitle(freqband)
     for iii                     = 1:4
-    for idx                     = 1:length(tOnset)
-        subplot(4, 4, (iii-1)*4 + idx)
-        cfg                     = [];
-        cfg.layout              = lay;
-        cfg.figure              = 'gcf';
-        cfg.xlim                = [tOnset(idx) tOffset(idx)];
-        if strcmp(freqband, 'theta')
-            cfg.ylim            = [5 8];
-        elseif strcmp(freqband, 'alpha')
-            cfg.ylim            = [8 12];
-        elseif strcmp(freqband, 'beta')
-            cfg.ylim            = [14 25];
+        for idx                     = 1:length(tOnset)
+            subplot(4, 4, (iii-1)*4 + idx)
+            cfg                     = [];
+            cfg.layout              = lay;
+            cfg.figure              = 'gcf';
+            cfg.xlim                = [tOnset(idx) tOffset(idx)];
+            if strcmp(freqband, 'theta')
+                cfg.ylim            = [5 8];
+            elseif strcmp(freqband, 'alpha')
+                cfg.ylim            = [8 12];
+            elseif strcmp(freqband, 'beta')
+                cfg.ylim            = [14 25];
+            end
+            % cfg.zlim                = [0 0.3];
+            cfg.zlim                = [-1 1];
+            cfg.marker              = 'off';
+            cfg.parameter           = 'powspctrm';
+            cfg.colormap            = '*RdBu';
+            cfg.highlight           = 'on'; 
+            cfg.highlightchannel    = seed_sensors.(fieldNames{iii});
+            cfg.highlightsymbol     = '+';
+            cfg.highlightcolor      = [0 1 0];
+            cfg.hightlightsize      = 40;
+            cfg.hightlightfontsize  = 30;
+        
+            cfg.title = titleDict{idx};
+            ft_topoplotTFR(cfg, TFR_coh_norm.(fieldNames{iii}).TFR_coh)
         end
-        cfg.zlim                = [0 0.2];
-        cfg.marker              = 'off';
-        cfg.parameter           = 'powspctrm';
-        cfg.colormap            = '*RdBu';
-        cfg.highlight           = 'on'; 
-        cfg.highlightchannel    = seed_sensors.(fieldNames{iii});
-        cfg.highlightsymbol     = '+';
-        cfg.highlightcolor      = [0 1 0];
-        cfg.hightlightsize      = 40;
-        cfg.hightlightfontsize  = 30;
-    
-        cfg.title = titleDict{idx};
-        ft_topoplotTFR(cfg, TFR_coh.(fieldNames{iii}).TFR_coh)
-    end
     end
 %     fPath = ['/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/group_plots/' freqband '_coh_topo_' file_suffix '.svg'];
 %     saveas(ff, fPath)

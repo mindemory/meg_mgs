@@ -37,7 +37,7 @@ for sIdx = 1:length(subList)
     % end
     load('NYUKIT_helmet.mat');
 
-    stimLocked_fpath = [derivativesRoot filesep fNameRoot '_stimlocked.mat'];
+    stimLocked_fpath = [derivativesRoot filesep fNameRoot '_stimlocked_lineremoved.mat'];
     % TFR_fpath = [derivativesRoot filesep fNameRoot '_TFR_evoked.mat'];
     % if ~exist(TFR_fpath, 'file')
     % disp('TFR does not exist, creating it.')

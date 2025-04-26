@@ -4,7 +4,7 @@ warning('off', 'all');
 %% Initialization
 addpath('/d/DATD/hyper/software/fieldtrip-20250318/');
 ft_defaults;
-addpath('/d/DATD/hyper/experiments/Mrugank/meg_mgs');
+addpath(genpath('/d/DATD/hyper/experiments/Mrugank/meg_mgs'));
 
 % subjID = 1; % change this to run a different subject
 

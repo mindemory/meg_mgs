@@ -2,18 +2,17 @@
 clear; close all; clc;
 warning('off', 'all');
 %% Initialization
-% p.subjID          = subjID;
-% [p]               = initialization(p, 'ecog');
-
-addpath('/d/DATD/hyper/software/fieldtrip-20220104/');
+addpath('/d/DATD/hyper/software/fieldtrip-20250318/'); 
 ft_defaults;
+addpath(genpath('/d/DATD/hyper/experiments/Mrugank/meg_mgs'));
 
 % subjID = 13; % change this to run a different subject
 
 % subList                                   = [1 2 3 4 5 6 7 8 9 10 11 12 13 15 ...
 %                                              16 17 18 19 20 22 23 24 25 26 27 ...
 %                                              28 29 30 31 32];
-subList                                   = [1 2 3 4];
+subList                                   = [16 17 18 19 20 22 23 24 25 26 27 ...
+                                             28 29 30 31 32 ];
 
 for sIdx                                  = 1:length(subList)
 
@@ -37,8 +36,8 @@ for sIdx                                  = 1:length(subList)
     % end
     load('NYUKIT_helmet.mat');
 
-    stimLocked_fpath                      = [derivativesRoot filesep fNameRoot '_stimlocked.mat'];
-    TFR_fpath                             = [derivativesRoot filesep fNameRoot '_TFR_highfreq_noiseremoved.mat'];
+    stimLocked_fpath                      = [derivativesRoot filesep fNameRoot '_stimlocked_lineremoved.mat'];
+    TFR_fpath                             = [derivativesRoot filesep fNameRoot '_TFR_highfreq_lineremoved.mat'];
     if ~exist(TFR_fpath, 'file')
         disp('TFR does not exist, creating it.')
         load(stimLocked_fpath);

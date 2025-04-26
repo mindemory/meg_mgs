@@ -1,11 +1,9 @@
 % function [TFR_power, TFR_itc, TFR_phase]       = compute_TFRs(data, base_corr)
-function TFR_fourier = compute_fullFourier(data, base_corr)
+function TFR_fourier                           = compute_fullFourier(data)
 % Created by Mrugank (10/04/2023)
 % Creates a complex fourier spectrogram and extract absolute power, ITC and
 % phase information.
-if nargin < 2
-    base_corr                                  = 0;
-end
+
 
 % Define frequencies, cycles and timepoints
 frequencies                                    = linspace(2, 40, 53);

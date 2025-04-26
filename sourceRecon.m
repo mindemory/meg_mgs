@@ -1,124 +1,245 @@
 clear; close all; clc;
 %% Initialization
-% addpath('/d/DATD/hyper/software/fieldtrip-20220104/');
 addpath('/d/DATD/hyper/software/fieldtrip-20250318/'); % 2022 doesn't work well for sourerecon
-% addpath('/d/DATD/home/sangi/matlab/fieldtrip_recent/fieldtrip-20120508');
-
 addpath(genpath('/d/DATD/hyper/experiments/Mrugank/meg_mgs'))
 ft_defaults;
+ft_hastoolbox('spm12', 1);
 
 %%
 % Load anatomicals
-mri_path             = '/d/DATD/datd/MEG_MGS/MEG_BIDS/freesurferOutput/CCanat/SUMA/T1.nii';
-pial_l_path          = '/d/DATD/datd/MEG_MGS/MEG_BIDS/freesurferOutput/CCanat/surf/lh.pial.asc';
-pial_r_path          = '/d/DATD/datd/MEG_MGS/MEG_BIDS/freesurferOutput/CCanat/surf/rh.pial.asc';
+% mri_path             = '/d/DATD/datd/MEG_MGS/MEG_BIDS/freesurferOutput/CCanat/SUMA/T1.nii';
+mri_path               = '/d/DATD/datd/MEG_MGS/MEG_BIDS/freesurferOutput/CCanat/mri/orig.mgz';
+% pial_l_path          = '/d/DATD/datd/MEG_MGS/MEG_BIDS/freesurferOutput/CCanat/surf/lh.pial.asc';
+% pial_r_path          = '/d/DATD/datd/MEG_MGS/MEG_BIDS/freesurferOutput/CCanat/surf/rh.pial.asc';
 
+% mri_path             = '/d/DATD/hyper/software/fieldtrip-20250318/template/headmodel/standard_mri.mat';
+% load(mri_path, 'mri');
 anatMRI              = ft_read_mri(mri_path);
-surfL                = readPial(pial_l_path);
-surfR                = readPial(pial_r_path);
+% anatMRI              = mri;
+anatMRI.coordsys = 'ras';
+% surfL                = readPial(pial_l_path);
+% surfR                = readPial(pial_r_path);
+% 
+% figure;
+% hold on;
+% trisurf(surfL.faces, surfL.vertices(:,1), surfL.vertices(:,2), surfL.vertices(:,3), ...
+%         'FaceColor', '#808080', 'EdgeColor', 'none');
+% trisurf(surfR.faces, surfR.vertices(:,1), surfR.vertices(:,2), surfR.vertices(:,3), ...
+%         'FaceColor', '#808080', 'EdgeColor', 'none');
+% axis equal;
+% camlight; 
+% lighting gouraud; 
 
-figure;
-hold on;
-trisurf(surfL.faces, surfL.vertices(:,1), surfL.vertices(:,2), surfL.vertices(:,3), ...
-        'FaceColor', '#808080', 'EdgeColor', 'none');
-trisurf(surfR.faces, surfR.vertices(:,1), surfR.vertices(:,2), surfR.vertices(:,3), ...
-        'FaceColor', '#808080', 'EdgeColor', 'none');
-axis equal;
-camlight; 
-lighting gouraud; 
 
-
-coordsys             = ft_determine_coordsys(anatMRI);
-% Set the coordinate system to 'r a s'
-anatMRI.coordsys     = coordsys.coordsys;
+% coordsys             = ft_determine_coordsys(anatMRI);
+% % Set the coordinate system to 'r a s'
+% anatMRI.coordsys     = coordsys.coordsys;
 
 %% Read headshape file
 hspPath              = '/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_headshape.hsp';
-% hspPath              = '/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-29/meg/sub-29_task-mgs_headshape.hsp';
 
 hspData              = ft_read_headshape(hspPath, 'unit', 'm');
-hspData              = ft_convert_units(hspData, 'cm');
-% hspData.unit         = 'm';
-% hspData.fid.label    = {'Nasion', 'LPA', 'RPA'}';
 hspData.fid.label    = {'Nasion', 'LPA', 'RPA'};
 
+% Read elpData
+elpPath              = '/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_electrodes.elp';
+[fidData, hpiData]   = readelpFile(elpPath);
+
 % Read raw data for gradiometers
-% load('/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-12/meg/sub-12_task-mgs_run-01_raw.mat')
-% load('/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-29/meg/sub-29_task-mgs_run-01_raw.mat')
+load('/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-12/meg/sub-12_task-mgs_run-01_raw.mat')
+gradData             = data.grad;
+gradData             = ft_convert_units(gradData, 'm');
+clearvars data;
+
+% Read hpilocations in gradiometer space
+nMrkFiles            =  3;
+hpiMrkData           = NaN(nMrkFiles, size(hpiData, 1), size(hpiData, 2));
 % 
-% gradData             = data.grad;
-% gradData             = ft_convert_units(gradData, 'm');
-% clearvars data;
-rawSqdPath           = '/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_run-01_meg.con';
-gradData             = ft_read_sens(rawSqdPath, 'senstype', 'meg');
-% gradData     = interp.grad;
-% gradData             = ft_convert_units(gradData, 'm');
-% Load layout
-load('NYUKIT_helmet.mat')
-
-figure;
-% ft_plot_mesh(hspData, 'vertexcolor', 'k', 'facealpha', 0.5);
-plot3(hspData.pos(:,1), hspData.pos(:,2), hspData.pos(:,3), ...
-        'ko', 'MarkerSize', 2, 'LineWidth', 2);
-hold on;
-if isfield(hspData, 'fid') && ~isempty(hspData.fid)
-    plot3(hspData.fid.pos(:,1), hspData.fid.pos(:,2), hspData.fid.pos(:,3), ...
-        'go', 'MarkerSize', 5, 'LineWidth', 2);
-    
-    text(hspData.fid.pos(:,1), hspData.fid.pos(:,2), hspData.fid.pos(:,3), ...
-        hspData.fid.label, 'FontSize', 12, 'Color', 'r');
+% raw_file1 = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_run-01_meg.sqd';
+for mrkIdx           = 1:nMrkFiles
+    raw_file_mrk     = ['/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_marker_' num2str(mrkIdx, '%02d') '.sqd'];
+    hdr_Mrk          = ft_read_header(raw_file_mrk);
+    hpiMrkData(mrkIdx, :, :) ...
+                     = cat(1, hdr_Mrk.orig.coregist.hpi.meg_pos);
 end
-ft_plot_sens(gradData, 'box', 1)
+hpiMrkData           = squeeze(mean(hpiMrkData, 1));
+% 
+% hdr.orig.coregist.hpi.meg_pos
+% 
+% hdr = ft_read_header(raw_file_mrk);
+% grad_raw = hdr.grad;
+% fid_raw = hdr.orig.coregist.hpi;
+% 
+% fid_raw_pos = cat(1, hdr.orig.coregist.hpi.meg_pos);
+% fid_label_raw =  cat(1, hdr.orig.coregist.hpi.label);
+% 
+% 
+% grad_raw_m = ft_convert_units(grad_raw, 'm');
 
-%% Read marker data
-% elpPath              = '/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_electrodes.elp';
-% fid                  = fopen(elpPath, 'r');
-% fgetl(fid); fgetl(fid); fgetl(fid); fgetl(fid); 
-% initData             = fscanf(fid, '%f', [inf])
+% %%
+% ft_plot_mesh(fid_raw_pos(1,:), 'vertexcolor', 'g'); hold on;
+% ft_plot_mesh(fid_raw_pos(2,:), 'vertexcolor', 'b');
+% ft_plot_mesh(fid_raw_pos(3,:), 'vertexcolor', 'y');
+% ft_plot_mesh(fid_raw_pos(4,:), 'vertexcolor', 'r');
+% ft_plot_mesh(fid_raw_pos(5,:), 'vertexcolor', 'm');
+% ft_plot_mesh(grad_raw_m.chanpos,'vertexcolor', 'k')
+% 
+% 
+% ft_plot_mesh(hspData.pos, 'vertexcolor','k'); hold on;
+% ft_plot_mesh(hpiData, 'vertexcolor', 'r')
+% ft_plot_mesh(hspData.fid, 'vertexcolor', 'g')
 
-elpData              = [0.010757  0.071798 -0.0040955; ...
-                        0.008311 -0.068209 -0.0062268; ...
-                        0.109662 -0.006658  0.0434818; ...
-                        0.095443  0.036879  0.0412703; ...
-                        0.089769 -0.044712  0.0452798];
-elpData = elpData .* 100;
+%%
 
-% elpData              = ft_read_sens(elpPath)
-headshape.pos        = [hspData.fid.pos; hspData.pos];
-headshape.unit       = 'm';
-% headshape.label{1}   = 'Nasion';
-% headshape.label{2}   = 'LPA';
-% headshape.label{3}   = 'RPA';
+%%
+headshape.pos        = [hpiData; fidData; hspData.pos];
+headshape.unit       = 'm'; 
 num_remaining_points = size(hspData.pos, 1); 
 remaining_labels     = cell(num_remaining_points, 1);
 for i                = 1:num_remaining_points
     remaining_labels{i} ...
                      = sprintf('head_%d', i);
 end
-headshape.label      = [{'Nasion', 'RPA', 'LPA'}, remaining_labels']';
-
-
-% }, 'LPA', 'RPA'}';
+headshape.label      = [{'LPA', 'RPA', 'NAS', 'HPI4', 'HPI5', 'nreal', ...
+                         'lreal', 'rreal'}, remaining_labels']';
 
 elec_dummy           = headshape;
 elec_dummy.elecpos   = headshape.pos;
 elec_dummy.chanpos   = elec_dummy.elecpos;
 
-elec_coil.elecpos    = elpData;%(1:3, :);
-elec_coil.label      = {'RPA', 'LPA', 'Nasion', 'l_extra', 'r_extra'}';
-elec_coil.unit       = 'm';
+hpi_coil.elecpos     = hpiMrkData;%(1:3, :);
+hpi_coil.label       = {'LPA', 'RPA', 'NAS', 'HPI4', 'HPI5'}';
+hpi_coil.unit        = 'm';
 
 cfg                  = [];
 cfg.method           = 'fiducial';
-cfg.template         = elec_coil;
+cfg.template         = hpi_coil;
 cfg.elec             = elec_dummy;
 cfg.feedback         = 'yes';
-cfg.fiducial         = {'Nasion', 'LPA', 'RPA'}';
+cfg.fiducial         = {'NAS', 'LPA', 'RPA'}';
 elec_aligned         = ft_electroderealign(cfg);
 %%
+% % 
+% % hspCorrected         = hspData;
+% % hspCorrected.pos     = elec_aligned.chanpos(9:end, :);
+% % hspCorrected.fid.pos = elec_aligned.chanpos(6:8, :);
+% % hspCorrected.fid.label ...
+% %                      = {'NAS', 'LPA', 'RPA'};
+% % 
+% % figure;
+% % ft_plot_mesh(hspCorrected, 'vertexcolor', 'k', 'facealpha', 0.5);
+% % % ft_plot_mesh(hspCorrected, 'vertexcolor', 'k', 'facealpha', 0.5);
+% % 
+% % hold on;
+% % if isfield(hspCorrected, 'fid') && ~isempty(hspCorrected.fid)
+% %     plot3(hspCorrected.fid.pos(:,1), hspCorrected.fid.pos(:,2), hspCorrected.fid.pos(:,3), ...
+% %           'go', 'MarkerSize', 5, 'LineWidth', 2);
+% %     text(hspCorrected.fid.pos(:,1), hspCorrected.fid.pos(:,2), hspCorrected.fid.pos(:,3), ...
+% %          hspCorrected.fid.label, 'FontSize', 12, 'Color', 'r');
+% % end
+% 
+% figure;
+% ft_plot_sens(gradData, 'box', 1); hold on;
+% % ft_plot_mesh(mrkData, 'vertexcolor', 'b', 'vertexsize', 20)
+% ft_plot_mesh(elec_aligned.chanpos);
+% 
+% ft_plot_mesh(fid_raw_pos(1,:), 'vertexcolor', 'g'); hold on;
+% ft_plot_mesh(fid_raw_pos(2,:), 'vertexcolor', 'b');
+% ft_plot_mesh(fid_raw_pos(3,:), 'vertexcolor', 'y');
+% ft_plot_mesh(fid_raw_pos(4,:), 'vertexcolor', 'r');
+% ft_plot_mesh(fid_raw_pos(5,:), 'vertexcolor', 'm');
+% ft_plot_mesh(grad_raw_m.chanpos,'vertexcolor', 'k');
+% elec_ref = elec_aligned;
+% elec_ref.label(1:3,:) = {'HPI1'; 'HPI2'; 'HPI3'};
+% elec_ref.label(6:8,:) = {'NAS'; 'LPA'; 'RPA'};
+% hs_new = [];
+% hs_new.label = elec_ref.label;
+% hs_new.pos = elec_aligned.chanpos;
+% hs_new.unit = 'm';
+% %%
+% restoredefaultpath;
+% addpath('/d/DATD/hyper/software/fieldtrip-20250318/'); % 2022 doesn't work well for sourerecon
+% addpath(genpath('/d/DATD/hyper/experiments/Mrugank/meg_mgs'))
+% ft_defaults;
+% cfg                  = [];
+% cfg.method           = 'headshape';
+% cfg.spmversion       = 'spm12';
+% cfg.headshape.headshape ...
+%                      = hs_new;
+% cfg.headshape.icp    = 'yes';
+% mri_aligned          = ft_volumerealign(cfg, anatMRI);
+% 
+% %%
+% grad_raw_mm = ft_convert_units(grad_raw_m, 'mm');
+% hs_new_mm  = ft_convert_units(hs_new, 'mm');
+% 
+% ft_plot_sens(grad_raw_mm, 'style', '*b', ...
+%     'facecolor' , 'y', 'facealpha' , 0.5);
+% hold on;
+% ft_plot_mesh(hs_new_mm.pos, 'vertexcolor', 'r');
+% ft_plot_ortho(mri_aligned.anatomy,'transform',mri_aligned.transform,'style','intersect');
+% %% now create grid...
+% 
+% 
+% %%
+% %% needs to be resliced so VOL is aligned to grad
+% 
+% %%
+% 
+% mrkData = fid_raw_pos;
+% 
+% figure;
+% plot3(hspData.pos(:,1), hspData.pos(:,2), hspData.pos(:,3), ...
+%         'ko', 'MarkerSize', 2, 'LineWidth', 2);
+% hold on;
+% if isfield(hspData, 'fid') && ~isempty(hspData.fid)
+%     plot3(hspData.fid.pos(:,1), hspData.fid.pos(:,2), hspData.fid.pos(:,3), ...
+%         'go', 'MarkerSize', 5, 'LineWidth', 2);
+% 
+%     text(hspData.fid.pos(:,1), hspData.fid.pos(:,2), hspData.fid.pos(:,3), ...
+%         hspData.fid.label, 'FontSize', 12, 'Color', 'r');
+% end
+% ft_plot_sens(gradData, 'box', 1)
+% ft_plot_mesh(mrkData, 'vertexcolor', 'b', 'vertexsize', 20)
+% ft_plot_mesh(hpiData, 'vertexcolor', 'm', 'vertexsize', 20)
+% 
+% %% Realign data
+% headshape.pos        = [hpiData; fidData; hspData.pos];
+% headshape.unit       = 'm';   
+% num_remaining_points = size(hspData.pos, 1); 
+% remaining_labels     = cell(num_remaining_points, 1);
+% for i                = 1:num_remaining_points
+%     remaining_labels{i} ...
+%                      = sprintf('head_%d', i);
+% end
+% headshape.label      = [{'LPA', 'RPA', 'NAS', 'HPI4', 'HPI5', 'nreal', ...
+%                          'lreal', 'rreal'}, remaining_labels']';
+% 
+% elec_dummy           = headshape;
+% elec_dummy.elecpos   = headshape.pos;
+% elec_dummy.chanpos   = elec_dummy.elecpos;
+% 
+% hpi_coil.elecpos     = mrkData;%(1:3, :);
+% hpi_coil.label       = {'LPA', 'RPA', 'NAS', 'HPI4', 'HPI5'}';
+% hpi_coil.unit        = 'm';
+% 
+% cfg                  = [];
+% cfg.method           = 'fiducial';
+% cfg.template         = hpi_coil;
+% cfg.elec             = elec_dummy;
+% cfg.feedback         = 'yes';
+% cfg.fiducial         = {'NAS', 'LPA', 'RPA'}';
+% elec_aligned         = ft_electroderealign(cfg);
+%%
 hspCorrected         = hspData;
-hspCorrected.pos     = elec_aligned.chanpos(4:end, :);
-hspCorrected.fid.pos = elec_aligned.chanpos(1:3, :);
+hspCorrected.pos     = elec_aligned.chanpos(9:end, :);
+hspCorrected.fid.pos = elec_aligned.chanpos(6:8, :);
+hspCorrected.fid.label ...
+                     = {'NAS', 'LPA', 'RPA'};
+% Convert units back to mm
+hspCorrected         = ft_convert_units(hspCorrected, 'mm');
+gradData             = ft_convert_units(gradData, 'mm');
+hpiMrkData           = hpiMrkData .* 1000;
 
 figure;
 ft_plot_mesh(hspCorrected, 'vertexcolor', 'k', 'facealpha', 0.5);
@@ -132,57 +253,85 @@ if isfield(hspCorrected, 'fid') && ~isempty(hspCorrected.fid)
          hspCorrected.fid.label, 'FontSize', 12, 'Color', 'r');
 end
 ft_plot_sens(gradData, 'box', 1)
-ft_plot_mesh(elpData, 'vertexcolor', 'b', 'vertexsize', 20)
-
-
-%%
-mrkPth = '/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_marker_01.sqd';
-cfg = [];
-cfg.dataset = mrkPth;
-ss = ft_read_sens(mrkPth);
-ss = ft_convert_units(ss, 'm');
+ft_plot_mesh(hpiMrkData, 'vertexcolor', 'b', 'vertexsize', 20)
 
 %% Align anatomical with hsp
+restoredefaultpath;
+addpath('/d/DATD/hyper/software/fieldtrip-20250318/');
+addpath(genpath('/d/DATD/hyper/experiments/Mrugank/meg_mgs'))
+ft_defaults;
 cfg                  = [];
 cfg.method           = 'headshape';
+cfg.spmversion       = 'spm12';
 cfg.headshape.headshape ...
-                     = hspData;
+                     = hspCorrected;
+cfg.headshape.coordsys = 'als';
 cfg.headshape.icp    = 'yes';
-cfg.headshape.interactive ...66
-                     = 'yes';
+cfg.headshape.interactive = 'no';  
 mri_aligned          = ft_volumerealign(cfg, anatMRI);
 
+% cfg.headshape.interactive = 'yes';
+% mri_aligned           = ft_volumerealign(cfg, mri_aligned);
+
+% cfg = [];
+% cfg.method = 'ortho'; % Orthographic view
+% cfg.interactive = 'yes';
+% ft_sourceplot(cfg, mri_aligned);
+% 
+% % To check fiducial alignment
+% hold on;
+% ft_plot_sens(mri_aligned.cfg.fiducial, 'label', 'yes', 'orientation', true);
+% 
+% cfg = [];
+% cfg.interactive = 'yes';
+% ft_volumerealign(cfg, mri_aligned);
+% gradData.fid.pnt     = hspCorrected.fid.pos;
+% gradData.fid.label   = hspCorrected.fid.label;
 
 % For sub-12:
-% rotate (0, 30, -92)
-% scale (0.96, 0.96, 0.96)
-% translate (0, 0, 42)
-% ft_volumerealign(cfg, mri_aligned)
+% rotate (0, 15, 270)
+% scale (1, 1, 1)
+% translate (0, 2, 13)
+
+% cfg = [];
+% cfg.method = 'ortho';
+% cfg.interactive = 'yes';
+% ft_sourceplot(cfg, anatMRI)
+figure;
+ft_plot_headshape(hspCorrected);
+hold on;
+ft_plot_ortho(mri_aligned.anatomy,'transform',mri_aligned.transform,'style','intersect');
 
 %% Transform pial accordingly
-pial                 = [];
-pial.pos             = [surfL.vertices; surfR.vertices];
-pial.tri             = [surfL.faces; surfR.faces + size(surfL.vertices, 1)];
-
-% Calculate the combined transformation
-T_orig               = mri_aligned.transformorig;
-T_new                = mri_aligned.transform;
-T_combined           = T_new / T_orig;  % This is equivalent to T_new * inv(T_orig)
-
-% Apply the transformation to the pial surface vertices
-homogeneous_coords   = [pial.pos, ones(size(pial.pos, 1), 1)]';
-transformed_coords   = T_combined * homogeneous_coords;
-pial.pos             = transformed_coords(1:3, :)';
-pial                 = ft_convert_units(pial, 'm');
+% pial                 = [];
+% pial.pos             = [surfL.vertices; surfR.vertices];
+% pial.tri             = [surfL.faces; surfR.faces + size(surfL.vertices, 1)];
+% 
+% % Calculate the combined transformation
+% T_orig               = mri_aligned.transformorig;
+% T_new                = mri_aligned.transform;
+% T_combined           = T_new / T_orig;  % This is equivalent to T_new * inv(T_orig)
+% 
+% % Apply the transformation to the pial surface vertices
+% homogeneous_coords   = [pial.pos, ones(size(pial.pos, 1), 1)]';
+% transformed_coords   = T_combined * homogeneous_coords;
+% pial.pos             = transformed_coords(1:3, :)';
+% pial                 = ft_convert_units(pial, 'mm');
 
 %% Slice, segment and create headmodel
-% Slice the data
+% % Slice the data
 mri_reslice          = ft_volumereslice([], mri_aligned);
-mri_reslice          = ft_convert_units(mri_reslice, 'm');
-% Segment the mri
+
+% % cfg                  = [];
+% % cfg.nonlinear        = 'no';
+% % cfg.templatecoordys  = 'ras';
+% % mri_reslice          = ft_volumenormalise(cfg, mri_reslice);
+% % Segment the mri
 cfg                  = [];
 cfg.output           = {'brain'};
 segmentedmri         = ft_volumesegment(cfg, mri_reslice);
+
+% ft_volumegui([], segmentedmri);  % Check segmentation
 
 %%
 cfg                  = [];
@@ -195,6 +344,30 @@ plot3(singleShellHeadModel.bnd.pos(:, 1), singleShellHeadModel.bnd.pos(:, 2), si
 hold on;
 plot3(gradData.chanpos(:, 1), gradData.chanpos(:, 2), gradData.chanpos(:, 3), 'bs')
 axis equal;
+%%
+cfg                  = [];
+cfg.nonlinear        = 'no';
+mri_reslice_mni      = ft_volumenormalise(cfg, mri_reslice);
+
+transform_vox2ctf    = mri_reslice.transform;
+transform_vox2acpc   = inv(mri_reslice_mni.transform);
+transform_acpc2ctf   = transform_vox2ctf / transform_vox2acpc;
+
+cfg                  = [];
+cfg.output           = {'brain'};
+segmentedmri_mni         = ft_volumesegment(cfg, mri_reslice_mni);
+
+cfg                  = [];
+cfg.method           = 'singleshell';
+singleShellHeadModel_mni = ft_prepare_headmodel(cfg, segmentedmri_mni);
+%%
+singleShellHeadModel_mni_transformed = ft_transform_geometry(transform_vox2acpc, singleShellHeadModel_mni);
+figure;
+ft_plot_mesh(singleShellHeadModel.bnd, 'facecolor', 'g',...
+    'facealpha', 0.2); % brain
+hold on;
+ft_plot_mesh(singleShellHeadModel_mni_transformed.bnd, 'facecolor', 'g',...
+    'facealpha', 0.2);
 %%
 % Volume conduction model
 % cfg                  = [];
@@ -219,65 +392,121 @@ axis equal;
 % grid                 = ft_prepare_sourcemodel(cfg);
 
 
-cfg                  = [];
-cfg.method           = 'basedonmri';
-cfg.mri              = segmentedmri;
-cfg.threshold        = 0.1;
-cfg.smooth           = 5;
-cfg.resolution       = 0.004; % in m
-cfg.sourcemodel.unit = 'm';
-cfg.tight            = 'yes';
-cfg.inwardshift      = 0.002; % Around 5mm inward shift
-cfg.headmodel        = singleShellHeadModel;
-grid                 = ft_prepare_sourcemodel(cfg);
+% T_orig               = mri_aligned.transformorig;
+% T_new                = mri_aligned.transform;
+% T_gradspace           = T_new * T_orig; 
+% load('/d/DATD/hyper/software/fieldtrip-20250318/template/headmodel/standard_seg.mat');
+load('/d/DATD/hyper/software/fieldtrip-20250318/template/headmodel/standard_singleshell.mat');
+% % load('/d/DATD/hyper/software/fieldtrip-20250318/template/sourcemodel/standard_sourcemodel3d8mm.mat');
+% mri_reslice          = mri;
+% mri_reslice.coorsys  = 'ras';
+% 
+templateheadmodel    = ft_convert_units(vol, 'mm');
+templateheadmodel    = ft_transform_geometry(transform_acpc2ctf, templateheadmodel);
+% cfg                  = [];
+% cfg.grid.resolution  = 8;
+% cfg.grid.unit        = 'mm';
+% cfg.tight            = 'yes';
+% % cfg.inwardshift      = 5;
+% cfg.headmodel        = templateheadmodel;
+% templateGrid         = ft_prepare_sourcemodel(cfg);
+% templateGrid         = sourcemodel;
+% templateGrid         = ft_convert_units(sourcemodel, 'mm');
+% templateGrid         = ft_transform_geometry(transform_acpc2vox, templateGrid);
+
+% cfg                  = [];
+% cfg.warpmni          = 'yes';
+% cfg.template         = templateGrid;
+% cfg.nonlinear        = 'yes';
+% cfg.mri              = mri_reslice;
+% cfg.sourcemodel.unit = 'mm';
+% grid                 = ft_prepare_sourcemodel(cfg);
+
+% cfg                    = [];
+% cfg.method           = 'basedonmni';
+% cfg.template         = templateGrid;
+% cfg.nonlinear        = 'yes';
+% cfg.mri              = mri_reslice;
+% cfg.unit             = 'mm';
+% % cfg.grid.resolution  = 8;
+% % cfg.inwardshift      = 'yes';
+% % cfg.tight            = 'yes';
+% % cfg.sourcemodel.unit    = 'mm';
+% % 
+% grid                 = ft_prepare_sourcemodel(cfg);
+
+% cfg                  = [];
+% cfg.method           = 'basedonmri';
+% cfg.mri              = segmentedmri;
+% cfg.threshold        = 0.1;
+% cfg.smooth           = 5;
+% cfg.resolution       = 0.01; % in m
+% cfg.sourcemodel.unit = 'm';
+% cfg.tight            = 'yes';
+% cfg.inwardshift      = 0.005; % Around 5mm inward shift
+% cfg.headmodel        = singleShellHeadModel;
+% grid                 = ft_prepare_sourcemodel(cfg);
 %%
-idxChosen = grid.inside;
+% cfg                  = [];
+% cfg.nonlinear        = 'no';
+% mri_reslice_mni      = ft_volumenormalise(cfg, mri_reslice);
+%% plot the shared individual grid
 figure;
-plot3(singleShellHeadModel.bnd.pos(:, 1), singleShellHeadModel.bnd.pos(:, 2), singleShellHeadModel.bnd.pos(:, 3), 'ro')
+ft_plot_mesh(singleShellHeadModel.bnd, 'facecolor', 'g',...
+    'facealpha', 0.2); % brain
+hold on;
+ft_plot_mesh(templateheadmodel.bnd, 'facecolor', 'g',...
+    'facealpha', 0.2);
+% ft_plot_mesh(grid.pos(grid.inside,:), ...
+%     'vertexcolor', 'r');
+% %
+% 
+% ft_plot_ortho(mri_reslice.anatomy, 'style', 'intersect', ...
+%     'transform', mri_reslice.transform)
+% hold on;
+% % ft_plot_mesh(headmodel.bnd, 'facecolor', 'k', 'facealpha', 0.2); % brain
+% % view([0 -1 0]); % from the right side
+% % 
+% % 
+% % ft_plot_mesh(grid.pos(grid.inside,:), ...
+% %     'vertexcolor', [1 0 0]);
+% ft_plot_sens(gradData, 'facecolor', 'g','edgecolor', 'g')
+%%
+idxChosen            = grid.inside;
+figure;
+plot3(singleShellHeadModel.bnd.pos(:, 1), ...
+      singleShellHeadModel.bnd.pos(:, 2), ...
+      singleShellHeadModel.bnd.pos(:, 3), 'ro')
 hold on;
 plot3(gradData.chanpos(:, 1), gradData.chanpos(:, 2), gradData.chanpos(:, 3), 'bs')
 plot3(grid.pos(idxChosen, 1), grid.pos(idxChosen, 2), grid.pos(idxChosen, 3), 'ko')
 axis equal;
 %%
-% Create leadfield
-cfg                  = [];
-cfg.grad             = gradData;
-cfg.channel          = gradData.label;
-cfg.grid             = grid;
-cfg.headmodel        = singleShellHeadModel;
-leadfield            = ft_prepare_leadfield(cfg);
-
-%%
-figure;
-plot3(singleShellHeadModel.bnd.pos(:, 1), singleShellHeadModel.bnd.pos(:, 2), singleShellHeadModel.bnd.pos(:, 3), 'ro')
-hold on;
-plot3(gradData.chanpos(:, 1), gradData.chanpos(:, 2), gradData.chanpos(:, 3), 'bs')
-plot3(leadfield.pos(:, 1), leadfield.pos(:, 2), leadfield.pos(:, 3), 'yo')
-axis equal;
+% % Create leadfield
+% cfg                  = [];
+% cfg.grad             = gradData;
+% cfg.channel          = gradData.label;
+% cfg.grid             = grid;
+% cfg.headmodel        = singleShellHeadModel;
+% leadfield            = ft_prepare_leadfield(cfg);
+% 
+% %%
+% figure;
+% plot3(singleShellHeadModel.bnd.pos(:, 1), singleShellHeadModel.bnd.pos(:, 2), singleShellHeadModel.bnd.pos(:, 3), 'ro')
+% hold on;
+% plot3(gradData.chanpos(:, 1), gradData.chanpos(:, 2), gradData.chanpos(:, 3), 'bs')
+% plot3(leadfield.pos(:, 1), leadfield.pos(:, 2), leadfield.pos(:, 3), 'yo')
+% axis equal;
 
 %% plot individual grid
-figure();
-ft_plot_mesh(dipoliHeadModel.bnd, 'facecolor', 'k',...
-    'facealpha', 0.2); % scalp
-hold on;
-ft_plot_mesh(grid.pos(grid.inside,:), ...
-    'vertexcolor', 'r');
-
-
 sourcemodelfPath     = '/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-12/anatomy/sourcemodel.mat';
-save(sourcemodelfPath, 'pial', 'mri_aligned', 'mri_reslice', 'segmentedmri', ...
-    'singleShellHeadModel', 'grid', '-v7.3')
-
+save(sourcemodelfPath, 'gradData', 'mrkData', 'hspCorrected', 'mri_reslice', ...
+    'mri_aligned', 'pial', 'segmentedmri', 'singleShellHeadModel', 'grid', '-v7.3');
 load(sourcemodelfPath);
 
 %% lcmv beamformer
-% cfg                 = [];
-% cfg.frequency       = [5 8];
-% cfg.latency         = [-0.1 1.7];
-% TFR_selected        = ft_selectdata(cfg, TFR_fourier_left);
-
 % Load stimlocked data
-load('/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-12/meg/sub-12_task-mgs_stimlocked.mat')
+load('/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-12/meg/sub-12_task-mgs_stimlocked_lineremoved.mat')
 % Load the data
 epocThis                          = epocStimLocked;
 
@@ -310,25 +539,37 @@ epocLeft                          = ft_selectdata(cfg, epocThis);
 cfg                               = [];
 cfg.trials                        = valid_trialsRight;
 epocRight                         = ft_selectdata(cfg, epocThis);
-
-%%%%% Average reference
+% 
+% %%%%% Average reference >> absolutely not
 % cfg                               = [];
 % cfg.reref                         = 'yes';
 % cfg.refchannel                    = 'all';
 % cfg.refmethod                     = 'avg';
 % epocLeft                          = ft_preprocessing(cfg, epocLeft);
 % epocRight                         = ft_preprocessing(cfg, epocRight);
+epocCombined                      = ft_appenddata([], epocLeft, epocRight);
 
+%%
+cfg = [];
+cfg.bpfilter = 'yes';
+cfg.bpfreq = [20 25];
+epoc_filter = ft_preprocessing(cfg, epocCombined);
+cfg = [];
+cfg.latency = [-0.5 0];
+epoc_pre = ft_selectdata(cfg, epoc_filter);
+cfg.latency = [1 1.5];
+epoc_post = ft_selectdata(cfg, epoc_filter);
+epocCombined                      = ft_appenddata([], epoc_pre, epoc_post);
 
-% cfg                               = [];
-% cfg.covariance                    = 'yes';
-% cfg.covariancewindow              = 'all';
-% cfg.keeptrials                    = 'yes';
+%%
+% Compute timelocked data with covariance
+cfg                               = [];
+cfg.covariance                    = 'yes';
+cfg.covariancewindow              = 'all';
+cfg.keeptrials                    = 'no';
 % timelockedLeft                    = ft_timelockanalysis(cfg, epocLeft);
 % timelockedRight                   = ft_timelockanalysis(cfg, epocRight);
-% timelockedCombined                = ft_appenddata([], timelockedLeft,
-% timelockedRight);
-
+timelockedCombined                = ft_timelockanalysis(cfg, epocCombined);
 %%        
 cfg                               = [];
 cfg.method                        = 'lcmv';
@@ -341,15 +582,29 @@ cfg.lcmv.fixedori                 = 'yes';
 cfg.lcmv.lambda                   = '1%';  % must be '1%' not 1
 % cfg.normalize                     = 'yes'; % normalize LF to attenuate depth bias
 % cfg.normalizeparam                = 0.5; % default = 0.5
-source                            = ft_sourceanalysis(cfg, timelockedLeft);
+source                            = ft_sourceanalysis(cfg, timelockedCombined);
 inside_pos                        = find(source.inside);
 
+%%
 % figure();
 % ft_plot_mesh(source); , 'vertexcolor', 100)
 % 
 % cfg = [];
 % cfg.funparameter = 'pow';
 % ft_sourcemovie(cfg, source);
+
+% % Reconstruct sensor data
+% source_signal = cat(1, source.avg.mom{inside_pos});
+% % reconstructed_data = source.leadfield{inside_pos(1)} * source_signal(1:3,:); % For first source
+% reconstructed_data = W_meg' * source_signal;
+% 
+% % Compare to original ERP at peak latency
+% [~, peak_idx] = max(abs(squeeze(mean(timelockedCombined.avg, 1, 'omitnan'))));
+% figure; plot(timelockedCombined.time, timelockedCombined.avg(1, :), 'k'); hold on;
+% plot(timelockedCombined.time, reconstructed_data(1, :), 'r--');
+% axvline(timelockedCombined.time(peak_idx))
+% legend('Original', 'Reconstructed');
+
 
 %% Extract all filters for inside voxels
 W_meg               = cell2mat(source.avg.filter(source.inside));
@@ -361,28 +616,40 @@ for i               = 1:numel(inside_pos)
     sourcedata.label{i} ...
                     = sprintf('S_%d', inside_pos(i));
 end
-sourcedataLeft      = sourcedata;
-sourcedataRight     = sourcedata;
+sourcedataPost      = sourcedata;
+sourcedataPre     = sourcedata;
 
 epocLeft_filt       = epocLeft;
 epocRight_filt      = epocRight;
-cfg                 = [];
-cfg.lpfreq          = 50;
-cfg.lpfilter        = 'yes';
-epocLeft_filt       = ft_preprocessing(cfg, epocLeft);
-epocRight_filt      = ft_preprocessing(cfg, epocRight);
+%%
+for iTrial          = 1:size(epoc_pre.trialinfo, 1)
+    sourcedataPre.trial{iTrial} ...
+                    = W_meg * epoc_pre.trial{iTrial};
+end
+for iTrial          = 1:size(epoc_post.trialinfo, 1)
+    sourcedataPost.trial{iTrial} ...
+                    = W_meg * epoc_post.trial{iTrial};
+end
 
-cfg                 = [];
-cfg.resamplefs      = 50;
-cfg.demean          = 'no';
-cfg.detrend         = 'no';
-epocLeft_filt       = ft_resampledata(cfg, epocLeft_filt);
-epocRight_filt      = ft_resampledata(cfg, epocRight_filt);
+vars_pre = zeros(size(var(sourcedataPre.trial{tt},0, 2)));
+vars_post  = zeros(size(var(sourcedataPre.trial{tt},0, 2)));
 
+for tt = 1: numel(sourcedataPre.trial)
+    vars_pre = vars_pre + var(sourcedataPre.trial{tt},0, 2);
+end
+vars_pre = vars_pre./numel(sourcedataPre.trial)
+for tt = 1: numel(sourcedataPost.trial)
+    vars_post = vars_post + var(sourcedataPost.trial{tt},0, 2);
+end
+vars_post = vars_post./numel(sourcedataPost.trial);
+
+source_val = (vars_post - vars_pre)./(vars_post + vars_pre);
+
+%%
 % Bandpass filter data in frequency of interest
 cfg                 = [];
 cfg.bpfilter        = 'yes';
-cfg.bpfreq          = [8 12];
+cfg.bpfreq          = [20 25];
 sourcedataLeft.trial ...
                     = cell(1, size(epocLeft_filt.trialinfo, 1));
 sourcedataLeft.time = epocLeft_filt.time; % thEpocData.time{1};
@@ -390,6 +657,7 @@ sourcedataRight.trial ...
                     = cell(1, size(epocRight_filt.trialinfo, 1));
 sourcedataRight.time ...
                     = epocRight_filt.time;
+
 for iTrial          = 1:size(epocLeft_filt.trialinfo, 1)
     sourcedataLeft.trial{iTrial} ...
                     = W_meg * epocLeft_filt.trial{iTrial};
@@ -424,74 +692,37 @@ sourceDataLeft_avg  = ft_timelockanalysis(cfg, sourcedataLeft);
 sourceDataRight_avg = ft_timelockanalysis(cfg, sourcedataRight);
 
 cfg                 = [];
-cfg.parameter       = 'avg';  % Specify the parameter to operate on
-% cfg.operation       = '(10^(x1/10) - 10^(x2/10)) / (10^(x1/10) + 10^(x2/10))';
+cfg.parameter       = 'avg';  
 cfg.operation       = '(x1-x2)/(x1+x2)';
 sourceDiff          = ft_math(cfg, sourceDataLeft_avg, sourceDataRight_avg);
 
+% clearvars sourcedataLeft sourcedataRight;
+
 %% Visualize source
-TOI                 = find(sourceDiff.time > 0.5 & sourceDiff.time < 1.0);
+TOI                 = find(sourceDiff.time > 1.0 & sourceDiff.time < 1.5);
 sourceVisualize     = source;
-sourceVisualize.lateralizedPow ...
+sourceVisualize.pow =  nan(size(source.inside));
+sourceVisualize.pow(source.inside)= source_val;
+
+alize.lateralizedPow ...
                     = NaN(size(source.inside));
 sourceVisualize.lateralizedPow(source.inside) ...
                     = squeeze(mean(sourceDiff.avg(:, TOI), 2, 'omitnan'));
 
 %%
 cfg                 = [];
-cfg.parameter       = {'lateralizedPow'};
+cfg.parameter       = {'pow'};
 [interp]            = ft_sourceinterpolate(cfg, sourceVisualize, mri_reslice);
 
 cfg = [];
 cfg.method        = 'ortho';
 cfg.crosshair = 'yes';
-cfg.funparameter  = 'lateralizedPow';
+cfg.funparameter  = 'pow';
 cfg.funcolormap = 'jet';
 % cfg.funcolorlim   = [0 0.06];
 cfg.location = [2 38 48];
 ft_sourceplot(cfg, interp);
 
-%% try on pial surface
-pial = [];
-pial.pos = [surfL.vertices; surfR.vertices];
-pial.tri = [surfL.faces; surfR.faces + size(surfL.vertices, 1)];
-% pial.unit = 'm';
-% pial.pos(:, [2, 3, 1]) = pial.pos(:, [3, 1, 2]);
-% pial.coordsys = 'ras';
-
-T_orig = mri_aligned.transformorig;
-T_new = mri_aligned.transform;
-
-% Calculate the combined transformation
-T_combined = T_new / T_orig;  % This is equivalent to T_new * inv(T_orig)
-
-% T_combined = [[ 0      0     -1 5]; ...
-%               [-0.866 -0.5    0 0]; ...
-%               [-0.5   -0.866  0 4]; ...
-%               [ 0      0      0 1]];
-% Apply the transformation to the pial surface vertices
-homogeneous_coords = [pial.pos, ones(size(pial.pos, 1), 1)]';
-transformed_coords = T_combined * homogeneous_coords;
-pial.pos = transformed_coords(1:3, :)';
-pial = ft_convert_units(pial, 'm');
-
-% theta = -pi/2; % 90 degrees in radians
-% rotMat = [
-%     cos(theta), -sin(theta), 0;
-%     sin(theta),  cos(theta), 0;
-%     0,           0,          1
-% ];
-% rotated_pial_pos = (rotMat * pial.pos')'; % Transpose for matrix multiplication
-% pial.pos = rotated_pial_pos;
-% transform = mri_aligned.transform;
-% % 
-% % % Apply the transformation to the vertices
-% homogeneous_coords = [pial.pos, ones(size(pial.pos, 1), 1)];
-% transformed_coords = homogeneous_coords  * transform;
-% pial.pos = transformed_coords(:, 1:3);
-
-% coordsys = ft_determine_coordsys(pial);
-% pial.coordsys = coordsys;
 
 %%
 figure;
@@ -518,14 +749,6 @@ cfg.funcolormap = '*RdBu';
 % cfg.funcolorlim = [-max(abs(sourceInterp.lateralizedPow)) max(abs(sourceInterp.lateralizedPow))]; % Symmetric color scaling
 % cfg.camlight = 'yes';
 ft_sourceplot(cfg, sourceInterp);
-
-
-
-
-
-
-
-
 
 %%
 cfg                        = [];
