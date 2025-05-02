@@ -16,7 +16,7 @@ for mm                      = 1:2
 freqband                    = 'beta';
 % trlLocs                     = 'left';
 % seedLocs                    = 'right';
-connectivityMetric          = 'coherence'; % Valid: coherence (coherency is computed for free),
+connectivityMetric          = 'coherency'; % Valid: coherence (coherency is computed for free),
                                            %        plv
 
 
@@ -85,7 +85,7 @@ for sIdx                    = 1:length(subList)
                                    repelem(all_sensors, length(seed_sensors))'];
         cfg.channelcmb          = cfg.channelcmb(~strcmp(cfg.channelcmb(:, 1), ...
                                                          cfg.channelcmb(:, 2)), :); % Remove the seed-seed pairs
-        if strcmp(connectivityMetric, 'coherence')
+        if strcmp(connectivityMetric, 'coherency')
             cfg.method          = 'coh';
             cfg.complex         = 'complex';
             cfg.partial         = 'no';

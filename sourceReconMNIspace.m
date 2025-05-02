@@ -6,13 +6,16 @@ ft_defaults;
 ft_hastoolbox('spm12', 1);
 
 %%
-% Load anatomicals
-% mri_path             = '/d/DATD/datd/MEG_MGS/MEG_BIDS/freesurferOutput/CCanat/SUMA/T1.nii';
-mri_path               = '/d/DATD/datd/MEG_MGS/MEG_BIDS/freesurferOutput/CCanat/mri/orig.mgz';
-% pial_l_path          = '/d/DATD/datd/MEG_MGS/MEG_BIDS/freesurferOutput/CCanat/surf/lh.pial.asc';
-% pial_r_path          = '/d/DATD/datd/MEG_MGS/MEG_BIDS/freesurferOutput/CCanat/surf/rh.pial.asc';
-
-% mri_path             = '/d/DATD/hyper/software/fieldtrip-20250318/template/headmodel/standard_mri.mat';
+subjID               = 5;
+if ismember(subjID, [2, 5])
+    nMrkFiles        = 2;
+end
+subRoot              = ['/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-' num2str(subjID, '%02d') ...
+                        '/meg/sub-' num2str(subjID, '%02d') '_task-mgs_'];
+subDerivativesRoot   = ['/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-' num2str(subjID, '%02d') ...
+                        '/meg/sub-' num2str(subjID, '%02d') '_task-mgs_'];
+% Load template anatomicals
+mri_path             = '/d/DATD/hyper/software/fieldtrip-20250318/template/headmodel/standard_mri.mat';
 % load(mri_path, 'mri');
 anatMRI              = ft_read_mri(mri_path);
 % anatMRI              = mri;
@@ -36,60 +39,34 @@ anatMRI.coordsys = 'ras';
 % anatMRI.coordsys     = coordsys.coordsys;
 
 %% Read headshape file
-hspPath              = '/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_headshape.hsp';
+hspPath              = [subRoot 'headshape.hsp'];
 
 hspData              = ft_read_headshape(hspPath, 'unit', 'm');
+if subjID            == 2
+    rows_to_remove = hspData.pos(:,2) > 0.1;
+    hspData.pos(rows_to_remove,:) = [];
+end
 hspData.fid.label    = {'Nasion', 'LPA', 'RPA'};
 
 % Read elpData
-elpPath              = '/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_electrodes.elp';
+elpPath              = [subRoot 'electrodes.elp'];
 [fidData, hpiData]   = readelpFile(elpPath);
 
 % Read raw data for gradiometers
-load('/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-12/meg/sub-12_task-mgs_run-01_raw.mat')
+load([subDerivativesRoot 'run-02_raw.mat'])
 gradData             = data.grad;
 gradData             = ft_convert_units(gradData, 'm');
 clearvars data;
 
 % Read hpilocations in gradiometer space
-nMrkFiles            =  3;
 hpiMrkData           = NaN(nMrkFiles, size(hpiData, 1), size(hpiData, 2));
-% 
-% raw_file1 = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_run-01_meg.sqd';
 for mrkIdx           = 1:nMrkFiles
-    raw_file_mrk     = ['/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_marker_' num2str(mrkIdx, '%02d') '.sqd'];
+    raw_file_mrk     = [subRoot 'marker_' num2str(mrkIdx, '%02d') '.sqd'];
     hdr_Mrk          = ft_read_header(raw_file_mrk);
     hpiMrkData(mrkIdx, :, :) ...
                      = cat(1, hdr_Mrk.orig.coregist.hpi.meg_pos);
 end
 hpiMrkData           = squeeze(mean(hpiMrkData, 1));
-% 
-% hdr.orig.coregist.hpi.meg_pos
-% 
-% hdr = ft_read_header(raw_file_mrk);
-% grad_raw = hdr.grad;
-% fid_raw = hdr.orig.coregist.hpi;
-% 
-% fid_raw_pos = cat(1, hdr.orig.coregist.hpi.meg_pos);
-% fid_label_raw =  cat(1, hdr.orig.coregist.hpi.label);
-% 
-% 
-% grad_raw_m = ft_convert_units(grad_raw, 'm');
-
-% %%
-% ft_plot_mesh(fid_raw_pos(1,:), 'vertexcolor', 'g'); hold on;
-% ft_plot_mesh(fid_raw_pos(2,:), 'vertexcolor', 'b');
-% ft_plot_mesh(fid_raw_pos(3,:), 'vertexcolor', 'y');
-% ft_plot_mesh(fid_raw_pos(4,:), 'vertexcolor', 'r');
-% ft_plot_mesh(fid_raw_pos(5,:), 'vertexcolor', 'm');
-% ft_plot_mesh(grad_raw_m.chanpos,'vertexcolor', 'k')
-% 
-% 
-% ft_plot_mesh(hspData.pos, 'vertexcolor','k'); hold on;
-% ft_plot_mesh(hpiData, 'vertexcolor', 'r')
-% ft_plot_mesh(hspData.fid, 'vertexcolor', 'g')
-
-%%
 
 %%
 headshape.pos        = [hpiData; fidData; hspData.pos];
@@ -123,7 +100,7 @@ hspCorrected         = hspData;
 hspCorrected.pos     = elec_aligned.chanpos(9:end, :);
 hspCorrected.fid.pos = elec_aligned.chanpos(6:8, :);
 hspCorrected.fid.label ...
-                     = {'NAS', 'LPA', 'RPA'};
+                     = {'NAS', 'LPA', 'RPA'}; 
 % Convert units back to mm
 hspCorrected         = ft_convert_units(hspCorrected, 'mm');
 gradData             = ft_convert_units(gradData, 'mm');
@@ -131,7 +108,6 @@ hpiMrkData           = hpiMrkData .* 1000;
 
 figure;
 ft_plot_mesh(hspCorrected, 'vertexcolor', 'k', 'facealpha', 0.5);
-% ft_plot_mesh(hspCorrected, 'vertexcolor', 'k', 'facealpha', 0.5);
 
 hold on;
 if isfield(hspCorrected, 'fid') && ~isempty(hspCorrected.fid)
@@ -141,7 +117,8 @@ if isfield(hspCorrected, 'fid') && ~isempty(hspCorrected.fid)
          hspCorrected.fid.label, 'FontSize', 12, 'Color', 'r');
 end
 ft_plot_sens(gradData, 'box', 1)
-ft_plot_mesh(hpiMrkData, 'vertexcolor', 'b', 'vertexsize', 20)
+ft_plot_mesh(hpiData .* 1000, 'vertexcolor', 'b', 'vertexsize', 20)
+ft_plot_mesh(hpiMrkData, 'vertexcolor', 'm', 'vertexsize', 20)
 
 %% Align anatomical with hsp
 restoredefaultpath;
@@ -158,8 +135,8 @@ cfg.headshape.icp    = 'yes';
 cfg.headshape.interactive = 'no';  
 mri_aligned          = ft_volumerealign(cfg, anatMRI);
 
-% cfg.headshape.interactive = 'yes';
-% mri_aligned           = ft_volumerealign(cfg, mri_aligned);
+cfg.headshape.interactive = 'yes';
+mri_aligned           = ft_volumerealign(cfg, mri_aligned);
 
 % cfg = [];
 % cfg.method = 'ortho'; % Orthographic view

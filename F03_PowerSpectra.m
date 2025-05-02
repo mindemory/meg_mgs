@@ -8,7 +8,7 @@ ft_defaults;
 %%
 subList                             = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, ...
                                        18, 19, 23, 24, 25, 26, 27, 28, 29, 31, 32];
-subList = [1 2 3 4 5];
+% subList = [1 2 3 4 5];
 right_sensors                       = {'AG001', 'AG002', 'AG007', 'AG008', 'AG020', 'AG022', 'AG023', ...
                                        'AG024', 'AG034', 'AG036', 'AG050', 'AG055', 'AG065', 'AG066', ...
                                        'AG098', 'AG103'};
@@ -136,7 +136,7 @@ contraSpectraDB                     = 10*log10(contraSpectra);
 % ipsiSpectraDB = ipsiSpectra;
 % contraSpectraDB = contraSpectra;
 custom_ticks                        = [5, 10, 15, 20, 30, 40, 50, 75, 100, 150];
-figure;
+figure('Renderer', 'painters');
 for tt                              = 1:length(tOnset)
     subplot(2, 2, tt)
     thisFreqIpsi                    = squeeze(mean(ipsiFreq(:, tt, :), 1, 'omitnan'));
@@ -146,9 +146,9 @@ for tt                              = 1:length(tOnset)
     thisPowContraMean               = squeeze(mean(contraSpectraDB(:, tt, :), 1, 'omitnan'));
     thisPowContraSEM                = squeeze(std(contraSpectraDB(:, tt, :), [], 1, 'omitnan')) ./ sqrt(length(subList)-1);
     
-    plot(thisFreqIpsi, thisPowIpsiMean, 'DisplayName', 'Ipsi', 'LineWidth', 2)
+    plot(thisFreqIpsi, smooth(thisPowIpsiMean), 'DisplayName', 'Ipsi', 'LineWidth', 2)
     hold on;
-    plot(thisFreqContra, thisPowContraMean, 'DisplayName', 'Contra', 'LineWidth', 2)
+    plot(thisFreqContra, smooth(thisPowContraMean), 'DisplayName', 'Contra', 'LineWidth', 2)
     
     xticks(custom_ticks);
     
@@ -157,7 +157,8 @@ for tt                              = 1:length(tOnset)
     % ylim([0 6e-28])
     legend;
     xlabel('Frequency (Hz)')
-    ylabel('Power (fT^2)')
+    % ylabel('Power (fT^2)')
+    ylabel('Power (dB)')
     if tt                           == 1
         title('Fixation')
     elseif tt                       == 2
@@ -168,3 +169,48 @@ for tt                              = 1:length(tOnset)
         title('Late Delay')
     end
 end
+
+%%
+% ipsiSpectraDB                       = 10*log10(ipsiSpectra);
+% contraSpectraDB                     = 10*log10(contraSpectra);
+ipsiSpectraDB = ipsiSpectra;
+contraSpectraDB = contraSpectra;
+combinedSpectraDB = cat(4, ipsiSpectraDB, contraSpectraDB);
+combinedSpectraDB = squeeze(mean(combinedSpectraDB, 4, 'omitnan'));
+
+custom_ticks                        = [5, 10, 15, 20, 30, 40, 50, 75, 100, 150];
+figure('Renderer', 'painters');
+% for tt                              = 1:length(tOnset)
+    % subplot(2, 2, tt)
+    thisFreqIpsi                    = squeeze(mean(ipsiFreq(:, 1, :), 1, 'omitnan'));
+    thisPowCombinedFixation             = squeeze(mean(combinedSpectraDB(:, 1, :), 1, 'omitnan'));
+    thisPowCombinedEarlyDelay             = squeeze(mean(combinedSpectraDB(:, 3, :), 1, 'omitnan'));
+
+    % thisPowIpsiSEM                  = squeeze(std(ipsiSpectraDB(:, tt, :), [], 1, 'omitnan')) ./ sqrt(length(subList)-1);
+    % thisFreqContra                  = squeeze(mean(contraFreq(:, tt, :), 1, 'omitnan'));
+    % thisPowContraMean               = squeeze(mean(contraSpectraDB(:, tt, :), 1, 'omitnan'));
+    % thisPowContraSEM                = squeeze(std(contraSpectraDB(:, tt, :), [], 1, 'omitnan')) ./ sqrt(length(subList)-1);
+    
+    plot(thisFreqIpsi, smooth(thisPowCombinedFixation), 'DisplayName', 'Fixation', 'LineWidth', 2)
+    hold on;
+    plot(thisFreqIpsi, smooth(thisPowCombinedEarlyDelay), 'DisplayName', 'Early Delay', 'LineWidth', 2)
+     
+    xticks(custom_ticks);
+    
+    xticklabels(cellstr(num2str(custom_ticks')));
+    xlim([5 50])
+    % ylim([0 6e-28])
+    legend;
+    xlabel('Frequency (Hz)')
+    % ylabel('Power (fT^2)')
+    ylabel('Power (dB)')
+    % if tt                           == 1
+    %     title('Fixation')
+    % elseif tt                       == 2
+    %     title('Stim On')
+    % elseif tt                       == 3
+    %     title('Early Delay')
+    % elseif tt                       == 4
+    %     title('Late Delay')
+    % end
+% end

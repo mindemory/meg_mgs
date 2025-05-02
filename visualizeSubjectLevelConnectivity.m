@@ -1,7 +1,7 @@
 clear; close all; clc;
 %%
 freqband                    = 'beta';
-trlLocs                     = 'left';
+trlLocs                     = 'right';
 seedLocs                    = 'left';
 connectivityMetric          = 'coherence'; % Valid: coherence (coherency is computed for free),
                                            %        plv

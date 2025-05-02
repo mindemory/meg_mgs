@@ -8,7 +8,7 @@ function opposite_sensors = find_opposite_sensors(lay, given_sensors, hemisphere
         given_sensors = {given_sensors};
     end
     
-    opposite_sensors = {};
+    opposite_sensors = cell(length(given_sensors),1);
     
     for i = 1:length(given_sensors)
         idx = find(strcmp(labels, given_sensors{i}));
@@ -27,7 +27,8 @@ function opposite_sensors = find_opposite_sensors(lay, given_sensors, hemisphere
            (hemisphere == "right" && sensor_pos(1) > midpoint_x)
             distances = sum((pos - opposite_pos).^2, 2);
             [~, nearest_idx] = min(distances);
-            opposite_sensors{end+1} = labels{nearest_idx};
+            % opposite_sensors{end+1} = labels{nearest_idx};
+            opposite_sensors{i} = labels{nearest_idx};
         else
             warning('Sensor %s is not on the specified hemisphere', given_sensors{i});
         end
