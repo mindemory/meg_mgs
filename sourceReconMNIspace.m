@@ -6,7 +6,7 @@ ft_defaults;
 ft_hastoolbox('spm12', 1);
 
 %%
-subjID               = 5;
+subjID               = 2;
 if ismember(subjID, [2, 5])
     nMrkFiles        = 2;
 end
@@ -15,28 +15,10 @@ subRoot              = ['/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-' num2str(subjID, '%0
 subDerivativesRoot   = ['/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-' num2str(subjID, '%02d') ...
                         '/meg/sub-' num2str(subjID, '%02d') '_task-mgs_'];
 % Load template anatomicals
-mri_path             = '/d/DATD/hyper/software/fieldtrip-20250318/template/headmodel/standard_mri.mat';
-% load(mri_path, 'mri');
+% mri_path             = '/d/DATD/hyper/software/fieldtrip-20250318/template/headmodel/standard_mri.mat';
+mri_path             = '/d/DATD/hyper/software/fieldtrip-20250318/template/anatomy/single_subj_T1.nii';
 anatMRI              = ft_read_mri(mri_path);
-% anatMRI              = mri;
-anatMRI.coordsys = 'ras';
-% surfL                = readPial(pial_l_path);
-% surfR                = readPial(pial_r_path);
-% 
-% figure;
-% hold on;
-% trisurf(surfL.faces, surfL.vertices(:,1), surfL.vertices(:,2), surfL.vertices(:,3), ...
-%         'FaceColor', '#808080', 'EdgeColor', 'none');
-% trisurf(surfR.faces, surfR.vertices(:,1), surfR.vertices(:,2), surfR.vertices(:,3), ...
-%         'FaceColor', '#808080', 'EdgeColor', 'none');
-% axis equal;
-% camlight; 
-% lighting gouraud; 
-
-
-% coordsys             = ft_determine_coordsys(anatMRI);
-% % Set the coordinate system to 'r a s'
-% anatMRI.coordsys     = coordsys.coordsys;
+anatMRI.coordsys     = 'ras';
 
 %% Read headshape file
 hspPath              = [subRoot 'headshape.hsp'];
@@ -125,6 +107,9 @@ restoredefaultpath;
 addpath('/d/DATD/hyper/software/fieldtrip-20250318/');
 addpath(genpath('/d/DATD/hyper/experiments/Mrugank/meg_mgs'))
 ft_defaults;
+
+anatMRItransformed = ft_convert_coordsys(anatMRI, 'als');
+
 cfg                  = [];
 cfg.method           = 'headshape';
 cfg.spmversion       = 'spm12';
@@ -133,7 +118,7 @@ cfg.headshape.headshape ...
 cfg.headshape.coordsys = 'als';
 cfg.headshape.icp    = 'yes';
 cfg.headshape.interactive = 'no';  
-mri_aligned          = ft_volumerealign(cfg, anatMRI);
+mri_aligned          = ft_volumerealign(cfg, segmentedmri);
 
 cfg.headshape.interactive = 'yes';
 mri_aligned           = ft_volumerealign(cfg, mri_aligned);
