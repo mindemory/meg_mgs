@@ -1,10 +1,56 @@
 clear; close all; clc;
 warning('off', 'all');
 addpath('/d/DATD/hyper/software/fieldtrip-20250318/'); 
-
-% addpath('/d/DATD/hyper/software/fieldtrip-20220104/');
 ft_defaults;
 addpath(genpath('/d/DATD/hyper/experiments/Mrugank/meg_mgs'));
+
+
+%% Figure 1A: plot of memory error and RT
+rootNameGaze = '/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/';
+subList = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, ...
+               18, 19, 23, 24, 25, 26, 27, 29, 31, 32];
+% Repeated subjects 12/29, 3/6
+meanErrs = NaN(length(subList), 1);
+meanRTs =  NaN(length(subList), 1);
+for ii = 1:length(subList)
+    sIdx = subList(ii);
+    sessPthName = [rootNameGaze 'sub-' num2str(sIdx, '%02d') '/eyetracking/sub-' num2str(sIdx, '%02d') '_task-mgs-iisess.mat'];
+    load(sessPthName)
+    if sIdx == 29
+        meanErrSess1 = meanErrs(10);
+        meanErrSess2 = mean(ii_sess.i_sacc_err, "all", "omitnan");
+        meanErrs(10) = (meanErrSess1 + meanErrSess2) / 2;
+    elseif sIdx == 6
+        meanErrSess1 = meanErrs(3);
+        meanErrSess2 = mean(ii_sess.i_sacc_err, "all", "omitnan");
+        meanErrs(3) = (meanErrSess1 + meanErrSess2) / 2;
+    else
+        meanErrs(ii) = mean(ii_sess.i_sacc_err, "all", "omitnan");
+        meanRTs(ii) = mean(ii_sess.i_sacc_rt, "all", "omitnan") * 1000;
+    end
+    clearvars ii_sess;
+end
+
+
+figure();
+subplot(1, 2, 1)
+plot(meanErrs, 'bo', 'MarkerFaceColor', 'b')
+hold on;
+meanOfMeanErrs = mean(meanErrs, "all", "omitnan");
+% semOfMeanErrs = std(meanErrs) / sqrt(length(meanErrs));
+yline(meanOfMeanErrs, '--', 'Color', [0.5 0.5 0.5], 'LineWidth', 1.5);
+ylabel('Mean Memory Error (dva)')
+ylim([0, 5])
+
+
+subplot(1, 2, 2)
+plot(meanRTs, 'bo', 'MarkerFaceColor', 'b')
+hold on;
+meanOfMeanRTs = mean(meanRTs, "all", "omitnan");
+% semOfMeanRTs = std(meanRTs) / sqrt(length(meanRTs));
+yline(meanOfMeanRTs, '--', 'Color', [0.5 0.5 0.5], 'LineWidth', 1.5);
+ylabel('Mean Reaction Time (ms)')
+ylim([200, 500])
 
 %% Figure 1B: plot of gaze in 2D
 pthName = '/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-29/eyetracking/run-01/sub-29_task-mgs_run-01_eyetracking.mat';

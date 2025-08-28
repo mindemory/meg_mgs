@@ -1,3 +1,14 @@
+% This code gets metadata from all subjects in terms of experiment design
+% and order
+% Some things to keep in mind are:
+%   Screen resolution is same throughout (768, 1024)
+%   Eccentricity of the stimulus is same 9 degrees
+%   displayDistance is same 57cm
+%   Number of trials per block is either 25 (subs 1 - 9 (until block 7))
+%   and 35 (sub 9 (blocks 8,9,10) - 32)
+%   ntargs were 11 for sub1-7 and went to 10 for sub8-32
+%   nruns varies between 8-12
+
 bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS';
 
 subdirList = dir([bidsRoot '/sub-*']);
