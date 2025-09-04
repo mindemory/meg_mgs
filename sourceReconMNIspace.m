@@ -6,91 +6,93 @@ ft_defaults;
 ft_hastoolbox('spm12', 1);
 
 %%
-subjID               = 2;
+subjID                             = 2;
 if ismember(subjID, [2, 5])
-    nMrkFiles        = 2;
+    nMrkFiles                      = 2;
 end
-subRoot              = ['/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-' num2str(subjID, '%02d') ...
-                        '/meg/sub-' num2str(subjID, '%02d') '_task-mgs_'];
-subDerivativesRoot   = ['/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-' num2str(subjID, '%02d') ...
-                        '/meg/sub-' num2str(subjID, '%02d') '_task-mgs_'];
-% Load template anatomicals
-% mri_path             = '/d/DATD/hyper/software/fieldtrip-20250318/template/headmodel/standard_mri.mat';
-mri_path             = '/d/DATD/hyper/software/fieldtrip-20250318/template/anatomy/single_subj_T1.nii';
-anatMRI              = ft_read_mri(mri_path);
-anatMRI.coordsys     = 'ras';
+subRoot                            = ['/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-' num2str(subjID, '%02d') ...
+                                      '/meg/sub-' num2str(subjID, '%02d') '_task-mgs_'];
+subDerivativesRoot                 = ['/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-' num2str(subjID, '%02d') ...
+                                      '/meg/sub-' num2str(subjID, '%02d') '_task-mgs_'];
+% Load template anatomical
+mri_path                           = '/d/DATD/hyper/software/fieldtrip-20250318/template/anatomy/single_subj_T1.nii';
+anatMRI                            = ft_read_mri(mri_path);
+anatMRI.coordsys                   = 'ras';
 
-%% Read headshape file
-hspPath              = [subRoot 'headshape.hsp'];
-
-hspData              = ft_read_headshape(hspPath, 'unit', 'm');
-if subjID            == 2
-    rows_to_remove = hspData.pos(:,2) > 0.1;
-    hspData.pos(rows_to_remove,:) = [];
+%% Read headshape file for the subject
+hspPath                            = [subRoot 'headshape.hsp'];
+hspData                            = ft_read_headshape(hspPath, 'unit', 'm');
+if subjID                          == 2
+    rows_to_remove                 = hspData.pos(:,2) > 0.1;
+    hspData.pos(rows_to_remove,:)  = [];
 end
-hspData.fid.label    = {'Nasion', 'LPA', 'RPA'};
+hspData.fid.label                  = {'Nasion', 'LPA', 'RPA'};
 
 % Read elpData
-elpPath              = [subRoot 'electrodes.elp'];
-[fidData, hpiData]   = readelpFile(elpPath);
+elpPath                            = [subRoot 'electrodes.elp'];
+[fidData, hpiData]                 = readelpFile(elpPath);
 
 % Read raw data for gradiometers
 load([subDerivativesRoot 'run-02_raw.mat'])
-gradData             = data.grad;
-gradData             = ft_convert_units(gradData, 'm');
+gradData                           = data.grad;
+gradData                           = ft_convert_units(gradData, 'm');
 clearvars data;
 
 % Read hpilocations in gradiometer space
-hpiMrkData           = NaN(nMrkFiles, size(hpiData, 1), size(hpiData, 2));
-for mrkIdx           = 1:nMrkFiles
-    raw_file_mrk     = [subRoot 'marker_' num2str(mrkIdx, '%02d') '.sqd'];
-    hdr_Mrk          = ft_read_header(raw_file_mrk);
-    hpiMrkData(mrkIdx, :, :) ...
-                     = cat(1, hdr_Mrk.orig.coregist.hpi.meg_pos);
+hpiMrkData                         = NaN(nMrkFiles, size(hpiData, 1), size(hpiData, 2));
+for mrkIdx                         = 1:nMrkFiles
+    raw_file_mrk                   = [subRoot 'marker_' num2str(mrkIdx, '%02d') '.sqd'];
+    hdr_Mrk                        = ft_read_header(raw_file_mrk);
+    hpiMrkData(mrkIdx, :, :)       = cat(1, hdr_Mrk.orig.coregist.hpi.meg_pos);
 end
-hpiMrkData           = squeeze(mean(hpiMrkData, 1));
+hpiMrkData                         = squeeze(mean(hpiMrkData, 1));
+
+%hspData is the headshape of the subject, fid in it has the fiducials
+%fidData is fiducials in the scanner space
+%hpiData is marker locations in scanner space
 
 %%
-headshape.pos        = [hpiData; fidData; hspData.pos];
-headshape.unit       = 'm'; 
-num_remaining_points = size(hspData.pos, 1); 
-remaining_labels     = cell(num_remaining_points, 1);
-for i                = 1:num_remaining_points
-    remaining_labels{i} ...
-                     = sprintf('head_%d', i);
+% Here we realign the headshape to hpi by aligning the hpicoil locations,
+% treating them as fiducials
+headshape.pos                     = [hpiData; fidData; hspData.pos];
+headshape.unit                    = 'm'; 
+num_remaining_points              = size(hspData.pos, 1); 
+remaining_labels                  = cell(num_remaining_points, 1);
+for i                             = 1:num_remaining_points
+    remaining_labels{i}           = sprintf('head_%d', i);
 end
-headshape.label      = [{'LPA', 'RPA', 'NAS', 'HPI4', 'HPI5', 'nreal', ...
-                         'lreal', 'rreal'}, remaining_labels']';
+headshape.label                   = [{'LPA', 'RPA', 'NAS', 'HPI4', 'HPI5', 'nreal', ...
+                                      'lreal', 'rreal'}, remaining_labels']';
 
-elec_dummy           = headshape;
-elec_dummy.elecpos   = headshape.pos;
-elec_dummy.chanpos   = elec_dummy.elecpos;
+headshape_dummy                   = headshape;
+headshape_dummy.elecpos           = headshape.pos;
+headshape_dummy.chanpos           = headshape_dummy.elecpos;
 
-hpi_coil.elecpos     = hpiMrkData;%(1:3, :);
-hpi_coil.label       = {'LPA', 'RPA', 'NAS', 'HPI4', 'HPI5'}';
-hpi_coil.unit        = 'm';
+hpi_coil.elecpos                  = hpiMrkData;%(1:3, :);
+hpi_coil.label                    = {'LPA', 'RPA', 'NAS', 'HPI4', 'HPI5'}';
+hpi_coil.unit                     = 'm';
 
-cfg                  = [];
-cfg.method           = 'fiducial';
-cfg.template         = hpi_coil;
-cfg.elec             = elec_dummy;
-cfg.feedback         = 'yes';
-cfg.fiducial         = {'NAS', 'LPA', 'RPA'}';
-elec_aligned         = ft_electroderealign(cfg);
+cfg                               = [];
+cfg.method                        = 'fiducial';
+cfg.template                      = hpi_coil;
+cfg.elec                          = headshape_dummy;
+cfg.feedback                      = 'yes';
+cfg.fiducial                      = {'NAS', 'LPA', 'RPA'}';
+headshape_aligned                 = ft_electroderealign(cfg);
 %%
-hspCorrected         = hspData;
-hspCorrected.pos     = elec_aligned.chanpos(9:end, :);
-hspCorrected.fid.pos = elec_aligned.chanpos(6:8, :);
-hspCorrected.fid.label ...
-                     = {'NAS', 'LPA', 'RPA'}; 
+% hspCorrected is now the headshape points and fiducials aligned to the
+% hpi locations in scanner space
+hspCorrected                      = hspData;
+hspCorrected.pos                  = headshape_aligned.chanpos(9:end, :);
+hspCorrected.fid.pos              = headshape_aligned.chanpos(6:8, :); % real fiducials
+hspCorrected.fid.label            = {'NAS', 'LPA', 'RPA'}; 
 % Convert units back to mm
-hspCorrected         = ft_convert_units(hspCorrected, 'mm');
-gradData             = ft_convert_units(gradData, 'mm');
-hpiMrkData           = hpiMrkData .* 1000;
+hspCorrected                      = ft_convert_units(hspCorrected, 'mm');
+gradData                          = ft_convert_units(gradData, 'mm');
+hpiMrkData                        = hpiMrkData .* 1000;
 
 figure;
 ft_plot_mesh(hspCorrected, 'vertexcolor', 'k', 'facealpha', 0.5);
-
 hold on;
 if isfield(hspCorrected, 'fid') && ~isempty(hspCorrected.fid)
     plot3(hspCorrected.fid.pos(:,1), hspCorrected.fid.pos(:,2), hspCorrected.fid.pos(:,3), ...
@@ -108,25 +110,27 @@ addpath('/d/DATD/hyper/software/fieldtrip-20250318/');
 addpath(genpath('/d/DATD/hyper/experiments/Mrugank/meg_mgs'))
 ft_defaults;
 
-anatMRItransformed = ft_convert_coordsys(anatMRI, 'als');
+anatMRItransformed                = ft_convert_coordsys(anatMRI, 'als');
 
-cfg                  = [];
-cfg.method           = 'headshape';
-cfg.spmversion       = 'spm12';
-cfg.headshape.headshape ...
-                     = hspCorrected;
-cfg.headshape.coordsys = 'als';
-cfg.headshape.icp    = 'yes';
-cfg.headshape.interactive = 'no';  
-mri_aligned          = ft_volumerealign(cfg, segmentedmri);
+cfg                               = [];
+cfg.method                        = 'interactive';
+cfg.spmversion                    = 'spm12';
+% cfg.coordsys                      = 'als';
+mri_realigned                     = ft_volumerealign(cfg, anatMRItransformed);
 
-cfg.headshape.interactive = 'yes';
-mri_aligned           = ft_volumerealign(cfg, mri_aligned);
+cfg                               = [];
+cfg.spmversion                    = 'spm12';
+cfg.method                        = 'headshape';
+cfg.headshape.headshape           = hspCorrected;
+cfg.headshape.coordsys            = 'als';
+cfg.headshape.icp                 = 'yes';
+cfg.headshape.interactive         = 'yes';
+mri_aligned                    = ft_volumerealign(cfg, mri_realigned);
 
-% cfg = [];
-% cfg.method = 'ortho'; % Orthographic view
-% cfg.interactive = 'yes';
-% ft_sourceplot(cfg, mri_aligned);
+cfg = [];
+cfg.method = 'ortho'; % Orthographic view
+cfg.interactive = 'yes';
+ft_sourceplot(cfg, anatMRI);
 % 
 % % To check fiducial alignment
 % hold on;

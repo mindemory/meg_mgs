@@ -148,12 +148,14 @@ restoredefaultpath;
 addpath('/d/DATD/hyper/software/fieldtrip-20250318/');
 addpath(genpath('/d/DATD/hyper/experiments/Mrugank/meg_mgs'))
 ft_defaults;
+hspCorrectedTransformed = ft_convert_coordsys(hspCorrected, 'ras');
+
 cfg                  = [];
 cfg.method           = 'headshape';
 cfg.spmversion       = 'spm12';
 cfg.headshape.headshape ...
-                     = hspCorrected;
-cfg.headshape.coordsys = 'als';
+                     = hspCorrectedTransformed;
+cfg.headshape.coordsys = 'ras';
 cfg.headshape.icp    = 'yes';
 cfg.headshape.interactive = 'no';  
 mri_aligned          = ft_volumerealign(cfg, anatMRI);
