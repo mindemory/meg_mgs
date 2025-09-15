@@ -198,9 +198,6 @@ cfg.headshape.icp    = 'yes';
 cfg.headshape.interactive = 'yes';  
 mri_aligned          = ft_volumerealign(cfg, mri_aligned);
 
-cfg.headshape.interactive = 'yes';  
-mri_aligned          = ft_volumerealign(cfg, mri_aligned);
-
 %% Apply Transformation to
 transformApplied = mri_aligned.transform * pinv(anatMRI.transform); %s * T + manual alignment
 
@@ -233,10 +230,6 @@ for i = 1:size(sourcemodel_template.pos, 1)
     pos_transformed = transformApplied * pos_homog;
     sourcemodel_aligned.pos(i, :) = pos_transformed(1:3)';
 end
-
-% %% Helper Function: Select Sources from Brain Regions
-% selectSourcesFromRegion = @(sourcemodel, atlas, region_name) ...
-%     selectSourcesFromAtlas(sourcemodel, atlas, region_name);
 
 % 5. VTPM atlas - Convert coordinate system first
 atlas_aligned = atlas_template;

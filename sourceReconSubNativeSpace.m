@@ -138,7 +138,7 @@ hpiMrkData           = NaN(nMrkFiles, size(hpiData, 1), size(hpiData, 2));
 % 
 % raw_file1 = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/sub-12/meg/sub-12_task-mgs_run-01_meg.sqd';
 for mrkIdx           = 1:nMrkFiles
-    raw_file_mrk     = [subRoot 'marker_' num2str(mrkIdx, '%02d') '.sqd'];
+    raw_file_mrk     = [subRoot 'marker-' num2str(mrkIdx, '%02d') '.sqd'];
     hdr_Mrk          = ft_read_header(raw_file_mrk);
     hpiMrkData(mrkIdx, :, :) ...
                      = cat(1, hdr_Mrk.orig.coregist.hpi.meg_pos);
