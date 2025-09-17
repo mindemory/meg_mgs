@@ -5,10 +5,12 @@
 clear; close all; clc;
 
 % Define subjects and parameters
-subjects = [2, 3, 4, 5,7, 9, 12, 13, 15, 17, 18, 19, 23, 25];
-surface_resolution = 5124;
+subjects = [7, 9 , 10, 12, 13,15, 17, 18, 19, 23, 24, 25, 29, 31, 32];
+surface_resolutions = [20484];
 
 % Run the master script
 for subjID = subjects
-    S02_ReverseModelMNI(subjID, surface_resolution);
+    for surface_resolution = surface_resolutions
+        S02_ReverseModelMNI(subjID, surface_resolution);
+    end
 end

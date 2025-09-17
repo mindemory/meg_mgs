@@ -12,7 +12,7 @@ ft_defaults;
 ft_hastoolbox('spm12', 1);
 
 % Configuration parameters
-subjID = 25;
+subjID = 29;
 surface_resolutions = [5124, 8196, 20484]; % All available cortical surface resolutions
 
 %% Subject-Specific Configuration (Based on Preprocessing Logger)
@@ -261,52 +261,29 @@ if COMPUTE_FORWARD_MODEL
     cfg.spmversion       = 'spm12';
     cfg.headshape.headshape ...
         = hspCorrected_ras;
-    cfg.headshape.icp    = 'yes';
+    cfg.headshape.icp    = 'no';
     cfg.headshape.interactive = 'yes';
     mri_aligned          = ft_volumerealign(cfg, mri_aligned);
 
     %% Apply Transformation to
-    transformApplied = mri_aligned.transform * pinv(anatMRI.transform); %s * T + manual alignment
+    
+    % Use the transformation from aligned MRI
+    transformApplied = mri_aligned.transform / anatMRI.transform;
 
     % 1: singleShellHeadModel
-    % Apply Procrustes transformation to head model vertices
-    singleShellHeadModel = singleShellHeadModel_template;
-    for i = 1:size(singleShellHeadModel_template.bnd.pos, 1)
-        pos_homog = [singleShellHeadModel_template.bnd.pos(i, :)'; 1];
-        pos_transformed = transformApplied * pos_homog;
-        singleShellHeadModel.bnd.pos(i, :) = pos_transformed(1:3)';
-    end
-    if isfield(singleShellHeadModel.bnd, 'tri') && isfield(singleShellHeadModel.bnd, 'nrm')
-        R_only = transformApplied(1:3, 1:3);
-        R_normals = inv(R_only)';
-        for i = 1:size(singleShellHeadModel_template.bnd.pos, 1)
-            original_normal = singleShellHeadModel_template.bnd.nrm(i, :)';
-            transformed_normal = R_normals * original_normal;
-            singleShellHeadModel.bnd.nrm(i, :) = transformed_normal';
-        end
-    end
+    singleShellHeadModel = ft_transform_geometry(transformApplied, singleShellHeadModel_template);
 
     % 2: Segmented MRI
     segmentedmri_aligned = segmentedmri_template;
     segmentedmri_aligned.transform = transformApplied * segmentedmri_template.transform;
 
     % 3: Transform All Surface Models
-    sourcemodel_aligned_5124 = sourcemodel_templates.res_5124;
-    sourcemodel_aligned_8196 = sourcemodel_templates.res_8196;
-    sourcemodel_aligned_20484 = sourcemodel_templates.res_20484;
-
-    % Transform each surface model
     for res_idx = 1:length(surface_resolutions)
         res = surface_resolutions(res_idx);
         template_sm = sourcemodel_templates.(sprintf('res_%d', res));
 
-        % Transform vertex positions
-        aligned_sm = template_sm;
-        for i = 1:size(template_sm.pos, 1)
-            pos_homog = [template_sm.pos(i, :)'; 1];
-            pos_transformed = transformApplied * pos_homog;
-            aligned_sm.pos(i, :) = pos_transformed(1:3)';
-        end
+        % Use FieldTrip's transformation function
+        aligned_sm = ft_transform_geometry(transformApplied, template_sm);
 
         % Store transformed model
         eval(sprintf('sourcemodel_aligned_%d = aligned_sm;', res));
