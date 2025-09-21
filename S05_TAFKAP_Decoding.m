@@ -1,15 +1,17 @@
-function S05_TAFKAP_Decoding(subjID, surface_resolution)
-%% S05_TAFKAP_Decoding - Decode stimulus location using TAFKAP
+function S05_TAFKAP_Decoding(subjID, surface_resolution, algorithm, input_time)
+%% S05_TAFKAP_Decoding - Decode stimulus location using TAFKAP or PRINCE
 %
-% This script loads complex beta data from S03 and runs TAFKAP decoding
+% This script loads complex beta data from S03 and runs TAFKAP or PRINCE decoding
 % to decode stimulus location from beta power in posterior sources.
 %
 % Inputs:
 %   subjID - Subject ID (e.g., 1, 2, 3, etc.)
 %   surface_resolution - Surface resolution (default: 5124)
+%   algorithm - 'TAFKAP' or 'PRINCE' (default: 'TAFKAP')
+%   input_time - Start time for analysis window (default: 0.8)
 %
 % Outputs:
-%   - Saves TAFKAP decoding results in derivatives/sourceRecon/tafkap_decoding/
+%   - Saves decoding results in derivatives/sourceRecon/tafkap_decoding/ or prince_decoding/
 %   - Results include: estimates, uncertainty, likelihoods, hyperparameters
 %
 % Dependencies:
@@ -17,7 +19,8 @@ function S05_TAFKAP_Decoding(subjID, surface_resolution)
 %   - TAFKAP installation at /d/DATD/hyper/experiments/Mrugank/wmJointRepresentation/
 %
 % Example:
-%   S05_TAFKAP_Decoding(1, 5124)
+%   S05_TAFKAP_Decoding(1, 5124, 'TAFKAP', 0.8)
+%   S05_TAFKAP_Decoding(1, 5124, 'PRINCE', 1.0)
 %
 % Author: Mrugank Dake
 % Date: 2025-01-20
@@ -28,9 +31,20 @@ end
 if nargin < 2
     surface_resolution = 5124; % Default resolution
 end
+if nargin < 3
+    algorithm = 'TAFKAP'; % Default to TAFKAP
+end
+if nargin < 4
+    input_time = 0.8; % Default start time
+end
+
+% Validate algorithm choice
+if ~ismember(algorithm, {'TAFKAP', 'PRINCE'})
+    error('Algorithm must be either ''TAFKAP'' or ''PRINCE''');
+end
 
 restoredefaultpath;
-clearvars -except subjID surface_resolution; % Keep inputs
+clearvars -except subjID surface_resolution algorithm input_time; % Keep inputs
 close all; clc;
 
 %% Environment Detection and Path Setup
@@ -92,7 +106,11 @@ beta_data_path = fullfile(data_base_path, sprintf('sub-%02d', subjID), 'sourceRe
     sprintf('sub-%02d_task-mgs_complexBeta_allTargets_%d.mat', subjID, surface_resolution));
 
 % Output directory for TAFKAP results
-output_dir = fullfile(data_base_path, sprintf('sub-%02d', subjID), 'sourceRecon', 'tafkap_decoding');
+if strcmp(algorithm, 'PRINCE')
+    output_dir = fullfile(data_base_path, sprintf('sub-%02d', subjID), 'sourceRecon', 'prince_decoding');
+else
+    output_dir = fullfile(data_base_path, sprintf('sub-%02d', subjID), 'sourceRecon', 'tafkap_decoding');
+end
 if ~exist(output_dir, 'dir')
     mkdir(output_dir);
 end
@@ -148,13 +166,13 @@ fprintf('  Total sources: %d\n', n_sources);
 fprintf('  Selected posterior sources: %d (%.1f%%)\n', n_posterior, 100*n_posterior/n_sources);
 
 %% Extract Beta Power Data
-fprintf('Extracting beta power data (0.8-1.5s window)...\n');
-
 % Time windows for beta power analysis
 baseline_start = -0.5; % seconds (before stimulus onset)
 baseline_end = 0.0;    % seconds (stimulus onset)
-time_start = 0.8;      % seconds (analysis window start)
-time_end = 1.5;        % seconds (analysis window end)
+time_start = input_time;      % seconds (analysis window start)
+time_end = input_time + 0.2;  % seconds (analysis window end)
+
+fprintf('Extracting beta power data (%.1f-%.1fs window)...\n', time_start, time_end);
 
 % Initialize data matrices
 all_trials = [];
@@ -229,6 +247,9 @@ fprintf('Z-scoring data across trials for each source...\n');
 all_trials = zscore(all_trials, 0, 1); % Z-score across trials (dimension 1)
 fprintf('Data z-scored across trials\n');
 
+% Use original 0-360° angles directly for TAFKAP
+fprintf('Using original 0-360° angles for TAFKAP...\n');
+
 fprintf('After shuffling - Target angle distribution:\n');
 unique_targets = unique(all_targets);
 for i = 1:length(unique_targets)
@@ -236,35 +257,42 @@ for i = 1:length(unique_targets)
     fprintf('  Target %.1f°: %d trials\n', unique_targets(i), n_trials_for_target);
 end
 
-%% Prepare Data for TAFKAP
-fprintf('Preparing data for TAFKAP...\n');
-
-
 %% Run TAFKAP Decoding
 fprintf('Running TAFKAP decoding...\n');
 
 % Set up TAFKAP parameters
 p = struct();
 p.stimval = all_targets(:); % Stimulus values for each trial (0-360 range) - ensure column vector
-% Create proper cross-validation splits
-% Use 5-fold cross-validation
-n_folds = 5;
-fold_size = floor(trial_count / n_folds);
-p.runNs = repmat((1:n_folds)', fold_size, 1);
-if length(p.runNs) < trial_count
-    p.runNs = [p.runNs; repmat(n_folds, trial_count - length(p.runNs), 1)];
+p.nchan = 8; % Number of channels
+p.dec_type = algorithm; % Use specified algorithm
+p.Nboot = 5e3; % Set bootstrap iterations
+p.DJS_tol = 1e-6; % Set DJS tolerance
+
+% Add PRINCE-specific parameter
+if strcmp(algorithm, 'PRINCE')
+    p.singletau = true; % PRINCE uses single tau parameter
 end
 
-% For each fold, use 80% for training, 20% for testing
-p.train_trials = false(trial_count, 1);
-p.test_trials = false(trial_count, 1);
+% Create proper cross-validation splits using run-based CV
+n_folds = 5;
+fold_size = floor(trial_count / n_folds);
+run_ind = repmat((1:n_folds)', fold_size, 1);
+if length(run_ind) < trial_count
+    run_ind = [run_ind; repmat(n_folds, trial_count - length(run_ind), 1)];
+end
+p.runNs = run_ind;
 
-% Use first 4 folds for training, last fold for testing
-p.train_trials(p.runNs <= 4) = true;
-p.test_trials(p.runNs == 5) = true;
-p.dec_type = 'TAFKAP'; % Use TAFKAP algorithm
-% p.Nboot = 200; % Set bootstrap iterations to 200
-p.nchan = 8; % Number of channels
+% Initialize results arrays
+nrun = max(run_ind);
+est = nan(trial_count, 1);
+unc = nan(trial_count, 1);
+lf = nan(trial_count, 1000); % TAFKAP typically outputs 1000 points for likelihood
+hypers = nan(nrun, 2);
+
+% Deal with random number generator
+rng('shuffle');
+fprintf('There are %d runs for cross-validation\n', nrun);
+randseed = randi(2^20, nrun, 1); % Generate random seed for each run
 
 % Verify TAFKAP parameters
 fprintf('TAFKAP parameters: %d trials, %d sources\n', size(all_trials, 1), size(all_trials, 2));
@@ -275,9 +303,79 @@ fprintf('Stimulus range: %.1f to %.1f degrees\n', min(p.stimval), max(p.stimval)
 original_dir = pwd;
 cd(tafkap_path);
 
-% Run TAFKAP
+% Run TAFKAP with proper cross-validation
 try
-    [est, unc, lf, hypers] = TAFKAP_Decode(all_trials, p);
+    
+    % Initialize parallel pool if not already running
+    if isempty(gcp('nocreate'))
+        parpool('local', min(8, feature('numcores'))); % Use up to 8 cores
+    end
+    
+    % Pre-allocate results for parfor
+    temp_est = nan(trial_count, nrun);
+    temp_unc = nan(trial_count, nrun);
+    temp_lf = cell(nrun, 1);
+    temp_hyper = cell(nrun, 1);
+    
+    % Use 'parfor' for parallel cross-validation
+    parfor testrun_idx = 1:nrun
+        % Set up parameters for this run
+        thisp = p;
+        thisp.test_trials = run_ind == testrun_idx;
+        thisp.train_trials = run_ind ~= testrun_idx;
+        thisp.randseed = randseed(testrun_idx);
+        
+        fprintf('Starting testrun #%d of %d\n', testrun_idx, nrun);
+        
+        % Debug: Check dimensions before calling TAFKAP
+        fprintf('  Data size: %s\n', mat2str(size(all_trials)));
+        fprintf('  Test trials: %d\n', sum(thisp.test_trials));
+        fprintf('  Train trials: %d\n', sum(thisp.train_trials));
+        fprintf('  Stimval length: %d\n', length(thisp.stimval));
+        
+        [this_est, this_unc, this_lf, this_hypers] = TAFKAP_Decode(all_trials, thisp);
+        fprintf('Completed testrun #%d of %d\n', testrun_idx, nrun);
+        
+        % Store results (handle variable run sizes)
+        test_trials_this_run = run_ind == testrun_idx;
+        n_test_trials = sum(test_trials_this_run);
+        
+        % Create temporary variables for this run
+        this_temp_est = nan(trial_count, 1);
+        this_temp_unc = nan(trial_count, 1);
+        
+        % Ensure dimensions match
+        if length(this_est) == n_test_trials
+            this_temp_est(test_trials_this_run) = this_est(:);
+            this_temp_unc(test_trials_this_run) = this_unc(:);
+        else
+            fprintf('  Warning: Dimension mismatch for run %d - expected %d, got %d\n', testrun_idx, n_test_trials, length(this_est));
+            % Use only the first n_test_trials or pad with NaN
+            if length(this_est) > n_test_trials
+                this_temp_est(test_trials_this_run) = this_est(1:n_test_trials);
+                this_temp_unc(test_trials_this_run) = this_unc(1:n_test_trials);
+            else
+                this_temp_est(test_trials_this_run) = [this_est(:); NaN(n_test_trials - length(this_est), 1)];
+                this_temp_unc(test_trials_this_run) = [this_unc(:); NaN(n_test_trials - length(this_unc), 1)];
+            end
+        end
+        
+        % Store in pre-allocated arrays
+        temp_est(:, testrun_idx) = this_temp_est;
+        temp_unc(:, testrun_idx) = this_temp_unc;
+        temp_lf{testrun_idx} = this_lf;
+        temp_hyper{testrun_idx} = this_hypers;
+    end
+    
+    % Put decoded results into the shape we want
+    for testrun_idx = 1:nrun
+        test_trials_this_run = run_ind == testrun_idx;
+        est(test_trials_this_run) = temp_est(test_trials_this_run, testrun_idx);
+        unc(test_trials_this_run) = temp_unc(test_trials_this_run, testrun_idx);
+        lf(test_trials_this_run, :) = temp_lf{testrun_idx};
+        hypers(testrun_idx, :) = temp_hyper{testrun_idx};
+    end
+    
     fprintf('TAFKAP decoding completed successfully\n');
 catch ME
     cd(original_dir); % Make sure we change back even if there's an error
@@ -286,6 +384,9 @@ end
 
 % Change back to original directory
 cd(original_dir);
+
+% TAFKAP outputs are already in 0-360° range
+fprintf('TAFKAP estimates are in 0-360° range...\n');
 
 %% Save Results
 fprintf('Saving TAFKAP results...\n');
@@ -302,18 +403,22 @@ results.time_window = [time_start, time_end]; % Time window used
 results.target_angles = target_angles; % Target angles (0-360)
 
 % Save results
-results_path = fullfile(output_dir, sprintf('sub-%02d_tafkap_results_%d.mat', subjID, surface_resolution));
+if strcmp(algorithm, 'PRINCE')
+    results_path = fullfile(output_dir, sprintf('sub-%02d_prince_results_%d_t%.1f.mat', subjID, surface_resolution, input_time));
+else
+    results_path = fullfile(output_dir, sprintf('sub-%02d_tafkap_results_%d_t%.1f.mat', subjID, surface_resolution, input_time));
+end
 save(results_path, 'results');
 fprintf('Results saved to: %s\n', results_path);
 
-%% Use TAFKAP Results Directly (0-360°)
-fprintf('Using TAFKAP results directly (0-360°)...\n');
+%% Use TAFKAP Results
+fprintf('Using TAFKAP results...\n');
 
-% TAFKAP outputs are already in 0-360° range
-est_original = est; % TAFKAP outputs 0-360°
+% TAFKAP outputs are in 0-360° range
+est_original = est; % 0-360°
 
-% Target angles are already in 0-360° space
-targets_original = all_targets; % Already 0-360°
+% Target angles are in 0-360° space
+targets_original = all_targets; % 0-360°
 
 fprintf('TAFKAP estimates (0-360°): %s\n', mat2str(est_original(1:min(5, length(est_original)))));
 fprintf('Target angles (0-360°): %s\n', mat2str(targets_original(1:min(5, length(targets_original)))));
@@ -336,27 +441,20 @@ decoding_error = min(decoding_error, 360 - decoding_error); % Handle circularity
 mean_error = mean(decoding_error);
 std_error = std(decoding_error);
 
-% Calculate accuracy within different error thresholds
-acc_5deg = mean(decoding_error <= 5);
-acc_10deg = mean(decoding_error <= 10);
-acc_20deg = mean(decoding_error <= 20);
-
 fprintf('Decoding Performance:\n');
 fprintf('  Mean absolute error: %.2f° ± %.2f°\n', mean_error, std_error);
-fprintf('  Accuracy within 5°: %.1f%%\n', 100*acc_5deg);
-fprintf('  Accuracy within 10°: %.1f%%\n', 100*acc_10deg);
-fprintf('  Accuracy within 20°: %.1f%%\n', 100*acc_20deg);
 
 % Save performance metrics
 performance = struct();
 performance.mean_error = mean_error;
 performance.std_error = std_error;
-performance.acc_5deg = acc_5deg;
-performance.acc_10deg = acc_10deg;
-performance.acc_20deg = acc_20deg;
 performance.decoding_error = decoding_error;
 
-perf_path = fullfile(output_dir, sprintf('sub-%02d_tafkap_performance_%d.mat', subjID, surface_resolution));
+if strcmp(algorithm, 'PRINCE')
+    perf_path = fullfile(output_dir, sprintf('sub-%02d_prince_performance_%d_t%.1f.mat', subjID, surface_resolution, input_time));
+else
+    perf_path = fullfile(output_dir, sprintf('sub-%02d_tafkap_performance_%d_t%.1f.mat', subjID, surface_resolution, input_time));
+end
 save(perf_path, 'performance');
 fprintf('Performance metrics saved to: %s\n', perf_path);
 
@@ -404,26 +502,18 @@ ylabel('Decoding Error (degrees)');
 title('Decoding Error vs Target Angle');
 grid on;
 
-% Subplot 4: Sample likelihood functions
-subplot(2, 2, 4);
-sample_trials = 1:min(5, length(est_original));
-for i = 1:length(sample_trials)
-    trial_idx = sample_trials(i);
-    plot(0:360, lf(trial_idx, :), 'LineWidth', 1.5);
-    hold on;
-end
-xlabel('Angle (degrees)');
-ylabel('Likelihood');
-title('Sample Likelihood Functions');
-grid on;
-legend(arrayfun(@(x) sprintf('Trial %d', x), sample_trials, 'UniformOutput', false));
 
 sgtitle(sprintf('TAFKAP Decoding Results - Subject %02d', subjID));
 
 % Save figure
-fig_path = fullfile(output_dir, sprintf('sub-%02d_tafkap_results_%d.fig', subjID, surface_resolution));
+fig_path = fullfile(output_dir, sprintf('sub-%02d_tafkap_results_%d_t%.1f.fig', subjID, surface_resolution, input_time));
 saveas(gcf, fig_path);
 fprintf('Figure saved to: %s\n', fig_path);
+
+% Also save as PNG
+png_path = fullfile(output_dir, sprintf('sub-%02d_tafkap_results_%d_t%.1f.png', subjID, surface_resolution, input_time));
+saveas(gcf, png_path);
+fprintf('PNG saved to: %s\n', png_path);
 
 fprintf('\nTAFKAP decoding analysis complete!\n');
 fprintf('Results saved in: %s\n', output_dir);
