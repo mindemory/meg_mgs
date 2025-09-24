@@ -310,7 +310,7 @@ hold on;
 xline(0, 'k--', 'LineWidth', 1, 'Alpha', 0.7);
 xlabel('Time (seconds)');
 ylabel('Mean Absolute Error (degrees)');
-title('SVM Decoding Performance Over Time');
+title('SVM Decoding Performance Over Time (PCA-Reduced)');
 grid on;
 xlim([-0.6, 1.6]);
 
@@ -321,7 +321,7 @@ hold on;
 xline(0, 'k--', 'LineWidth', 1, 'Alpha', 0.7);
 xlabel('Time (seconds)');
 ylabel('Error Standard Deviation (degrees)');
-title('Error Variability Over Time');
+title('Error Variability Over Time (PCA-Reduced)');
 grid on;
 xlim([-0.6, 1.6]);
 
@@ -440,9 +440,10 @@ print(fig2, png2_file, '-dpng', '-r300');
 fprintf('Angles PNG saved to: %s\n', png2_file);
 
 %% Print summary statistics
-fprintf('\n=== SVM Time Series Summary ===\n');
+fprintf('\n=== SVM Time Series Summary (PCA-Reduced) ===\n');
 fprintf('Subject: %d\n', subjID);
 fprintf('Surface resolution: %d\n', surface_resolution);
+fprintf('PCA components: %d (from 0.3-0.5s window)\n', n_components);
 fprintf('Time points analyzed: %d\n', n_timepoints);
 fprintf('Successful analyses: %d/%d\n', sum(results_summary.success), n_timepoints);
 
@@ -651,10 +652,10 @@ circular_errors_rad = circ_dist(est_rad, target_rad);
 % Convert back to degrees
 circular_errors_deg = circ_rad2ang(circular_errors_rad);
 
-% Calculate performance metrics using circular statistics
-mean_error = circ_rad2ang(circ_mean(circular_errors_rad));
-std_error = circ_rad2ang(circ_std(circular_errors_rad));
-median_error = circ_rad2ang(circ_median(circular_errors_rad));
+% Calculate performance metrics using mean absolute error
+mean_error = mean(abs(circular_errors_deg));
+std_error = std(abs(circular_errors_deg));
+median_error = median(abs(circular_errors_deg));
 n_trials = length(all_targets);
 
 % Return true and predicted angles for visualization
