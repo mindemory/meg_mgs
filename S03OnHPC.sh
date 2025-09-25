@@ -1,12 +1,12 @@
 #!/bin/bash
-# HPC Batch Script for S03 Beta Power Analysis
+# HPC Batch Script for S03A Frequency Power Analysis
 # Usage: sbatch executeMatlabOnHPC.sh
 
-#SBATCH --job-name=s03_beta
-#SBATCH --output=slurmOutput/s03_beta_sub-%02a_%j.out
+#SBATCH --job-name=s03a_freq
+#SBATCH --output=slurmOutput/s03a_freq_sub-%02a_%j.out
 #SBATCH --time=06:00:00
-#SBATCH --mem=32G
-#SBATCH --cpus-per-task=20
+#SBATCH --mem=64G
+#SBATCH --cpus-per-task=10
 #SBATCH --mail-user=mrugank.dake@nyu.edu
 #SBATCH --mail-type=END
 #SBATCH --array=1-21
@@ -27,26 +27,34 @@ subjID=${subjects[$((SLURM_ARRAY_TASK_ID-1))]}
 subjID_padded=$(printf "%02d" $subjID)
 
 # Define surface resolutions to process
-surface_resolutions=(5124 8196)
+surface_resolutions=(5 8 10)
+
+# Define frequency bands to process
+frequency_bands=("theta" "alpha" "beta" "lowgamma")
+# frequency_bands=("beta")
+
 
 echo "Processing Subject $subjID (sub-$subjID_padded)"
 
-# Process each surface resolution
-for surface_resolution in "${surface_resolutions[@]}"
+for frequency_band in "${frequency_bands[@]}"
 do
-    echo "Processing resolution $surface_resolution for subject $subjID"
-    
-    # Check if source data exists
-    source_file="/scratch/mdd9787/meg_prf_greene/MEG_HPC/derivatives/sub-${subjID_padded}/sourceRecon/sub-${subjID_padded}_task-mgs_sourceSpaceData_${surface_resolution}.mat"
-    if [ ! -f "$source_file" ]; then
-        echo "Source file $source_file not found, skipping..."
-        continue
-    fi
-    
-    # Run S03 analysis
-    matlab -nodisplay -nosplash -r "S03_betaPowerInSource($subjID, $surface_resolution); exit;"
-    
-    echo "Completed resolution $surface_resolution for subject $subjID"
+    # Process each surface resolution
+    for surface_resolution in "${surface_resolutions[@]}"
+    do
+        echo "Processing resolution $surface_resolution for subject $subjID"
+        
+        # Check if source data exists
+        source_file="/scratch/mdd9787/meg_prf_greene/MEG_HPC/derivatives/sub-${subjID_padded}/sourceRecon/sub-${subjID_padded}_task-mgs_sourceSpaceData_${surface_resolution}.mat"
+        if [ ! -f "$source_file" ]; then
+            echo "Source file $source_file not found, skipping..."
+            continue
+        fi
+        
+        # Run S03 analysis
+        matlab -nodisplay -nosplash -r "S03A_FrequencyPowerInSource($subjID, $surface_resolution, '$frequency_band'); exit;"
+        
+        echo "Completed resolution $surface_resolution for subject $subjID"
+    done
 done
 
 echo "All processing complete for subject $subjID"

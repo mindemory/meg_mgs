@@ -30,7 +30,7 @@ addpath(genpath(project_path));
 fprintf('Loading template surface...\n');
 
 % Try different surface resolutions
-surface_resolutions = [5124]; %, 8196, 20484];
+surface_resolutions = [20484]; %, 8196, 20484];
 surface_loaded = false;
 
 for res = surface_resolutions
@@ -235,8 +235,351 @@ if isfield(vtpm_atlas, 'tissue') && isfield(vtpm_atlas, 'dim')
     hold off;
 end
 
+%% Visualize Specific ROIs
+fprintf('\nCreating specific ROI visualization...\n');
+
+% Define ROIs (using full names with hemisphere prefixes)
+visual_rois = {'left_V1d', 'left_V1v', 'left_V2d', 'left_V2v', 'left_V3d', 'left_V3v', 'left_V3a', 'left_V3b', ...
+               'right_V1d', 'right_V1v', 'right_V2d', 'right_V2v', 'right_V3d', 'right_V3v', 'right_V3a', 'right_V3b'};
+parietal_rois = {'left_IPS0', 'left_IPS1', 'left_IPS2', 'left_IPS3', 'left_IPS4', 'left_IPS5', ...
+                'right_IPS0', 'right_IPS1', 'right_IPS2', 'right_IPS3', 'right_IPS4', 'right_IPS5'};
+frontal_rois = {'left_FEF', 'right_FEF'};
+
+% Create single figure
+figure('Position', [100, 100, 1200, 800], 'Name', 'Wang Atlas - Specific ROIs');
+
+hold on;
+
+% Visual ROIs - Red color
+for i = 1:length(visual_rois)
+    roi_name = visual_rois{i};
+    for region_id = 1:length(vtpm_atlas.tissuelabel)
+        if strcmp(vtpm_atlas.tissuelabel{region_id}, roi_name)
+            [x, y, z] = ind2sub(vtpm_atlas.dim, find(vtpm_atlas.tissue == region_id));
+            scatter3(x, y, z, 30, [1, 0, 0], 'filled', 'DisplayName', roi_name);
+            break;
+        end
+    end
+end
+
+% Parietal ROIs - Blue color
+for i = 1:length(parietal_rois)
+    roi_name = parietal_rois{i};
+    for region_id = 1:length(vtpm_atlas.tissuelabel)
+        if strcmp(vtpm_atlas.tissuelabel{region_id}, roi_name)
+            [x, y, z] = ind2sub(vtpm_atlas.dim, find(vtpm_atlas.tissue == region_id));
+            scatter3(x, y, z, 30, [0, 0, 1], 'filled', 'DisplayName', roi_name);
+            break;
+        end
+    end
+end
+
+% Frontal ROIs - Green color
+for i = 1:length(frontal_rois)
+    roi_name = frontal_rois{i};
+    for region_id = 1:length(vtpm_atlas.tissuelabel)
+        if strcmp(vtpm_atlas.tissuelabel{region_id}, roi_name)
+            [x, y, z] = ind2sub(vtpm_atlas.dim, find(vtpm_atlas.tissue == region_id));
+            scatter3(x, y, z, 30, [0, 1, 0], 'filled', 'DisplayName', roi_name);
+            break;
+        end
+    end
+end
+
+title('Wang Atlas - Specific ROIs by Category', 'FontSize', 16, 'FontWeight', 'bold');
+xlabel('X (voxels)', 'FontSize', 12);
+ylabel('Y (voxels)', 'FontSize', 12);
+zlabel('Z (voxels)', 'FontSize', 12);
+grid on;
+legend('Location', 'eastoutside', 'FontSize', 10);
+view(45, 30);
+hold off;
+
+%% Visualize ROIs on Cortex Surface
+fprintf('\nCreating cortex surface visualization...\n');
+
+% Create surface visualization figure
+figure('Position', [200, 200, 1600, 1000], 'Name', 'Wang Atlas - ROIs on Cortex Surface');
+
+% Create source structure for surface visualization
+sourceVisualize = struct();
+sourceVisualize.pos = template_mesh.pos;
+sourceVisualize.tri = template_mesh.tri;
+sourceVisualize.unit = 'mm';
+sourceVisualize.coordsys = 'mni';
+
+% Initialize ROI data on surface
+n_vertices = size(template_mesh.pos, 1);
+roi_data = zeros(n_vertices, 1); % 0 = background, 1 = visual, 2 = parietal, 3 = frontal
+
+% Transform atlas coordinates to MNI space using transform matrix
+transform_matrix = vtpm_atlas.transform;
+
+% Find vertices that belong to each ROI category
+for i = 1:length(visual_rois)
+    roi_name = visual_rois{i};
+    for region_id = 1:length(vtpm_atlas.tissuelabel)
+        if strcmp(vtpm_atlas.tissuelabel{region_id}, roi_name)
+            % Get ROI voxels
+            [x, y, z] = ind2sub(vtpm_atlas.dim, find(vtpm_atlas.tissue == region_id));
+            roi_coords_voxel = [x, y, z, ones(size(x))];
+            
+            % Transform to MNI space (mm)
+            roi_coords_mni = (transform_matrix * roi_coords_voxel')';
+            roi_coords_mni = roi_coords_mni(:, 1:3); % Remove homogeneous coordinate
+            
+            % Find closest surface vertices to ROI coordinates
+            for j = 1:size(roi_coords_mni, 1)
+                distances = sqrt(sum((template_mesh.pos - roi_coords_mni(j, :)).^2, 2));
+                [~, closest_vertex] = min(distances);
+                roi_data(closest_vertex) = 1; % Visual
+            end
+            break;
+        end
+    end
+end
+
+for i = 1:length(parietal_rois)
+    roi_name = parietal_rois{i};
+    for region_id = 1:length(vtpm_atlas.tissuelabel)
+        if strcmp(vtpm_atlas.tissuelabel{region_id}, roi_name)
+            % Get ROI voxels
+            [x, y, z] = ind2sub(vtpm_atlas.dim, find(vtpm_atlas.tissue == region_id));
+            roi_coords_voxel = [x, y, z, ones(size(x))];
+            
+            % Transform to MNI space (mm)
+            roi_coords_mni = (transform_matrix * roi_coords_voxel')';
+            roi_coords_mni = roi_coords_mni(:, 1:3); % Remove homogeneous coordinate
+            
+            % Find closest surface vertices to ROI coordinates
+            for j = 1:size(roi_coords_mni, 1)
+                distances = sqrt(sum((template_mesh.pos - roi_coords_mni(j, :)).^2, 2));
+                [~, closest_vertex] = min(distances);
+                roi_data(closest_vertex) = 2; % Parietal
+            end
+            break;
+        end
+    end
+end
+
+for i = 1:length(frontal_rois)
+    roi_name = frontal_rois{i};
+    for region_id = 1:length(vtpm_atlas.tissuelabel)
+        if strcmp(vtpm_atlas.tissuelabel{region_id}, roi_name)
+            % Get ROI voxels
+            [x, y, z] = ind2sub(vtpm_atlas.dim, find(vtpm_atlas.tissue == region_id));
+            roi_coords_voxel = [x, y, z, ones(size(x))];
+            
+            % Transform to MNI space (mm)
+            roi_coords_mni = (transform_matrix * roi_coords_voxel')';
+            roi_coords_mni = roi_coords_mni(:, 1:3); % Remove homogeneous coordinate
+            
+            % Find closest surface vertices to ROI coordinates
+            for j = 1:size(roi_coords_mni, 1)
+                distances = sqrt(sum((template_mesh.pos - roi_coords_mni(j, :)).^2, 2));
+                [~, closest_vertex] = min(distances);
+                roi_data(closest_vertex) = 3; % Frontal
+            end
+            break;
+        end
+    end
+end
+
+% Add ROI data to source structure
+sourceVisualize.roi_data = roi_data;
+
+% Create subplots for different views
+subplot(2, 2, 1);
+% Left hemisphere view
+cfg = [];
+cfg.method = 'surface';
+cfg.figure = 'gcf';
+cfg.funparameter = 'roi_data';
+cfg.surffile = sprintf('cortex_%d.surf.gii', surface_resolution);
+cfg.colorbar = 'yes';
+cfg.funcolormap = [0.8, 0.8, 0.8; 1, 0, 0; 0, 0, 1; 0, 1, 0]; % Gray, Red, Blue, Green
+cfg.funcolorlim = [0, 3.5];
+ft_sourceplot(cfg, sourceVisualize);
+view(-90, 0); % Left hemisphere
+title('Left Hemisphere', 'FontSize', 14, 'FontWeight', 'bold');
+lighting gouraud;
+material dull;
+
+subplot(2, 2, 2);
+% Right hemisphere view
+ft_sourceplot(cfg, sourceVisualize);
+view(90, 0); % Right hemisphere
+title('Right Hemisphere', 'FontSize', 14, 'FontWeight', 'bold');
+lighting gouraud;
+material dull;
+
+subplot(2, 2, 3);
+% Top view
+ft_sourceplot(cfg, sourceVisualize);
+view(0, 90); % Top view
+title('Top View', 'FontSize', 14, 'FontWeight', 'bold');
+lighting gouraud;
+material dull;
+
+subplot(2, 2, 4);
+% Back view
+ft_sourceplot(cfg, sourceVisualize);
+view(180, 0); % Back view
+title('Back View', 'FontSize', 14, 'FontWeight', 'bold');
+lighting gouraud;
+material dull;
+
+sgtitle('Wang Atlas ROIs on Cortex Surface', 'FontSize', 16, 'FontWeight', 'bold');
+
+fprintf('Cortex surface visualization complete!\n');
 
 
+
+
+%%
+vroi = sourceVisualize.roi_data == 1;
+proi = sourceVisualize.roi_data == 2;
+froi = sourceVisualize.roi_data == 3;
+emptyVertices = sourceVisualize.roi_data == 0;
+
+figure;
+scatter3(sourceVisualize.pos(vroi, 1), sourceVisualize.pos(vroi, 2), sourceVisualize.pos(vroi, 3), 'w', 'filled')
+% hold on;
+% scatter3(sourceVisualize.pos(proi, 1), sourceVisualize.pos(proi, 2), sourceVisualize.pos(proi, 3), 'w', 'filled')
+% 
+% scatter3(sourceVisualize.pos(froi, 1), sourceVisualize.pos(froi, 2), sourceVisualize.pos(froi, 3), 'w', 'filled')
+
+scatter3(sourceVisualize.pos(emptyVertices, 1), sourceVisualize.pos(emptyVertices, 2), sourceVisualize.pos(emptyVertices, 3), 'k')
+
+%% Recommended Solution: Using ft_sourceinterpolate
+fprintf('\n=== Using ft_sourceinterpolate for proper atlas-to-surface mapping ===\n');
+
+% Create source structure from template mesh
+atlas_source = struct();
+atlas_source.pos = template_mesh.pos;
+atlas_source.tri = template_mesh.tri;
+atlas_source.unit = 'mm';
+atlas_source.coordsys = 'mni';
+atlas_source.inside = sourcemodel_aligned_20484.inside;
+
+% Interpolate atlas to surface using FieldTrip's built-in function
+cfg = [];
+cfg.interpmethod = 'nearest';
+cfg.parameter = 'tissue';
+% sourceVisualize_interpolated = ft_sourceinterpolate(cfg, vtpm_atlas, atlas_source);
+sourceVisualize_interpolated = ft_sourceinterpolate(cfg, vtpm_atlas, atlas_source);
+
+
+% Get region IDs for each category
+visual_region_ids = [];
+parietal_region_ids = [];
+frontal_region_ids = [];
+
+% Find region IDs for visual ROIs
+for i = 1:length(visual_rois)
+    roi_name = visual_rois{i};
+    for region_id = 1:length(vtpm_atlas.tissuelabel)
+        if strcmp(vtpm_atlas.tissuelabel{region_id}, roi_name)
+            visual_region_ids = [visual_region_ids, region_id];
+            break;
+        end
+    end
+end
+
+% Find region IDs for parietal ROIs
+for i = 1:length(parietal_rois)
+    roi_name = parietal_rois{i};
+    for region_id = 1:length(vtpm_atlas.tissuelabel)
+        if strcmp(vtpm_atlas.tissuelabel{region_id}, roi_name)
+            parietal_region_ids = [parietal_region_ids, region_id];
+            break;
+        end
+    end
+end
+
+% Find region IDs for frontal ROIs
+for i = 1:length(frontal_rois)
+    roi_name = frontal_rois{i};
+    for region_id = 1:length(vtpm_atlas.tissuelabel)
+        if strcmp(vtpm_atlas.tissuelabel{region_id}, roi_name)
+            frontal_region_ids = [frontal_region_ids, region_id];
+            break;
+        end
+    end
+end
+
+fprintf('Visual region IDs: %s\n', mat2str(visual_region_ids));
+fprintf('Parietal region IDs: %s\n', mat2str(parietal_region_ids));
+fprintf('Frontal region IDs: %s\n', mat2str(frontal_region_ids));
+
+% Create masks for each category
+visual_mask = ismember(sourceVisualize_interpolated.tissue, visual_region_ids);
+parietal_mask = ismember(sourceVisualize_interpolated.tissue, parietal_region_ids);
+frontal_mask = ismember(sourceVisualize_interpolated.tissue, frontal_region_ids);
+
+% Create ROI data vector
+roi_data_interpolated = zeros(size(sourceVisualize_interpolated.tissue));
+roi_data_interpolated(visual_mask) = 1;    % Visual
+roi_data_interpolated(parietal_mask) = 2; % Parietal
+roi_data_interpolated(frontal_mask) = 3;  % Frontal
+
+% Add to source structure
+sourceVisualize_interpolated.roi_data = roi_data_interpolated;
+
+% Create visualization using interpolated data
+figure('Position', [300, 300, 1600, 1000], 'Name', 'Wang Atlas - ROIs on Cortex Surface (ft_sourceinterpolate)');
+
+% Create subplots for different views
+subplot(2, 2, 1);
+% Left hemisphere view
+cfg = [];
+cfg.method = 'surface';
+cfg.figure = 'gcf';
+cfg.funparameter = 'roi_data';
+cfg.surffile = sprintf('cortex_%d.surf.gii', surface_resolution);
+cfg.colorbar = 'yes';
+cfg.funcolormap = [0.8, 0.8, 0.8; 1, 0, 0; 0, 0, 1; 0, 1, 0]; % Gray, Red, Blue, Green
+cfg.funcolorlim = [0, 3.5];
+ft_sourceplot(cfg, sourceVisualize_interpolated);
+view(-90, 0); % Left hemisphere
+title('Left Hemisphere (ft_sourceinterpolate)', 'FontSize', 14, 'FontWeight', 'bold');
+lighting gouraud;
+material dull;
+
+subplot(2, 2, 2);
+% Right hemisphere view
+ft_sourceplot(cfg, sourceVisualize_interpolated);
+view(90, 0); % Right hemisphere
+title('Right Hemisphere (ft_sourceinterpolate)', 'FontSize', 14, 'FontWeight', 'bold');
+lighting gouraud;
+material dull;
+
+subplot(2, 2, 3);
+% Top view
+ft_sourceplot(cfg, sourceVisualize_interpolated);
+view(0, 90); % Top view
+title('Top View (ft_sourceinterpolate)', 'FontSize', 14, 'FontWeight', 'bold');
+lighting gouraud;
+material dull;
+
+subplot(2, 2, 4);
+% Back view
+ft_sourceplot(cfg, sourceVisualize_interpolated);
+view(180, 0); % Back view
+title('Back View (ft_sourceinterpolate)', 'FontSize', 14, 'FontWeight', 'bold');
+lighting gouraud;
+material dull;
+
+sgtitle('Wang Atlas ROIs on Cortex Surface (ft_sourceinterpolate)', 'FontSize', 16, 'FontWeight', 'bold');
+
+% Compare the two methods
+fprintf('\n=== Comparison of Methods ===\n');
+fprintf('Manual mapping - Visual vertices: %d, Parietal: %d, Frontal: %d\n', ...
+        sum(roi_data == 1), sum(roi_data == 2), sum(roi_data == 3));
+fprintf('ft_sourceinterpolate - Visual vertices: %d, Parietal: %d, Frontal: %d\n', ...
+        sum(roi_data_interpolated == 1), sum(roi_data_interpolated == 2), sum(roi_data_interpolated == 3));
+
+fprintf('ft_sourceinterpolate method complete!\n');
 
 
 
