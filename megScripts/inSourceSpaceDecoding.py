@@ -56,7 +56,7 @@ def load_source_space_data(subjID, bidsRoot, taskName):
     complex_data = data_matrix['real'] + 1j * data_matrix['imag']
     data_matrix = np.abs(complex_data) ** 2
 
-    # Baseline correction: compute baseline from -0.75s to 0s
+    # Baseline correction: compute baseline from -0.75s to 0s (deprecated, maybe not needed)
     # baseline_mask = (time_vector.flatten() >= -0.75) & (time_vector.flatten() <= 0)
     # baseline_indices = np.where(baseline_mask)[0]
     # baseline_power = data_matrix[:, baseline_indices, :].mean(axis=(0, 1))  # Shape: (sources,)
@@ -64,6 +64,28 @@ def load_source_space_data(subjID, bidsRoot, taskName):
     mean_allTrials = data_matrix.mean(axis=0)
     data_matrix = data_matrix / mean_allTrials[np.newaxis, :, :] - 1
 
+    # Downsample data to 50ms resolution
+    dt = np.mean(np.diff(time_vector.flatten()))
+    target_dt = 0.05  # 50ms
+    downsample_factor = int(target_dt / dt)
+    if downsample_factor < 1:
+        downsample_factor = 1
+    # Downsample data_matrix by averaging over time windows
+    n_trials, n_timepoints, n_sources = data_matrix.shape
+    n_downsampled = n_timepoints // downsample_factor
+    data_matrix_downsampled = np.zeros((n_trials, n_downsampled, n_sources))
+    for i in range(n_downsampled):
+        start_idx = i * downsample_factor
+        end_idx = min((i + 1) * downsample_factor, n_timepoints)
+        data_matrix_downsampled[:, i, :] = np.mean(data_matrix[:, start_idx:end_idx, :], axis=1)
+    # Downsample time_vector to match data (take starting time of each bin)
+    time_vector_downsampled = np.zeros((n_downsampled, 1))
+    for i in range(n_downsampled):
+        start_idx = i * downsample_factor
+        time_vector_downsampled[i, 0] = time_vector[start_idx, 0]
+    
+    data_matrix = data_matrix_downsampled
+    time_vector = time_vector_downsampled
     # plt.figure()
     # plt.hist(data_matrix.flatten(), bins=100)
     # plt.show()
@@ -107,62 +129,119 @@ def plot_source_model_3d_power(volumetric_fpath, data_matrix, time_vector, time_
     volumetric_data.close()
     os.remove(volumetricTempPath)
 
-def run_timepoint_svm_classification(data_matrix, target_labels, time_vector, leftTargets, rightTargets):
-    """Run SVM classification at each time point for left vs right targets with proper train/test splits"""
-    print("Running time-point-wise SVM classification with train/test splits...")
+def run_timepoint_svm_classification(data_matrix, target_labels, time_vector, classifType):
+    """Run SVM classification at each time point with different classification schemes"""
+    print(f"Running time-point-wise SVM classification ({classifType}) with train/test splits...")
+
+    # Shuffle data_matrix and target_labels
+    newIdx = np.random.permutation(len(data_matrix))
+    data_matrix = data_matrix[newIdx, :, :]
+    target_labels = target_labels[newIdx]
     
-    # Create binary labels: 0 for left targets, 1 for right targets
-    binary_labels = np.zeros(len(target_labels))
-    binary_labels[np.isin(target_labels, rightTargets)] = 1
+    # Create labels based on classification type
+    if classifType == 'binary':
+        # Binary: left vs right targets
+        leftTargets = [4, 5, 6, 7, 8]
+        rightTargets = [1, 2, 3, 9, 10]
+        class_labels = np.zeros(len(target_labels))
+        class_labels[np.isin(target_labels, rightTargets)] = 1
+        n_classes = 2
+        
+    elif classifType == '4way':
+        # 4-way: class1=2,3; class2=4,5; class3=7,8; class4=9,10
+        # Keep only targets 2,3,4,5,7,8,9,10 (drop 1 and 6)
+        keep_targets = [2, 3, 4, 5, 7, 8, 9, 10]
+        keep_idx = np.isin(target_labels, keep_targets)
+        target_labels = target_labels[keep_idx]
+        data_matrix = data_matrix[keep_idx, :, :]
+        class_labels = np.zeros(len(target_labels))
+        class_labels[np.isin(target_labels, [2, 3])] = 0
+        class_labels[np.isin(target_labels, [4, 5])] = 1
+        class_labels[np.isin(target_labels, [7, 8])] = 2
+        class_labels[np.isin(target_labels, [9, 10])] = 3
+        n_classes = 4
+        
+    elif classifType == '6way':
+        # 6-way: class1=1; class2=2,3; class3=4,5; class4=6; class5=7,8; class6=9,10
+        class_labels = np.zeros(len(target_labels))
+        class_labels[np.isin(target_labels, [1])] = 0
+        class_labels[np.isin(target_labels, [2, 3])] = 1
+        class_labels[np.isin(target_labels, [4, 5])] = 2
+        class_labels[np.isin(target_labels, [6])] = 3
+        class_labels[np.isin(target_labels, [7, 8])] = 4
+        class_labels[np.isin(target_labels, [9, 10])] = 5
+        n_classes = 6
+        
+    elif classifType == '10way':
+        # 10-way: each target is its own class (targets 1-10)
+        class_labels = target_labels - 1  # Convert to 0-based indexing
+        n_classes = 10
+        
+    else:
+        raise ValueError(f"Unknown classification type: {classifType}")
     
-    print(f"Binary labels: {np.bincount(binary_labels.astype(int))}")
-    print(f"Left targets: {np.sum(binary_labels == 0)}, Right targets: {np.sum(binary_labels == 1)}")
+    print(f"Classification type: {classifType}")
+    print(f"Number of classes: {n_classes}")
+    print(f"Class distribution: {np.bincount(class_labels.astype(int))}")
     
     # Initialize results arrays
     n_timepoints = data_matrix.shape[1]
     cv_accuracy_scores = np.zeros(n_timepoints)
     cv_f1_scores = np.zeros(n_timepoints)
     
-    # Set up cross-validation
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42) 
-    
     print(f"Running classification for {n_timepoints} time points...")
     
     for t in range(n_timepoints):
-        if t % 50 == 0:  # Progress update every 50 time points
+        if t % (n_timepoints // 10) == 0:  # Progress update every 10% of time points
             print(f"Processing time point {t}/{n_timepoints} ({t/n_timepoints*100:.1f}%)")
+        
+        # Set up cross-validation
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42) 
         
         # Get data for this time point: (trials, sources)
         X = data_matrix[:, t, :]
-        # X = X.reshape(X.shape[0], -1)
+        # z-score X
+        X = (X - X.mean(axis=0)) / X.std(axis=0)
         
         # Initialize SVM classifier
         svm = SVC(kernel='rbf', random_state=42)
         
         # Cross-validation for accuracy
-        cv_accuracy = cross_val_score(svm, X, binary_labels, cv=cv, scoring='accuracy')
+        cv_accuracy = cross_val_score(svm, X, class_labels, cv=cv, scoring='accuracy')
         cv_accuracy_scores[t] = np.mean(cv_accuracy)
         
-        # Cross-validation for F1 score
-        cv_f1 = cross_val_score(svm, X, binary_labels, cv=cv, scoring='f1')
+        # Cross-validation for F1 score (macro-averaged for multi-class)
+        cv_f1 = cross_val_score(svm, X, class_labels, cv=cv, scoring='f1_macro')
         cv_f1_scores[t] = np.mean(cv_f1)
     
     print("Classification completed!")
     
     return cv_accuracy_scores, cv_f1_scores, time_vector
 
-def plot_classification_results(cv_accuracy_scores, cv_f1_scores, time_vector, title="SVM Classification Results"):
+def plot_classification_results(cv_accuracy_scores, cv_f1_scores, time_vector, classifType, title="SVM Classification Results"):
     """Plot classification results over time"""
     plt.figure(figsize=(12, 6))
+    
+    # Calculate chance level based on classification type
+    if classifType == 'binary':
+        chance_level = 0.5
+    elif classifType == '4way':
+        chance_level = 0.25
+    elif classifType == '6way':
+        chance_level = 1.0/6
+    elif classifType == '10way':
+        chance_level = 0.1
+    else:
+        chance_level = 0.5  # Default fallback
     
     # Plot both metrics on the same plot
     plt.plot(time_vector.flatten(), cv_accuracy_scores, 'b-', linewidth=2, label='CV Accuracy')
     plt.plot(time_vector.flatten(), cv_f1_scores, 'g-', linewidth=2, label='CV F1 Score')
-    plt.axhline(y=0.5, color='r', linestyle='--', alpha=0.7, label='Chance')
+    plt.axhline(y=chance_level, color='r', linestyle='--', alpha=0.7, label=f'Chance ({chance_level:.2f})')
     
     plt.xlabel('Time (s)')
     plt.ylabel('Score')
-    plt.title(title)
+    plt.title(f"{title} ({classifType})")
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
@@ -172,6 +251,7 @@ def main():
     # Test with subject 1 first
     subjID = 1
     taskName = 'mgs'
+    classifType = '10way' # valid option: binary, 4way, 6way, 10way
     
     if socket.gethostname() == 'zod':
         bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
@@ -195,7 +275,7 @@ def main():
     inside_indices = np.where(inside == 1)[0]
     inside_pos = pos[inside_indices]
     # Filter inside positions to get posterior ones (y < 0)
-    posterior_inside_mask = inside_pos[:, 1] < 0
+    posterior_inside_mask = (inside_pos[:, 1] < -25) & (inside_pos[:, 2] > 0)
     posterior_inside = inside_pos[posterior_inside_mask]
 
     # fig = plt.figure(figsize=(12, 8))
@@ -207,17 +287,11 @@ def main():
     # plt.show()
     # exit()
     
-    print(f"Posterior sources: {len(posterior_inside)}")
-    print(f"Posterior inside sources: {len(posterior_inside)}")
-    
     # Get the indices of posterior sources within the inside vertices
     posterior_inside_indices = np.where(posterior_inside_mask)[0]
-    print(f"Posterior inside indices: {len(posterior_inside_indices)}")
-    
     data_matrix = data_matrix[:, :, posterior_inside_indices]
 
-    leftTargets = [4, 5, 6, 7, 8]
-    rightTargets = [1, 2, 3, 9, 10]
+   
     
     print("Data loaded successfully!")
     print(f"Data matrix shape: {data_matrix.shape}")
@@ -227,11 +301,11 @@ def main():
     
     # Run SVM classification at each time point
     cv_accuracy_scores, cv_f1_scores, time_vector = run_timepoint_svm_classification(
-        data_matrix, target_labels, time_vector, leftTargets, rightTargets)
+        data_matrix, target_labels, time_vector, classifType)
     
     # Plot classification results
-    plot_classification_results(cv_accuracy_scores, cv_f1_scores, time_vector, 
-                              title="Left vs Right Target Classification (Source Space)")
+    plot_classification_results(cv_accuracy_scores, cv_f1_scores, time_vector, classifType,
+                              title="Target Classification (Source Space)")
 
 if __name__ == '__main__':
     main()
