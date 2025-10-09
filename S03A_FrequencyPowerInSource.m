@@ -23,7 +23,7 @@ if nargin < 3
 end
 
 % Validate frequency band
-valid_bands = {'theta', 'alpha', 'beta'};
+valid_bands = {'theta', 'alpha', 'beta', 'lowgamma'};
 if ~ismember(frequency_band, valid_bands)
     error('Invalid frequency band: %s. Must be one of: %s', frequency_band, strjoin(valid_bands, ', '));
 end
