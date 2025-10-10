@@ -53,6 +53,8 @@ ft_defaults;
 % Add Gifti toolbox for .surf.gii files
 addpath(ft_gifti_path);
 
+addpath(genpath(project_path));
+
 %% Verify paths exist
 if ~exist(fieldtrip_path, 'dir')
     error('FieldTrip path not found: %s', fieldtrip_path);
