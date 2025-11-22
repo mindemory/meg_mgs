@@ -1,8 +1,10 @@
 function Fs04_visualizeBetaTopographyByLoc(subjID, surface_resolution)
 % Fs04_visualizeBetaTopographyByLoc - Visualize beta power topography by target location
 %
-% This script loads relative power data from S04 and creates visualizations
-% for individual subjects and group averages.
+% This script loads source space data and computes relative power by:
+% 1. Computing average over all trials first (baseline)
+% 2. Dividing each trial by this baseline
+% 3. Averaging for each location
 %
 % Inputs:
 %   subjID - Subject ID (1-21) or 'all' for group average
@@ -14,14 +16,14 @@ function Fs04_visualizeBetaTopographyByLoc(subjID, surface_resolution)
 %   - Group average figures: MEG_HPC/derivatives/figures/S04/group/
 %
 % Dependencies:
-%   - S04_betaPowerInMNI.m (must be run first)
+%   - Source space data files with sourcedataCombined structure
 %
 % Example:
 %   Fs04_visualizeBetaTopographyByLoc(1, 5124)  % Individual subject
 %   Fs04_visualizeBetaTopographyByLoc('all', 5124)  % Group average
 %
 % Author: Mrugank Dake
-% Date: 2025-09-18
+% Date: 2025-01-20
 
 % restoredefaultpath;
 clearvars -except subjID surface_resolution; % Keep inputs
@@ -103,41 +105,69 @@ if strcmp(subjID, 'all')
     fprintf('Loading data from all subjects for group average...\n');
     
     % Define subjects array
-    subjects = [1 2 3 4 5 6 7 9 10 12 13 15 17 18 19 23 24 25 29 31 32];
+    % subjects = [1 2 3 4 5 6 7 9 10 12 13 15 17 18 19 23 24 25 29 31 32];
+    subjects = [1 2];
     
     all_power_data = [];
     valid_subjects = [];
     
     for s = subjects
         subj_data_path = fullfile(data_base_path, sprintf('sub-%02d', s), 'sourceRecon', ...
-            sprintf('sub-%02d_task-mgs_relativePowerBetaBand_%d.mat', s, surface_resolution));
+            sprintf('sub-%02d_task-mgs_sourceSpaceData_%d.mat', s, surface_resolution));
         
         if exist(subj_data_path, 'file')
             fprintf('  Loading subject %02d...\n', s);
-            loaded_data = load(subj_data_path);
+            loaded_data = load(subj_data_path, 'sourcedataCombined');
+            sourcedata = loaded_data.sourcedataCombined;
             
-            % Collect power data from all targets
+            % Extract trial information
+            n_sources = length(sourcedata.label);
+            target_info = sourcedata.trialinfo(:, 2); % 2nd column has target info
+            
+            % Compute relative power using new method for this subject
+            fprintf('    Computing relative power for subject %02d...\n', s);
+            
+            % Define time window for analysis (0.5-1.0s)
+            time_start = 0.5;
+            time_end = 1.0;
+            
+            % Get time vector from first trial to determine time indices
+            time_vector = sourcedata.time{1};
+            time_idx = time_vector >= time_start & time_vector <= time_end;
+            
+            % Step 1: Compute average over all trials first (baseline) - only for time window
+            % Use cellfun to extract and average time window for all trials
+            trial_data_windows = cellfun(@(trial_data) mean(trial_data(:, time_idx), 2, 'omitnan'), ...
+                                        sourcedata.trial, 'UniformOutput', false);
+            all_trial_data = [trial_data_windows{:}]; % Concatenate all trials
+            baseline = mean(all_trial_data, 2, 'omitnan'); % Average across all trials
+            
+            % Step 2: Compute relative power for each target
+            subject_power_data = zeros(n_sources, 10);
+            
             for target = 1:10
-                if ~isempty(loaded_data.powerDataByTarget{target})
-                    % Get relative power for 0.8-1.5s time window
-                    relative_power_windows = loaded_data.powerDataByTarget{target}.relative_power_windows;
-                    time_windows = loaded_data.powerDataByTarget{target}.time_windows;
+                % Find trials for this target
+                target_trials = find(target_info == target);
+                
+                if ~isempty(target_trials)
+                    % Compute relative power for each trial of this target using cellfun
+                    target_trial_data = sourcedata.trial(target_trials);
+                    relative_power_trials = cellfun(@(trial_data) mean(trial_data(:, time_idx), 2, 'omitnan') - baseline , ...
+                                                   target_trial_data, 'UniformOutput', false);
+                    relative_power_matrix = [relative_power_trials{:}]; % Concatenate all trials
                     
-                    % Find time windows between 0.8 and 1.5 seconds
-                    window_indices = find(time_windows >= 0.8 & time_windows <= 1.5);
-                    
-                    if ~isempty(window_indices)
-                        % Average relative power across the time window
-                        relative_power_data = mean(relative_power_windows(:, window_indices), 2, 'omitnan');
-                        
-                        if isempty(all_power_data)
-                            all_power_data = zeros(size(relative_power_data, 1), 10, length(subjects));
-                        end
-                        
-                        all_power_data(:, target, s == subjects) = relative_power_data;
-                    end
+                    % Step 3: Average for this location (across trials)
+                    subject_power_data(:, target) = mean(relative_power_matrix, 2);
+                else
+                    subject_power_data(:, target) = NaN;
                 end
             end
+            
+            % Store data for group average
+            if isempty(all_power_data)
+                all_power_data = zeros(n_sources, 10, length(subjects));
+            end
+            all_power_data(:, :, s == subjects) = subject_power_data;
             valid_subjects = [valid_subjects, s];
         else
             fprintf('  Subject %02d data not found, skipping...\n', s);
@@ -157,10 +187,10 @@ if strcmp(subjID, 'all')
      % data_mean = mean(all_power_values);
      phigh = quantile(all_power_values, 0.99);
      plow = quantile(all_power_values, 0.01);
-     max_deviation = max(abs(phigh - 1), abs(plow - 1));
-    color_min = 1.0 - max_deviation;
-    color_max = 1.0 + max_deviation;
-    fprintf('  Color range for group (symmetric around 1.0): %.3f to %.3f (deviation: %.3f)\n', color_min, color_max, max_deviation);
+     max_deviation = max(abs(phigh - 0), abs(plow - 0));
+    color_min = 0.0 - max_deviation;
+    color_max = 0.0 + max_deviation;
+    fprintf('  Color range for group (symmetric around 0.0): %.3f to %.3f (deviation: %.3f)\n', color_min, color_max, max_deviation);
     
     % Load template surface - check multiple locations
     surface_file = sprintf('cortex_%d.surf.gii', surface_resolution);
@@ -244,54 +274,82 @@ if strcmp(subjID, 'all')
     % Overall title
     sgtitle(sprintf('Group Average: Beta Relative Power on Template Midthickness Surface (Targets 1-10, %d vertices)', surface_resolution));
     
-    % Save figure
-    fig_name = sprintf('group_betaPower_cortex_%d', surface_resolution);
+    % % Save figure
+    % fig_name = sprintf('group_betaPower_cortex_%d', surface_resolution);
     
-    saveas(gcf, fullfile(figures_dir, [fig_name, '.fig']));
-    saveas(gcf, fullfile(figures_dir, [fig_name, '.png']));
-    fprintf('Saved: %s\n', fig_name);
+    % saveas(gcf, fullfile(figures_dir, [fig_name, '.fig']));
+    % saveas(gcf, fullfile(figures_dir, [fig_name, '.png']));
+    % fprintf('Saved: %s\n', fig_name);
     
-    close all;
+    % close all;
     
 else
     % Load data for individual subject
     fprintf('Loading data for subject %02d...\n', subjID);
     
     subj_data_path = fullfile(data_base_path, sprintf('sub-%02d', subjID), 'sourceRecon', ...
-        sprintf('sub-%02d_task-mgs_relativePowerBetaBand_%d.mat', subjID, surface_resolution));
+        sprintf('sub-%02d_task-mgs_sourceSpaceData_%d.mat', subjID, surface_resolution));
     
     if ~exist(subj_data_path, 'file')
-        error('Relative power data not found at: %s\nPlease run S04_betaPowerInMNI.m first!', subj_data_path);
+        error('Source space data not found at: %s', subj_data_path);
     end
     
-    loaded_data = load(subj_data_path);
+    loaded_data = load(subj_data_path, 'sourcedataCombined');
+    sourcedata = loaded_data.sourcedataCombined;
     
-    % Load forward model for source model information
-    forward_model_path = fullfile(data_base_path, sprintf('sub-%02d', subjID), 'sourceRecon', ...
-        sprintf('sub-%02d_task-mgs_forwardModel.mat', subjID));
+    % Extract trial information
+    n_trials = length(sourcedata.trial);
+    n_sources = length(sourcedata.label);
+    target_info = sourcedata.trialinfo(:, 2); % 2nd column has target info
     
-    if ~exist(forward_model_path, 'file')
-        error('Forward model not found at: %s\nPlease run S01_ForwardModelMNI.m first!', forward_model_path);
-    end
+    fprintf('Loaded %d trials with %d sources\n', n_trials, n_sources);
     
-    loaded_forward = load(forward_model_path);
+    % Compute relative power using new method
+    fprintf('Computing relative power using baseline method...\n');
     
-    % Extract power data for visualization
-    subject_power_data = zeros(size(loaded_data.powerDataByTarget{1}.relative_power_windows, 1), 10);
+    % Define time window for analysis (0.5-1.0s)
+    time_start = 0.5;
+    time_end = 1.0;
+    fprintf('  Using time window: %.1f-%.1fs\n', time_start, time_end);
+    
+    % Get time vector from first trial to determine time indices
+    time_vector = sourcedata.time{1};
+    time_idx = time_vector >= time_start & time_vector <= time_end;
+    n_timepoints_window = sum(time_idx);
+    fprintf('  Found %d time points in window\n', n_timepoints_window);
+    
+    % Step 1: Compute average over all trials first (baseline) - only for time window
+    fprintf('  Computing baseline (average over all trials in time window)...\n');
+    % Use cellfun to extract and average time window for all trials
+    trial_data_windows = cellfun(@(trial_data) mean(trial_data(:, time_idx), 2, 'omitnan'), ...
+                                sourcedata.trial, 'UniformOutput', false);
+    all_trial_data = [trial_data_windows{:}]; % Concatenate all trials
+    baseline = mean(all_trial_data, 2); % Average across all trials
+    
+    % Step 2: Divide each trial by baseline and compute relative power
+    fprintf('  Computing relative power for each target location...\n');
+    
+    % Initialize power data matrix
+    subject_power_data = zeros(n_sources, 10);
     
     for target = 1:10
-        if ~isempty(loaded_data.powerDataByTarget{target})
-            % Get relative power for 0.8-1.5s time window
-            relative_power_windows = loaded_data.powerDataByTarget{target}.relative_power_windows;
-            time_windows = loaded_data.powerDataByTarget{target}.time_windows;
+        % Find trials for this target
+        target_trials = find(target_info == target);
+        
+        if ~isempty(target_trials)
+            fprintf('    Processing target %d (%d trials)...\n', target, length(target_trials));
             
-            % Find time windows between 0.8 and 1.5 seconds
-            window_indices = find(time_windows >= 0.8 & time_windows <= 1.5);
+            % Compute relative power for each trial of this target using cellfun
+            target_trial_data = sourcedata.trial(target_trials);
+            relative_power_trials = cellfun(@(trial_data) mean(trial_data(:, time_idx), 2, 'omitnan') ./ baseline, ...
+                                           target_trial_data, 'UniformOutput', false);
+            relative_power_matrix = [relative_power_trials{:}]; % Concatenate all trials
             
-            if ~isempty(window_indices)
-                % Average relative power across the time window
-                subject_power_data(:, target) = mean(relative_power_windows(:, window_indices), 2, 'omitnan');
-            end
+            % Step 3: Average for this location (across trials)
+            subject_power_data(:, target) = mean(relative_power_matrix, 2);
+        else
+            fprintf('    No trials found for target %d\n', target);
+            subject_power_data(:, target) = NaN;
         end
     end
     
@@ -391,12 +449,12 @@ else
     % Overall title
     sgtitle(sprintf('Subject %02d: Beta Relative Power on Template Midthickness Surface (Targets 1-10, %d vertices)', subjID, surface_resolution));
     
-    % Save figure
-    fig_name = sprintf('sub-%02d_betaPower_cortex_%d', subjID, surface_resolution);
+    % % Save figure
+    % fig_name = sprintf('sub-%02d_betaPower_cortex_%d', subjID, surface_resolution);
     
-    saveas(gcf, fullfile(figures_dir, [fig_name, '.fig']));
-    saveas(gcf, fullfile(figures_dir, [fig_name, '.png']));
-    fprintf('Saved: %s\n', fig_name);
+    % saveas(gcf, fullfile(figures_dir, [fig_name, '.fig']));
+    % saveas(gcf, fullfile(figures_dir, [fig_name, '.png']));
+    % fprintf('Saved: %s\n', fig_name);
     
     %% Figure 2: Native Subject Space Scatter Plot (only for individual subjects)
     % Check for the correct source model field based on surface resolution
@@ -475,10 +533,10 @@ else
         sgtitle(sprintf('Subject %02d: Beta Relative Power in Native Subject Space (Targets 1-10, %d vertices)', subjID, surface_resolution));
         
         % Save figure
-        fig_name = sprintf('sub-%02d_betaPower_native_%d', subjID, surface_resolution);
-        saveas(gcf, fullfile(figures_dir, [fig_name, '.fig']));
-        saveas(gcf, fullfile(figures_dir, [fig_name, '.png']));
-        fprintf('Saved: %s\n', fig_name);
+        % fig_name = sprintf('sub-%02d_betaPower_native_%d', subjID, surface_resolution);
+        % saveas(gcf, fullfile(figures_dir, [fig_name, '.fig']));
+        % saveas(gcf, fullfile(figures_dir, [fig_name, '.png']));
+        % fprintf('Saved: %s\n', fig_name);
     else
         fprintf('Source model field %s not found in loaded_forward. Skipping scatter plot.\n', sourcemodel_field);
     end

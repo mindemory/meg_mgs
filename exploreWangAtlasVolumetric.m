@@ -17,10 +17,10 @@ addpath(ft_gifti_path);
 
 addpath(genpath(project_path));
 
-sourcemodel_path = sprintf('/d/DATD/hyper/software/fieldtrip-20250318/template/sourcemodel/standard_sourcemodel3d10mm.mat');
+sourcemodel_path = sprintf('/d/DATD/hyper/software/fieldtrip-20250318/template/sourcemodel/standard_sourcemodel3d5mm.mat');
 load(sourcemodel_path);
 sourcemodel_orig = ft_convert_units(sourcemodel, 'mm');
-subsourcemodel_path = sprintf('/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-01/sourceRecon/sub-01_task-mgs_volumetricSources_10mm.mat');
+subsourcemodel_path = sprintf('/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-01/sourceRecon/sub-01_task-mgs_volumetricSources_5mm.mat');
 load(subsourcemodel_path);
 
 
@@ -86,52 +86,76 @@ visualROIs = {'left_V1v', 'left_V1d', 'left_V2v', 'left_V2d', 'left_V3v', 'left_
               'left_hV4', 'left_VO1', 'left_VO2', 'left_V3b', 'left_V3a', ...
               'right_V1v', 'right_V1d', 'right_V2v', 'right_V2d', 'right_V3v', 'right_V3d', ...
               'right_hV4', 'right_VO1', 'right_VO2', 'right_V3b', 'right_V3a'};
+leftVisualROIs = {'left_V1v', 'left_V1d', 'left_V2v', 'left_V2d', 'left_V3v', 'left_V3d', ...
+              'left_hV4', 'left_VO1', 'left_VO2', 'left_V3b', 'left_V3a'};
+rightVisualROIs = {'right_V1v', 'right_V1d', 'right_V2v', 'right_V2d', 'right_V3v', 'right_V3d', ...
+              'right_hV4', 'right_VO1', 'right_VO2', 'right_V3b', 'right_V3a'};
 parietalROIs = {'left_IPS0', 'left_IPS1', 'left_IPS2', 'left_IPS3', 'left_IPS4', 'left_IPS5', 'left_SPL1', ...
                 'right_IPS0', 'right_IPS1', 'right_IPS2', 'right_IPS3', 'right_IPS4', 'right_IPS5', 'right_SPL1'};
+leftParietalROIs = {'left_IPS0', 'left_IPS1', 'left_IPS2', 'left_IPS3', 'left_IPS4', 'left_IPS5', 'left_SPL1'};
+rightParietalROIs = {'right_IPS0', 'right_IPS1', 'right_IPS2', 'right_IPS3', 'right_IPS4', 'right_IPS5', 'right_SPL1'};
 frontalROIs = {'left_FEF', 'right_FEF'};
+leftFrontalROIs = {'left_FEF'};
+rightFrontalROIs = {'right_FEF'};
 
 % Convert label sets to index sets
 visual_idx = cellfun(@(lab) find(strcmp(wangatlas.tissuelabel, lab)), visualROIs, 'UniformOutput', true);
 parietal_idx = cellfun(@(lab) find(strcmp(wangatlas.tissuelabel, lab)), parietalROIs, 'UniformOutput', true);
 frontal_idx = cellfun(@(lab) find(strcmp(wangatlas.tissuelabel, lab)), frontalROIs, 'UniformOutput', true);
+left_visual_idx = cellfun(@(lab) find(strcmp(wangatlas.tissuelabel, lab)), leftVisualROIs, 'UniformOutput', true);
+right_visual_idx = cellfun(@(lab) find(strcmp(wangatlas.tissuelabel, lab)), rightVisualROIs, 'UniformOutput', true);
+left_parietal_idx = cellfun(@(lab) find(strcmp(wangatlas.tissuelabel, lab)), leftParietalROIs, 'UniformOutput', true);
+right_parietal_idx = cellfun(@(lab) find(strcmp(wangatlas.tissuelabel, lab)), rightParietalROIs, 'UniformOutput', true);
+left_frontal_idx = cellfun(@(lab) find(strcmp(wangatlas.tissuelabel, lab)), leftFrontalROIs, 'UniformOutput', true);
+right_frontal_idx = cellfun(@(lab) find(strcmp(wangatlas.tissuelabel, lab)), rightFrontalROIs, 'UniformOutput', true);
 
-group_color = [0 0.447 0.741;  % blue  - visual
-               0.85 0.33 0.1;  % red   - parietal
-               0.47 0.67 0.19];% green - frontal
 
-figure; 
-subplot(1, 2, 1)
-hold on
-scatter3(sm_orig_pos(:,1), sm_orig_pos(:,2), sm_orig_pos(:,3), 5, [0.7 0.7 0.7], 'filled')
-% Visual group
+% Get corresponding points
 visual_points = ismember(sourcemodel_atlas_label, visual_idx);
-scatter3(sm_orig_pos(visual_points,1), sm_orig_pos(visual_points,2), sm_orig_pos(visual_points,3), 20, group_color(1,:), 'filled');
-% Parietal group
 parietal_points = ismember(sourcemodel_atlas_label, parietal_idx);
-scatter3(sm_orig_pos(parietal_points,1), sm_orig_pos(parietal_points,2), sm_orig_pos(parietal_points,3), 20, group_color(2,:), 'filled');
-% Frontal group
 frontal_points = ismember(sourcemodel_atlas_label, frontal_idx);
-scatter3(sm_orig_pos(frontal_points,1), sm_orig_pos(frontal_points,2), sm_orig_pos(frontal_points,3), 20, group_color(3,:), 'filled');
-xlabel('X (mm)'); ylabel('Y (mm)'); zlabel('Z (mm)');
-axis equal; view(3);
-title('Sourcemodel grid points: Visual (blue), Parietal (red), Frontal (green)');
-legend({'Other','Visual','Parietal','Frontal'});
+left_visual_points = ismember(sourcemodel_atlas_label, left_visual_idx);
+right_visual_points = ismember(sourcemodel_atlas_label, right_visual_idx);
+left_parietal_points = ismember(sourcemodel_atlas_label, left_parietal_idx);
+right_parietal_points = ismember(sourcemodel_atlas_label, right_parietal_idx);
+left_frontal_points = ismember(sourcemodel_atlas_label, left_frontal_idx);
+right_frontal_points = ismember(sourcemodel_atlas_label, right_frontal_idx);
 
-subplot(1, 2, 2)
-hold on
-scatter3(sm_pos(:,1), sm_pos(:,2), sm_pos(:,3), 5, [0.7 0.7 0.7], 'filled')
-% Visual group
-visual_points = ismember(sourcemodel_atlas_label, visual_idx);
-scatter3(sm_pos(visual_points,1), sm_pos(visual_points,2), sm_pos(visual_points,3), 20, group_color(1,:), 'filled');
-% Parietal group
-parietal_points = ismember(sourcemodel_atlas_label, parietal_idx);
-scatter3(sm_pos(parietal_points,1), sm_pos(parietal_points,2), sm_pos(parietal_points,3), 20, group_color(2,:), 'filled');
-% Frontal group
-frontal_points = ismember(sourcemodel_atlas_label, frontal_idx);
-scatter3(sm_pos(frontal_points,1), sm_pos(frontal_points,2), sm_pos(frontal_points,3), 20, group_color(3,:), 'filled');
-xlabel('X (mm)'); ylabel('Y (mm)'); zlabel('Z (mm)');
-axis equal; view(3);
-title('Sourcemodel grid points: Visual (blue), Parietal (red), Frontal (green)');
-legend({'Other','Visual','Parietal','Frontal'});
 
-save('/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/atlas/rois_10mm.mat', "visual_points", "parietal_points", "frontal_points")
+group_color = [241 90 41;  % orange  - visual
+               % 0.85 0.33 0.1;  % red   - parietal
+               150 90 164];% purple - frontal
+group_color = group_color ./ 255;
+
+% figure('Renderer', 'painters'); 
+% % subplot(1, 2, 1)
+% hold on
+% scatter3(sm_orig_pos(:,1), sm_orig_pos(:,2), sm_orig_pos(:,3), 5, [0.7 0.7 0.7], 'filled')
+% % Visual group
+% scatter3(sm_orig_pos(visual_points,1), sm_orig_pos(visual_points,2), sm_orig_pos(visual_points,3), 20, group_color(1,:), 'filled');
+% % Parietal group
+% % scatter3(sm_orig_pos(parietal_points,1), sm_orig_pos(parietal_points,2), sm_orig_pos(parietal_points,3), 20, group_color(2,:), 'filled');
+% % Frontal group
+% scatter3(sm_orig_pos(frontal_points,1), sm_orig_pos(frontal_points,2), sm_orig_pos(frontal_points,3), 20, group_color(2,:), 'filled');
+% xlabel('X (mm)'); ylabel('Y (mm)'); zlabel('Z (mm)');
+% axis equal; view(3);
+% title('Sourcemodel grid points: Visual (blue), Parietal (red), Frontal (green)');
+% % legend({'Other','Visual','Parietal','Frontal'});
+% legend({'Other', 'Visual', 'Frontal'});
+
+% subplot(1, 2, 2)
+% hold on
+% scatter3(sm_pos(:,1), sm_pos(:,2), sm_pos(:,3), 5, [0.7 0.7 0.7], 'filled')
+% % Visual group
+% scatter3(sm_pos(visual_points,1), sm_pos(visual_points,2), sm_pos(visual_points,3), 20, group_color(1,:), 'filled');
+% % Parietal group
+% scatter3(sm_pos(parietal_points,1), sm_pos(parietal_points,2), sm_pos(parietal_points,3), 20, group_color(2,:), 'filled');
+% % Frontal group
+% scatter3(sm_pos(frontal_points,1), sm_pos(frontal_points,2), sm_pos(frontal_points,3), 20, group_color(3,:), 'filled');
+% xlabel('X (mm)'); ylabel('Y (mm)'); zlabel('Z (mm)');
+% axis equal; view(3);
+% title('Sourcemodel grid points: Visual (blue), Parietal (red), Frontal (green)');
+% legend({'Other','Visual','Parietal','Frontal'});
+
+% save('/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/atlas/rois_5mm.mat', "visual_points", "parietal_points", "frontal_points", ...
+%     "left_visual_points", "right_visual_points", "left_parietal_points", "right_parietal_points", "left_frontal_points", "right_frontal_points");

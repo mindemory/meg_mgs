@@ -1,9 +1,9 @@
 import os, h5py, socket, gc
 import numpy as np
 from shutil import copyfile
-import matplotlib.pyplot as plt
 import pickle
 from scipy.io import loadmat
+import time
 
 # Make sure to run conda activate megAnalyses before running this script
 
@@ -61,15 +61,8 @@ def load_source_space_data(subjID, bidsRoot, taskName, voxRes):
 
     # Remove center of head bias by subtracting mean across all sources at each time point
     # This removes the common mode signal without affecting phase relationships
-    real_data = data_matrix.real
-    imag_data = data_matrix.imag
-    real_mean = np.mean(real_data, axis=0, keepdims=True)
-    print(real_mean.shape)
-    exit()
-    real_normalized = real_data / real_mean
-    data_matrix = real_normalized + 1j * imag_data
-    # mean_across_sources = np.mean(data_matrix, axis=2, keepdims=True)  # Shape: (trials, time, 1)
-    # data_matrix = data_matrix - mean_across_sources
+    # mean_across_sources = np.mean(data_matrix, axis=0, keepdims=True)  # Shape: (time, 1, sources0
+    # data_matrix = data_matrix - mean_across_sources 
     
     print(f"Data loaded: {data_matrix.shape} (trials × time × sources)")
     print(f"Data type: {data_matrix.dtype}")
@@ -79,110 +72,269 @@ def load_source_space_data(subjID, bidsRoot, taskName, voxRes):
     
     return data_matrix, target_labels, time_vector
 
+def compute_connectivity_measures(seed_indices, target_indices, data_matrix, time_vector):
+    """
+    Compute multiple connectivity measures between seed sources and target sources for each time point with 100ms window
+    Returns: coherence, imaginary coherence, PLV, and PLI time series
+    """
     
+    
+    n_trials, n_timepoints, n_sources = data_matrix.shape
+    n_seeds = len(seed_indices)
+    n_targets = len(target_indices)
+    
+    print(f"Computing connectivity measures for {n_seeds} seed sources and {n_targets} target sources...")
+    print(f"Data shape: {data_matrix.shape}")
+    print(f"Computing for each time point with ±100ms window across entire trial")
+    
+    # Initialize connectivity time series: (n_timepoints,)
+    coherence_timeseries = np.empty(n_timepoints)
+    imcoherence_timeseries = np.empty(n_timepoints)
+    plv_timeseries = np.empty(n_timepoints)
+    pli_timeseries = np.empty(n_timepoints)
+    
+    # Compute sampling frequency
+    sfreq = 1 / np.mean(np.diff(time_vector.flatten()))
+    window_samples = int(0.1 * sfreq)  # 100ms window in samples
+    
+    print(f"Sampling frequency: {sfreq:.1f} Hz")
+    print(f"Window samples: {window_samples}")
+    
+    # Process each time point
+    for t_idx in range(n_timepoints):
+        if t_idx % 10 == 0:  # Progress update
+            print(f"Processing time point {t_idx+1}/{n_timepoints}")
+        
+        # Define time window around current time point
+        start_idx = max(0, t_idx - window_samples)
+        end_idx = min(n_timepoints, t_idx + window_samples + 1)
+        
+        # Extract data for this time window
+        time_window_data = data_matrix[:, start_idx:end_idx, :]
+        # window_n_timepoints = time_window_data.shape[1]
+        
+        # Get seed and target data for this time window
+        seed_data = time_window_data[:, :, seed_indices].transpose(2, 0, 1)  # (n_seeds, n_trials, window_timepoints)
+        target_data = time_window_data[:, :, target_indices]  # (n_trials, window_timepoints, n_targets)
+        
+        # Compute cross-spectral density for all seed-target pairs
+        cross_spectrum = np.mean(seed_data[:, :, :, np.newaxis] * np.conj(target_data[np.newaxis, :, :, :]), axis=1)
+        # Shape: (n_seeds, window_timepoints, n_targets)
+        
+        # Compute power spectra
+        seed_power = np.mean(seed_data * np.conj(seed_data), axis=1)  # (n_seeds, window_timepoints)
+        target_power = np.mean(target_data * np.conj(target_data), axis=0)  # (window_timepoints, n_targets)
+        
+        # Compute coherence magnitude for all pairs
+        coherence_mag = np.abs(cross_spectrum)**2 / (seed_power[:, :, np.newaxis] * target_power[np.newaxis, :, :] + 1e-10)
+        
+        # Average coherence across time window and all seed-target pairs
+        coherence_timeseries[t_idx] = np.mean(coherence_mag)  # Average across all seeds, targets, and time window
+        
+        # Imaginary coherence calculation
+        normalized_cross_spectrum = cross_spectrum / np.sqrt(seed_power[:, :, np.newaxis] * target_power[np.newaxis, :, :] + 1e-10)
+        imcoherence_timeseries[t_idx] = np.mean(np.abs(np.imag(normalized_cross_spectrum)))  # Average across all seeds, targets, and time window
+        
+        # Phase Locking Value (PLV) calculation
+        # Extract phases from complex data
+        # seed_phases = np.angle(seed_data)  # (n_seeds, n_trials, window_timepoints)
+        # target_phases = np.angle(target_data)  # (n_trials, window_timepoints, n_targets)
+        
+        # Compute phase differences for all seed-target pairs
+        # phase_diff = seed_phases[:, :, :, np.newaxis] - target_phases[np.newaxis, :, :, :]  # (n_seeds, n_trials, window_timepoints, n_targets)
+        
+        # Compute PLV as |mean(exp(i*phase_diff))|
+        # plv_complex = np.mean(np.exp(1j * phase_diff), axis=1)  # Average across trials: (n_seeds, window_timepoints, n_targets)
+        # plv_mag = np.abs(plv_complex)  # (n_seeds, window_timepoints, n_targets)
+        
+        # # Average PLV across time window and all seed-target pairs
+        # plv_timeseries[t_idx] = np.mean(plv_mag)
+        
+        # # Phase Lag Index (PLI) calculation
+        # # PLI = |mean(sign(imag(exp(i*phase_diff))))|
+        # pli_sign = np.sign(np.imag(np.exp(1j * phase_diff)))  # (n_seeds, n_trials, window_timepoints, n_targets)
+        # pli_mean = np.mean(pli_sign, axis=1)  # Average across trials: (n_seeds, window_timepoints, n_targets)
+        # pli_abs = np.abs(pli_mean)  # (n_seeds, window_timepoints, n_targets)
+        
+        # # Average PLI across time window and all seed-target pairs
+        # pli_timeseries[t_idx] = np.mean(pli_abs)
+    
+    return coherence_timeseries, imcoherence_timeseries, plv_timeseries, pli_timeseries
+
 def main(subjID, voxRes):
     """Main function for source space connectivity analysis"""
     # Take into account default voxRes if not provided
     if voxRes is None:
         voxRes = '10mm'
-    taskName = 'mgs'
-    
+
     if socket.gethostname() == 'zod':
         bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
     else:
         bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
-    
-    print('Loading source space data for connectivity analysis...')
-    
-    # Load source space data
-    data_matrix, target_labels, time_vector = load_source_space_data(subjID, bidsRoot, taskName, voxRes)
+    taskName = 'mgs'
 
-    sourcmodel_fpath = '/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-01/sourceRecon/sub-01_task-mgs_volumetricSources_10mm.mat'
-    # Use temporary copy approach to avoid file locking issues
-    if socket.gethostname() == 'zod':
-        sourcemodelTempPath = os.path.join('/Users/mrugank/Desktop', 'sourcemodel_temp.mat')
-        copyfile(sourcmodel_fpath, sourcemodelTempPath)
-        sourcemodel_data = h5py.File(sourcemodelTempPath, 'r')
-        sourcemodel = sourcemodel_data['sourcemodel']
-        pos = np.array(sourcemodel['pos']).T
-        inside = np.array(sourcemodel['inside']).flatten()
-        inside_idx = np.where(inside == 1)[0]
-        sourcemodel_data.close()
-        os.remove(sourcemodelTempPath)
-    else:
-        sourcemodel_data = h5py.File(sourcmodel_fpath, 'r')
-        sourcemodel = sourcemodel_data['sourcemodel']
-        pos = np.array(sourcemodel['pos']).T
-        inside = np.array(sourcemodel['inside']).flatten()
-        inside_idx = np.where(inside == 1)[0]
-        sourcemodel_data.close()
+    outputDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', 'connectivity')
+    if not os.path.exists(outputDir):
+        os.makedirs(outputDir)
+    outputFile = os.path.join(outputDir, f'sub-{subjID:02d}_task-{taskName}_connectivity_{voxRes}.pkl')
+
+    if not os.path.exists(outputFile):
+
+        data_matrix, target_labels, time_vector = load_source_space_data(subjID, bidsRoot, taskName, voxRes)
 
 
-    # Mean power from 0.8s to 1.5s
-    left_data = data_matrix[np.isin(target_labels, [4, 5, 6, 7, 8]), :, :]
-    right_data = data_matrix[np.isin(target_labels, [1, 2, 3, 9, 10]), :, :]
-    # Compute power
-    left_data = np.abs(left_data) ** 2
-    right_data = np.abs(right_data) ** 2
-    # Mean power from 0.8s to 1.5s for left and right
-    timeIdx = np.where((time_vector >= 0.8) & (time_vector <= 1.5))[0]
-    left_mean = left_data[:, timeIdx, :].mean(axis=(0, 1))
-    right_mean = right_data[:, timeIdx, :].mean(axis=(0, 1))
-    # left_data = left_data / left_mean[np.newaxis, np.newaxis, :] - 1
-    # right_data = right_data / right_mean[np.newaxis, np.newaxis, :] - 1
-    # Correlation between left and right
-    # correlation = np.corrcoef(left_data.flatten(), right_data.flatten())[0, 1]
-    # print(f"Correlation between left and right: {correlation}")
+        # Load atlas data
+        atlas_fpath = os.path.join(bidsRoot, 'derivatives', 'atlas', f'rois_{voxRes}.mat')
+        atlas_data = loadmat(atlas_fpath)
 
-   
+        # Define ROI indices
+        visual_points = np.array(atlas_data['visual_points']).flatten()
+        left_visual_points = np.array(atlas_data['left_visual_points']).flatten()
+        right_visual_points = np.array(atlas_data['right_visual_points']).flatten()
+        # left_parietal_points = np.array(atlas_data['left_parietal_points']).flatten()
+        # right_parietal_points = np.array(atlas_data['right_parietal_points']).flatten()
+        left_frontal_points = np.array(atlas_data['left_frontal_points']).flatten()
+        right_frontal_points = np.array(atlas_data['right_frontal_points']).flatten()
+        visual_indices = np.where(visual_points == 1)[0]
+        left_visual_indices = np.where(left_visual_points == 1)[0]
+        right_visual_indices = np.where(right_visual_points == 1)[0]
+        # left_parietal_indices = np.where(left_parietal_points == 1)[0]
+        # right_parietal_indices = np.where(right_parietal_points == 1)[0]
+        left_frontal_indices = np.where(left_frontal_points == 1)[0]
+        right_frontal_indices = np.where(right_frontal_points == 1)[0]
 
-    f, axs = plt.subplots(2, 1, figsize=(12, 10), subplot_kw={'projection': '3d'})
-    
-    # Plot left targets (right hemisphere)
-    scatter1 = axs[0].scatter(pos[inside_idx, 0], pos[inside_idx, 1], pos[inside_idx, 2], 
-                             c=left_mean, cmap='RdBu_r', s=20, alpha=0.8)
-    axs[0].set_title('Left Targets (Right Hemisphere)', fontsize=14)
-    axs[0].set_xlabel('X (mm)')
-    axs[0].set_ylabel('Y (mm)')
-    axs[0].set_zlabel('Z (mm)')
-    cbar1 = plt.colorbar(scatter1, ax=axs[0], shrink=0.8)
-    cbar1.set_label('Mean Power (0.8-1.5s)', rotation=270, labelpad=20)
-    
-    # Plot right targets (left hemisphere)
-    scatter2 = axs[1].scatter(pos[inside_idx, 0], pos[inside_idx, 1], pos[inside_idx, 2], 
-                             c=right_mean, cmap='RdBu_r', s=20, alpha=0.8)
-    axs[1].set_title('Right Targets (Left Hemisphere)', fontsize=14)
-    axs[1].set_xlabel('X (mm)')
-    axs[1].set_ylabel('Y (mm)')
-    axs[1].set_zlabel('Z (mm)')
-    cbar2 = plt.colorbar(scatter2, ax=axs[1], shrink=0.8)
-    cbar2.set_label('Mean Power (0.8-1.5s)', rotation=270, labelpad=20)
-    
-    plt.tight_layout()
-    plt.show()
-    exit()
+        print('Loading source space data for connectivity analysis...')
 
-    # Load the Wang atlas
-    atlas_fpath = os.path.join(bidsRoot, 'derivatives', 'atlas', f'rois_{voxRes}.mat')
-    atlas_data = loadmat(atlas_fpath)
-    visual_points = np.array(atlas_data['visual_points']).flatten()
-    parietal_points = np.array(atlas_data['parietal_points']).flatten()
-    frontal_points = np.array(atlas_data['frontal_points']).flatten()
+        # Filter data for left and right targets
+        left_data = data_matrix[np.isin(target_labels, [4, 5, 6, 7, 8]), :, :]
+        right_data = data_matrix[np.isin(target_labels, [1, 2, 3, 9, 10]), :, :]
+
+        print(f"Data shape: {data_matrix.shape}")
+        print(f"Time points: {data_matrix.shape[1]}")
+        print(f"Number of trials: {data_matrix.shape[0]}")
+        
+        # Compute connectivity measures for left targets
+        start_time = time.time()
+        print("Computing connectivity measures for left targets...")
+        left_lV2lF_coh, left_lV2lF_imcoh, left_lV2lF_plv, left_lV2lF_pli = compute_connectivity_measures(left_visual_indices, left_frontal_indices, left_data, time_vector)
+        left_lV2rF_coh, left_lV2rF_imcoh, left_lV2rF_plv, left_lV2rF_pli = compute_connectivity_measures(left_visual_indices, right_frontal_indices, left_data, time_vector)
+        left_rV2lF_coh, left_rV2lF_imcoh, left_rV2lF_plv, left_rV2lF_pli = compute_connectivity_measures(right_visual_indices, left_frontal_indices, left_data, time_vector)
+        left_rV2rF_coh, left_rV2rF_imcoh, left_rV2rF_plv, left_rV2rF_pli = compute_connectivity_measures(right_visual_indices, right_frontal_indices, left_data, time_vector)
+        left_V2lF_coh, left_V2lF_imcoh, left_V2lF_plv, left_V2lF_pli = compute_connectivity_measures(visual_indices, left_frontal_indices, left_data, time_vector)
+        left_V2rF_coh, left_V2rF_imcoh, left_V2rF_plv, left_V2rF_pli = compute_connectivity_measures(visual_indices, right_frontal_indices, left_data, time_vector)
+
+        # Compute connectivity measures for right targets
+        print("Computing connectivity measures for right targets...")
+        right_lV2lF_coh, right_lV2lF_imcoh, right_lV2lF_plv, right_lV2lF_pli = compute_connectivity_measures(left_visual_indices, left_frontal_indices, right_data, time_vector)
+        right_lV2rF_coh, right_lV2rF_imcoh, right_lV2rF_plv, right_lV2rF_pli = compute_connectivity_measures(left_visual_indices, right_frontal_indices, right_data, time_vector)
+        right_rV2lF_coh, right_rV2lF_imcoh, right_rV2lF_plv, right_rV2lF_pli = compute_connectivity_measures(right_visual_indices, left_frontal_indices, right_data, time_vector)
+        right_rV2rF_coh, right_rV2rF_imcoh, right_rV2rF_plv, right_rV2rF_pli = compute_connectivity_measures(right_visual_indices, right_frontal_indices, right_data, time_vector)
+        right_V2lF_coh, right_V2lF_imcoh, right_V2lF_plv, right_V2lF_pli = compute_connectivity_measures(visual_indices, left_frontal_indices, right_data, time_vector)
+        right_V2rF_coh, right_V2rF_imcoh, right_V2rF_plv, right_V2rF_pli = compute_connectivity_measures(visual_indices, right_frontal_indices, right_data, time_vector)
+
+        print("Computing connectivity measures for all targets...")
+        all_lV2lF_coh, all_lV2lF_imcoh, all_lV2lF_plv, all_lV2lF_pli = compute_connectivity_measures(left_visual_indices, left_frontal_indices, data_matrix, time_vector)
+        all_lV2rF_coh, all_lV2rF_imcoh, all_lV2rF_plv, all_lV2rF_pli = compute_connectivity_measures(left_visual_indices, right_frontal_indices, data_matrix, time_vector)
+        all_rV2lF_coh, all_rV2lF_imcoh, all_rV2lF_plv, all_rV2lF_pli = compute_connectivity_measures(right_visual_indices, left_frontal_indices, data_matrix, time_vector)
+        all_rV2rF_coh, all_rV2rF_imcoh, all_rV2rF_plv, all_rV2rF_pli = compute_connectivity_measures(right_visual_indices, right_frontal_indices, data_matrix, time_vector)
+        all_V2lF_coh, all_V2lF_imcoh, all_V2lF_plv, all_V2lF_pli = compute_connectivity_measures(visual_indices, left_frontal_indices, data_matrix, time_vector)
+        all_V2rF_coh, all_V2rF_imcoh, all_V2rF_plv, all_V2rF_pli = compute_connectivity_measures(visual_indices, right_frontal_indices, data_matrix, time_vector)
+        
+        end_time = time.time()
+        print(f"Time taken: {end_time - start_time} seconds")
+
+        # Save the results
+        results_coh = {
+            'left_lV2lF_coh': left_lV2lF_coh,
+            'left_lV2rF_coh': left_lV2rF_coh,
+            'left_rV2lF_coh': left_rV2lF_coh,
+            'left_rV2rF_coh': left_rV2rF_coh,
+            'left_V2lF_coh': left_V2lF_coh,
+            'left_V2rF_coh': left_V2rF_coh,
+            'right_lV2lF_coh': right_lV2lF_coh,
+            'right_lV2rF_coh': right_lV2rF_coh,
+            'right_rV2lF_coh': right_rV2lF_coh,
+            'right_rV2rF_coh': right_rV2rF_coh,
+            'right_V2lF_coh': right_V2lF_coh,
+            'right_V2rF_coh': right_V2rF_coh,
+            'all_lV2lF_coh': all_lV2lF_coh,
+            'all_lV2rF_coh': all_lV2rF_coh,
+            'all_rV2lF_coh': all_rV2lF_coh,
+            'all_rV2rF_coh': all_rV2rF_coh,
+            'all_V2lF_coh': all_V2lF_coh,
+            'all_V2rF_coh': all_V2rF_coh,
+        }
+        results_imcoh = {
+            'left_lV2lF_imcoh': left_lV2lF_imcoh,
+            'left_lV2rF_imcoh': left_lV2rF_imcoh,
+            'left_rV2lF_imcoh': left_rV2lF_imcoh,
+            'left_rV2rF_imcoh': left_rV2rF_imcoh,
+            'left_V2lF_imcoh': left_V2lF_imcoh,
+            'left_V2rF_imcoh': left_V2rF_imcoh,
+            'right_lV2lF_imcoh': right_lV2lF_imcoh,
+            'right_lV2rF_imcoh': right_lV2rF_imcoh,
+            'right_rV2lF_imcoh': right_rV2lF_imcoh,
+            'right_rV2rF_imcoh': right_rV2rF_imcoh,
+            'right_V2lF_imcoh': right_V2lF_imcoh,
+            'right_V2rF_imcoh': right_V2rF_imcoh,
+            'all_lV2lF_imcoh': all_lV2lF_imcoh,
+            'all_lV2rF_imcoh': all_lV2rF_imcoh,
+            'all_rV2lF_imcoh': all_rV2lF_imcoh,
+            'all_rV2rF_imcoh': all_rV2rF_imcoh,
+            'all_V2lF_imcoh': all_V2lF_imcoh,
+            'all_V2rF_imcoh': all_V2rF_imcoh,
+        }
+        results_plv = {
+            'left_lV2lF_plv': left_lV2lF_plv,
+            'left_lV2rF_plv': left_lV2rF_plv,
+            'left_rV2lF_plv': left_rV2lF_plv,
+            'left_rV2rF_plv': left_rV2rF_plv,
+            'left_V2lF_plv': left_V2lF_plv,
+            'left_V2rF_plv': left_V2rF_plv,
+            'right_lV2lF_plv': right_lV2lF_plv,
+            'right_lV2rF_plv': right_lV2rF_plv,
+            'right_rV2lF_plv': right_rV2lF_plv,
+            'right_rV2rF_plv': right_rV2rF_plv,
+            'right_V2lF_plv': right_V2lF_plv,
+            'right_V2rF_plv': right_V2rF_plv,
+            'all_lV2lF_plv': all_lV2lF_plv,
+            'all_lV2rF_plv': all_lV2rF_plv,
+            'all_rV2lF_plv': all_rV2lF_plv,
+            'all_rV2rF_plv': all_rV2rF_plv,
+            'all_V2lF_plv': all_V2lF_plv,
+            'all_V2rF_plv': all_V2rF_plv,
+        }
+        results_pli = {
+            'left_lV2lF_pli': left_lV2lF_pli,
+            'left_lV2rF_pli': left_lV2rF_pli,
+            'left_rV2lF_pli': left_rV2lF_pli,
+            'left_rV2rF_pli': left_rV2rF_pli,
+            'left_V2lF_pli': left_V2lF_pli,
+            'left_V2rF_pli': left_V2rF_pli,
+            'right_lV2lF_pli': right_lV2lF_pli,
+            'right_lV2rF_pli': right_lV2rF_pli,
+            'right_rV2lF_pli': right_rV2lF_pli,
+            'right_rV2rF_pli': right_rV2rF_pli,
+            'right_V2lF_pli': right_V2lF_pli,
+            'right_V2rF_pli': right_V2rF_pli,
+            'all_lV2lF_pli': all_lV2lF_pli,
+            'all_lV2rF_pli': all_lV2rF_pli,
+            'all_rV2lF_pli': all_rV2lF_pli,
+            'all_rV2rF_pli': all_rV2rF_pli,
+            'all_V2lF_pli': all_V2lF_pli,
+            'all_V2rF_pli': all_V2rF_pli,
+        }
+        
+        with open(outputFile, 'wb') as f:
+            pickle.dump(results_coh, f)
+            pickle.dump(results_imcoh, f)
+            pickle.dump(results_plv, f)
+            pickle.dump(results_pli, f)
+        print(f"Results saved to {outputFile}")
+
     
-    # Get indices for each region within the inside vertices
-    visual_indices = np.where(visual_points == 1)[0]
-    parietal_indices = np.where(parietal_points == 1)[0]
-    frontal_indices = np.where(frontal_points == 1)[0]
-    
-    print(f"Data shape: {data_matrix.shape}")
-    print(f"Visual region: {len(visual_indices)} sources")
-    print(f"Parietal region: {len(parietal_indices)} sources")
-    print(f"Frontal region: {len(frontal_indices)} sources")
-    print(f"Time points: {data_matrix.shape[1]}")
-    print(f"Number of trials: {data_matrix.shape[0]}")
-    
-    # TODO: Add connectivity analysis here
-    print("Ready for connectivity analysis implementation...")
+    print("Connectivity analysis completed!")
+    print(f"Connectivity time series length: {len(left_lV2lF_coh)} time points")
     
     
 if __name__ == '__main__':

@@ -8,7 +8,8 @@ addpath(genpath('/d/DATD/hyper/experiments/Mrugank/meg_mgs'));
 %% Figure 1A: plot of memory error and RT
 rootNameGaze = '/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/';
 subList = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, ...
-               18, 19, 23, 24, 25, 26, 27, 29, 31, 32];
+               18, 19, 23, 24, 25, 29, 31, 32];
+
 % Repeated subjects 12/29, 3/6
 meanErrs = NaN(length(subList), 1);
 meanRTs =  NaN(length(subList), 1);
@@ -32,7 +33,7 @@ for ii = 1:length(subList)
 end
 
 
-figure();
+figure('Renderer', 'painters');
 subplot(1, 2, 1)
 plot(meanErrs, 'bo', 'MarkerFaceColor', 'b')
 hold on;
@@ -40,7 +41,12 @@ meanOfMeanErrs = mean(meanErrs, "all", "omitnan");
 % semOfMeanErrs = std(meanErrs) / sqrt(length(meanErrs));
 yline(meanOfMeanErrs, '--', 'Color', [0.5 0.5 0.5], 'LineWidth', 1.5);
 ylabel('Mean Memory Error (dva)')
-ylim([0, 5])
+ylim([0, 3])
+% Set x-ticks to show subject labels S01, S02, ..., S21
+n_subjects = length(subList);
+xticks(1:n_subjects);
+xticklabels(arrayfun(@(x) sprintf('S%02d', x), 1:n_subjects, 'UniformOutput', false));
+xlabel('Subject')
 
 
 subplot(1, 2, 2)
@@ -51,6 +57,10 @@ meanOfMeanRTs = mean(meanRTs, "all", "omitnan");
 yline(meanOfMeanRTs, '--', 'Color', [0.5 0.5 0.5], 'LineWidth', 1.5);
 ylabel('Mean Reaction Time (ms)')
 ylim([200, 500])
+n_subjects = length(subList);
+xticks(1:n_subjects);
+xticklabels(arrayfun(@(x) sprintf('S%02d', x), 1:n_subjects, 'UniformOutput', false));
+xlabel('Subject')
 
 %% Figure 1B: plot of gaze in 2D
 pthName = '/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-29/eyetracking/run-01/sub-29_task-mgs_run-01_eyetracking.mat';

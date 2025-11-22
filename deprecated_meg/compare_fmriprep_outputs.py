@@ -316,58 +316,58 @@ def compare_datasets_robust(data1, data2, method='common_vertices', n_vertices=1
     return data1_comp, data2_comp
 
 def main():
-    # File paths for WIC0326 - using fsaverage6 space for consistent vertex counts
-    base_path = "/datd/preproc_hpc_legacy/MgFinalTesting/Data/WIC0326"
+    # File paths for MOL1020 - using fsnative space
+    base_path = "/datd/preproc_hpc_legacy/MgFinalTesting/IgFmapTesting"
     
-    # With flag (mark2.2a_NewRecon) - Left hemisphere in fsaverage6 space
-    with_flag_path = os.path.join(base_path, "mark2.2a_NewRecon/func/sub-WIC0326_ses-01_task-TASK_run-01_hemi-L_space-fsaverage6_bold.func.gii")
+    # With flag - Left hemisphere in fsnative space
+    with_flag_path = os.path.join(base_path, "WithFlag/sub-ZID0704/ses-pRF/func/sub-ZID0704_ses-pRF_task-TASK_run-01_hemi-L_space-fsnative_bold.func.gii")
     
-    # Without flag (mark2.2d_fMRIPrep24-IgJcbn) - Left hemisphere in fsaverage6 space
-    without_flag_path = os.path.join(base_path, "mark2.2d_fMRIPrep24-IgJcbn/func/sub-WIC0326_ses-pRF_task-TASK_run-01_hemi-L_space-fsaverage6_bold.func.gii")
+    # Without flag (SansFlag) - Left hemisphere in fsnative space
+    without_flag_path = os.path.join(base_path, "SansFlag/sub-ZID0704/ses-pRF/func/sub-ZID0704_ses-pRF_task-TASK_run-01_hemi-L_space-fsnative_bold.func.gii")
     
-    # NIfTI file paths for voxel comparison
-    with_flag_nii_path = os.path.join(base_path, "mark2.2a_NewRecon/func/sub-WIC0326_ses-01_task-TASK_run-01_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz")
-    without_flag_nii_path = os.path.join(base_path, "mark2.2d_fMRIPrep24-IgJcbn/func/sub-WIC0326_ses-pRF_task-TASK_run-01_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz")
+    # # NIfTI file paths for voxel comparison (if available)
+    # with_flag_nii_path = os.path.join(base_path, "WithFlag/sub-MRD1219/ses-pRF/func/sub-MRD1219_ses-pRF_task-TASK_run-01_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz")
+    # without_flag_nii_path = os.path.join(base_path, "SansFlag/sub-MRD1219/ses-pRF/func/sub-MRD1219_ses-pRF_task-TASK_run-01_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz")
     
-    print("=" * 60)
-    print("fMRIPrep Output Comparison - WIC0326 (fsaverage6 Space)")
-    print("=" * 60)
+    # print("=" * 60)
+    # print("fMRIPrep Output Comparison - MRD1219 (fsnative Space)")
+    # print("=" * 60)
     
-    # Check if files exist
-    if not os.path.exists(with_flag_path):
-        print(f"ERROR: File not found: {with_flag_path}")
-        return
+    # # Check if files exist
+    # if not os.path.exists(with_flag_path):
+    #     print(f"ERROR: File not found: {with_flag_path}")
+    #     return
     
-    if not os.path.exists(without_flag_path):
-        print(f"ERROR: File not found: {without_flag_path}")
-        return
+    # if not os.path.exists(without_flag_path):
+    #     print(f"ERROR: File not found: {without_flag_path}")
+    #     return
     
-    # Check NIfTI files for voxel comparison
-    print("\n0. Checking NIfTI files for voxel differences...")
-    nii_with_flag = check_nifti_properties(with_flag_nii_path, "With Flag (NIfTI)")
-    nii_without_flag = check_nifti_properties(without_flag_nii_path, "Without Flag (NIfTI)")
+    # # Check NIfTI files for voxel comparison
+    # print("\n0. Checking NIfTI files for voxel differences...")
+    # nii_with_flag = check_nifti_properties(with_flag_nii_path, "With Flag (NIfTI)")
+    # nii_without_flag = check_nifti_properties(without_flag_nii_path, "Without Flag (NIfTI)")
     
-    if nii_with_flag and nii_without_flag:
-        print(f"\n  Voxel Comparison:")
-        print(f"    With flag voxels: {nii_with_flag['n_voxels']:,}")
-        print(f"    Without flag voxels: {nii_without_flag['n_voxels']:,}")
-        print(f"    Difference: {nii_with_flag['n_voxels'] - nii_without_flag['n_voxels']:,}")
+    # if nii_with_flag and nii_without_flag:
+    #     print(f"\n  Voxel Comparison:")
+    #     print(f"    With flag voxels: {nii_with_flag['n_voxels']:,}")
+    #     print(f"    Without flag voxels: {nii_without_flag['n_voxels']:,}")
+    #     print(f"    Difference: {nii_with_flag['n_voxels'] - nii_without_flag['n_voxels']:,}")
         
-        if nii_with_flag['n_voxels'] == nii_without_flag['n_voxels']:
-            print("    ✓ Same number of voxels")
-        else:
-            print("    ⚠ Different number of voxels!")
+    #     if nii_with_flag['n_voxels'] == nii_without_flag['n_voxels']:
+    #         print("    ✓ Same number of voxels")
+    #     else:
+    #         print("    ⚠ Different number of voxels!")
             
-        print(f"\n  Time Points Comparison:")
-        print(f"    With flag time points: {nii_with_flag['n_timepoints']}")
-        print(f"    Without flag time points: {nii_without_flag['n_timepoints']}")
+    #     print(f"\n  Time Points Comparison:")
+    #     print(f"    With flag time points: {nii_with_flag['n_timepoints']}")
+    #     print(f"    Without flag time points: {nii_without_flag['n_timepoints']}")
         
-        if nii_with_flag['n_timepoints'] == nii_without_flag['n_timepoints']:
-            print("    ✓ Same number of time points")
-        else:
-            print("    ⚠ Different number of time points!")
-    else:
-        print("  ⚠ Could not compare NIfTI files - some files missing or corrupted")
+    #     if nii_with_flag['n_timepoints'] == nii_without_flag['n_timepoints']:
+    #         print("    ✓ Same number of time points")
+    #     else:
+    #         print("    ⚠ Different number of time points!")
+    # else:
+    #     print("  ⚠ Could not compare NIfTI files - some files missing or corrupted")
     
     # Load data
     print("\n1. Loading data...")
@@ -426,8 +426,8 @@ def main():
     print("\n6. Creating combined plot...")
     
     # Combined correlation analysis and sample time series plot
-    plot_combined_analysis(correlations, time_points, ts1, ts2, subject_id="WIC0326",
-                          save_path="wic0326_fmriprep_combined_analysis.png")
+    plot_combined_analysis(correlations, time_points, ts1, ts2, subject_id="ZID0704",
+                          save_path="zid0704_fmriprep_combined_analysis.png")
     
     print("\n" + "=" * 60)
     print("Analysis complete!")

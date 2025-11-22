@@ -14,7 +14,7 @@ def load_subject_results(bidsRoot, subjID, voxRes='8mm'):
     """Load results for a single subject"""
     subName = f'sub-{subjID:02d}'
     results_file = os.path.join(bidsRoot, 'derivatives', subName, 'sourceRecon', 
-                               'betaDecodingVC', f'{subName}_task-mgs_betaSVR_{voxRes}.pkl')
+                               'betaDecodingVC', f'{subName}_task-mgs_betaSVR_{voxRes}_withBehav.pkl')
     
     if os.path.exists(results_file):
         print(f"Loading results for {subName}")
