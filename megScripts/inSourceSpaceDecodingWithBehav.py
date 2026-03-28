@@ -17,7 +17,7 @@ import functools
 FREQUENCY_BANDS = {
     'theta': (4.0, 8.0),
     'alpha': (8.0, 12.0),
-    'beta': (15.0, 25.0),
+    'beta': (18.0, 25.0),
     'lowgamma': (25.0, 50.0)
 }
 
@@ -160,25 +160,35 @@ def load_source_space_data(subjID, bidsRoot, taskName, voxRes, freq_band='beta')
     mean_allTrials = data_matrix.mean(axis=0)
     data_matrix = data_matrix / mean_allTrials[np.newaxis, :, :] - 1
 
-    # Downsample to 25ms resolution
+    # Downsample to 25ms resolution with 100ms averaging window (50ms before + 50ms after)
     target_dt = 0.025  # 25ms
+    window_half_size = 0.050  # 50ms on each side
     downsample_factor = int(target_dt / dt)
     if downsample_factor < 1:
         downsample_factor = 1
+    
+    # Number of samples to include on each side of the center point
+    half_window_samples = int(window_half_size / dt)
     
     n_trials, n_timepoints, n_sources = data_matrix.shape
     n_downsampled = n_timepoints // downsample_factor
     data_matrix_downsampled = np.zeros((n_trials, n_downsampled, n_sources))
     
     for i in range(n_downsampled):
-        start_idx = i * downsample_factor
-        end_idx = min((i + 1) * downsample_factor, n_timepoints)
+        # Center time point for this 25ms window
+        center_idx = i * downsample_factor
+        
+        # Calculate window: 50ms before to 50ms after
+        start_idx = max(0, center_idx - half_window_samples)
+        end_idx = min(n_timepoints, center_idx + half_window_samples + 1)
+        
+        # Average over the 100ms window
         data_matrix_downsampled[:, i, :] = np.mean(data_matrix[:, start_idx:end_idx, :], axis=1)
     
     time_vector_downsampled = np.zeros((n_downsampled, 1))
     for i in range(n_downsampled):
-        start_idx = i * downsample_factor
-        time_vector_downsampled[i, 0] = time_vector[start_idx]
+        center_idx = i * downsample_factor
+        time_vector_downsampled[i, 0] = time_vector[center_idx]
     
     data_matrix = data_matrix_downsampled
     time_vector = time_vector_downsampled
@@ -374,9 +384,9 @@ def main(subjID, voxRes, freq_band='beta'):
     if not os.path.exists(decoding_dir):
         os.makedirs(decoding_dir)
     results_file = os.path.join(decoding_dir, f'sub-{subjID:02d}_task-{taskName}_SVR_{freq_band}_{voxRes}_withBehav.pkl')
-    if os.path.exists(results_file):
-        print('Already run for this subject and frequency band')
-        return
+    # if os.path.exists(results_file):
+    #     print('Already run for this subject and frequency band')
+    #     return
     
 
     print('Running SVR Angle Prediction Analysis')
@@ -443,6 +453,7 @@ def main(subjID, voxRes, freq_band='beta'):
         data_matrix = data_matrix[valid_trials, :, :]
         target_labels = target_labels[valid_trials]
         i_sacc_err = i_sacc_err[valid_trials]
+        i_sacc_angle = i_sacc_angle[valid_trials]
         
         # print(f"Data matrix shape after NaN filtering: {data_matrix.shape}")
         # print(f"Target labels shape after NaN filtering: {target_labels.shape}")

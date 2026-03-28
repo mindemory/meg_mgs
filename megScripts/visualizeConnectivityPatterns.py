@@ -23,7 +23,7 @@ except ImportError:
 from scipy.spatial.distance import cdist
 
 def load_connectivity_results(bidsRoot, subjects, taskName='mgs', voxRes='10mm', 
-                              seed='left_frontal', target='left', metric='imcoh'):
+                              seed='left_frontal', target='left', metric='imcoh', freqBand='theta'):
     """
     Load seeded connectivity results for all subjects
     
@@ -43,6 +43,8 @@ def load_connectivity_results(bidsRoot, subjects, taskName='mgs', voxRes='10mm',
         Target condition (default: 'left')
     metric : str
         Connectivity metric (default: 'imcoh')
+    freqBand : str
+        Frequency band (default: 'theta')
     
     Returns:
     --------
@@ -68,7 +70,7 @@ def load_connectivity_results(bidsRoot, subjects, taskName='mgs', voxRes='10mm',
         
         # Construct file path for seeded connectivity
         outputDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', 'connectivity')
-        outputFile = os.path.join(outputDir, f'sub-{subjID:02d}_task-{taskName}_seededConnectivity_{voxRes}_{seed}_{target}_{metric}.pkl')
+        outputFile = os.path.join(outputDir, f'sub-{subjID:02d}_task-{taskName}_seededConnectivity_{voxRes}_{seed}_{target}_{metric}_{freqBand}.pkl')
         
         if os.path.exists(outputFile):
             try:
@@ -245,7 +247,7 @@ def compute_roi_averages(roi_connectivity):
     return averaged
 
 def plot_roi_connectivity_patterns(averaged_roi_connectivity_left, averaged_roi_connectivity_right, 
-                                   time_vector, seed_name='left_frontal'):
+                                   time_vector, seed_name='left_frontal', freqBand='theta', save_path=None):
     """
     Plot connectivity patterns between ROI pairs as a function of time
     Shows both left and right targets for comparison
@@ -260,6 +262,10 @@ def plot_roi_connectivity_patterns(averaged_roi_connectivity_left, averaged_roi_
         Time vector for x-axis
     seed_name : str
         Name of the seed region (for title)
+    freqBand : str
+        Frequency band (for title)
+    save_path : str
+        Path to save the plot
     """
     
     print("Plotting ROI connectivity patterns...")
@@ -277,7 +283,7 @@ def plot_roi_connectivity_patterns(averaged_roi_connectivity_left, averaged_roi_
     
     # Create figure with subplots (3 rows, 2 columns for 6 ROIs)
     fig, axes = plt.subplots(3, 2, figsize=(14, 15))
-    fig.suptitle(f'Connectivity from {seed_name.replace("_", " ").title()} Seed to Target ROIs', 
+    fig.suptitle(f'Connectivity from {seed_name.replace("_", " ").title()} Seed to Target ROIs, {freqBand} Band', 
                  fontsize=16, fontweight='bold')
     
     axes_flat = axes.flatten()
@@ -307,9 +313,9 @@ def plot_roi_connectivity_patterns(averaged_roi_connectivity_left, averaged_roi_
         
         # Add reference lines
         ax.axhline(y=0, color='black', linestyle='--', alpha=0.5, linewidth=1)
-        ax.axvline(x=0, color='red', linestyle='--', alpha=0.7, linewidth=1, label='Stimulus Onset')
-        ax.axvline(x=0.2, color='orange', linestyle='--', alpha=0.7, linewidth=1, label='Delay Start')
-        ax.axvline(x=1.7, color='green', linestyle='--', alpha=0.7, linewidth=1, label='Response')
+        ax.axvline(x=0, color='red', linestyle='--', alpha=0.7, linewidth=1)
+        ax.axvline(x=0.2, color='orange', linestyle='--', alpha=0.7, linewidth=1)
+        ax.axvline(x=1.7, color='green', linestyle='--', alpha=0.7, linewidth=1)
         
         ax.set_xlabel('Time (s)', fontsize=12)
         ax.set_ylabel('Relative Connectivity', fontsize=12)
@@ -317,9 +323,13 @@ def plot_roi_connectivity_patterns(averaged_roi_connectivity_left, averaged_roi_
         ax.grid(True, alpha=0.3)
         ax.legend(loc='best', fontsize=9)
         ax.set_xlim(time_vector[0], time_vector[-1])
+        ax.set_ylim(-0.15, 0.15)
     
     plt.tight_layout()
-    plt.show()
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    else:
+        plt.show()
 
 def load_sourcemodel(sourcemodel_path):
     """
@@ -602,7 +612,7 @@ def plot_whole_brain_connectivity_surface(avg_connectivity_left, avg_connectivit
 
 def plot_whole_brain_connectivity_multiple_windows(connectivity_data_left, connectivity_data_right,
                                                     inside_pos, surface_vertices, surface_faces,
-                                                    seed_name='left_frontal', 
+                                                    seed_name='left_frontal', freqBand='theta',
                                                     time_windows=[(-0.5, 0.0), (0.0, 0.5), (0.8, 1.5)],
                                                     save_path=None):
     """
@@ -626,6 +636,8 @@ def plot_whole_brain_connectivity_multiple_windows(connectivity_data_left, conne
         Name of the seed region (for title)
     time_windows : list of tuples
         List of time windows to plot (3 windows)
+    freqBand : str
+        Frequency band (for title)
     """
     print("Creating 3D surface visualization for multiple time windows...")
     
@@ -638,7 +650,7 @@ def plot_whole_brain_connectivity_multiple_windows(connectivity_data_left, conne
     
     # Add figure title with seed name at the top
     seed_label = seed_name.replace("_", " ").title()
-    fig.suptitle(f'{seed_label} Seed', fontsize=16, fontweight='bold', y=0.98)
+    fig.suptitle(f'{seed_label} Seed, {freqBand} Band', fontsize=16, fontweight='bold', y=0.98)
     
     # Use gridspec for better control over spacing
     from matplotlib import gridspec
@@ -987,8 +999,8 @@ def plot_surface_mesh(ax, vertices, faces, values, title, elev=0, azim=210, show
     ax.view_init(elev=elev, azim=azim)
 
 def plot_whole_brain_connectivity_3d(avg_connectivity_left, avg_connectivity_right, 
-                                     inside_pos, seed_name='left_frontal', 
-                                     time_window=(0.5, 1.5), use_surface=False,
+                                     inside_pos, seed_name='left_frontal', freqBand='theta',
+                                     time_window=(0.8, 1.5), use_surface=False,
                                      surface_vertices=None, surface_faces=None,
                                      save_path=None):
     """
@@ -1005,6 +1017,8 @@ def plot_whole_brain_connectivity_3d(avg_connectivity_left, avg_connectivity_rig
         Positions of inside vertices (n_inside, 3)
     seed_name : str
         Name of the seed region (for title)
+    freqBand : str
+        Frequency band (for title)
     time_window : tuple
         Time window used for averaging (for title)
     use_surface : bool
@@ -1123,7 +1137,8 @@ def main():
     subjects = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, 18, 19, 23, 24, 25, 29, 31, 32]
     taskName = 'mgs'
     voxRes = '10mm'
-    seed = 'right_frontal'
+    freqBand = 'lowgamma'
+    seed = 'right_visual'
     # target = 'right'
     metric = 'imcoh'
     
@@ -1148,15 +1163,15 @@ def main():
     print("\n" + "="*60)
     print("Loading LEFT target data...")
     print("="*60)
-    all_results_left = load_connectivity_results(bidsRoot, subjects, taskName, voxRes, 
-                                                seed=seed, target='left', metric=metric)
+    all_results_left = load_connectivity_results(bidsRoot, subjects, taskName=taskName, voxRes=voxRes, 
+                                                seed=seed, target='left', metric=metric, freqBand=freqBand)
     
     # Load connectivity results for right targets
     print("\n" + "="*60)
     print("Loading RIGHT target data...")
     print("="*60)
-    all_results_right = load_connectivity_results(bidsRoot, subjects, taskName, voxRes, 
-                                                 seed=seed, target='right', metric=metric)
+    all_results_right = load_connectivity_results(bidsRoot, subjects, taskName=taskName, voxRes=voxRes, 
+                                                 seed=seed, target='right', metric=metric, freqBand=freqBand)
     
     if len(all_results_left['loaded_subjects']) == 0 or len(all_results_right['loaded_subjects']) == 0:
         print("No connectivity results found!")
@@ -1176,9 +1191,10 @@ def main():
     averaged_roi_connectivity_right = compute_roi_averages(roi_connectivity_right)
     
     # Plot results (use time vector from left results, should be the same)
-    # plot_roi_connectivity_patterns(averaged_roi_connectivity_left, averaged_roi_connectivity_right,
-    #                                all_results_left['time_vector'], seed_name=seed)
-    
+    save_path = os.path.join(bidsRoot, 'derivatives', 'figures', 'connectivity', f'{seed}seeds_{metric}_{voxRes}_{freqBand}_roi_connectivity.png')
+    plot_roi_connectivity_patterns(averaged_roi_connectivity_left, averaged_roi_connectivity_right,
+                                   all_results_left['time_vector'], seed_name=seed, freqBand=freqBand, save_path=save_path)
+    # exit()
     # Whole-brain 3D visualization for multiple time windows
     print("\n" + "="*60)
     print("Creating whole-brain 3D connectivity visualization...")
@@ -1253,20 +1269,20 @@ def main():
         
         if use_surface and surface_vertices is not None and surface_faces is not None:
             # Use multi-window surface visualization
-            save_path = os.path.join(bidsRoot, 'derivatives', 'figures', 'connectivity', f'{seed}seeds_{metric}_{voxRes}_surface.png')
+            save_path = os.path.join(bidsRoot, 'derivatives', 'figures', 'connectivity', f'{seed}seeds_{metric}_{voxRes}_{freqBand}_surface.png')
             plot_whole_brain_connectivity_multiple_windows(
                 connectivity_data_left, connectivity_data_right,
                 inside_pos, surface_vertices, surface_faces,
-                seed_name=seed, time_windows=time_windows,
+                seed_name=seed, freqBand=freqBand, time_windows=time_windows,
                 save_path=save_path)
         else:
             # Fallback: plot first time window only with scatter plot
             first_window = time_windows[0]
             first_key = f"{first_window[0]}_{first_window[1]}"
-            save_path = os.path.join(bidsRoot, 'derivatives', 'figures', 'connectivity', f'{seed}seeds_{metric}_{voxRes}_scatter.png')
+            save_path = os.path.join(bidsRoot, 'derivatives', 'figures', 'connectivity', f'{seed}seeds_{metric}_{voxRes}_{freqBand}_scatter.png')
             plot_whole_brain_connectivity_3d(
                 connectivity_data_left[first_key], connectivity_data_right[first_key],
-                inside_pos, seed_name=seed, time_window=first_window,
+                inside_pos, seed_name=seed, freqBand=freqBand, time_window=first_window,
                 use_surface=False, 
                 surface_vertices=None,
                 surface_faces=None,
