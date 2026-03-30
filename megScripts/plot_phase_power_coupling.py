@@ -263,8 +263,9 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
 
     bands_list = list(FREQUENCY_BANDS.items())
 
-    # 3 rows (bands) x 4 cols (Stim Ipsi, Stim Contra, Delay Ipsi, Delay Contra)
-    fig, axes = plt.subplots(3, 4, figsize=(22, 14))
+    # 4 rows (3 phase bands + 1 gamma summary) × 4 cols
+    fig, axes = plt.subplots(4, 4, figsize=(22, 18),
+                             gridspec_kw={'height_ratios': [1, 1, 1, 0.6]})
     fig.suptitle(
         f'{region_name} ROI — Trough-Locked TFR PAC | Subject {subjID:02d}\n'
         f'Columns: [Stimulus Ipsi | Stimulus Contra | Delay Ipsi | Delay Contra]',
@@ -275,11 +276,13 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
     for ci, ct in enumerate(col_titles):
         axes[0, ci].set_title(ct, fontsize=11, fontweight='bold')
 
+    gamma_mask  = (freqs >= 30) & (freqs <= 50)
+    gamma_store = {ci: [] for ci in range(4)}   # stores (n_gamma_freqs, n_times) per column per band
     im = None
+
     for row_idx, (band_name, (f_min, f_max)) in enumerate(bands_list):
         print(f"  Phase tracking: {band_name.capitalize()} ({f_min}-{f_max} Hz)")
 
-        # Compute all 4 condition TFRs for both intervals
         tfr_cache = {}
         for interval_name, t_start, t_end in intervals:
             key = interval_name.split('\n')[0]
@@ -290,8 +293,6 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
                 'RL': get_condition_tfr(right_roi, left_tgt_mask,  dt, freqs, f_min, f_max, time_vector, t_start, t_end),
             }
 
-        # Build the 4-column layout per row
-        # col 0: Stim Ipsi, col 1: Stim Contra, col 2: Delay Ipsi, col 3: Delay Contra
         col_data = []
         for interval_name, _, _ in intervals:
             key = interval_name.split('\n')[0]
@@ -303,7 +304,6 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
                 contra = (c['LR'] + c['RL']) / 2.0
                 col_data.extend([ipsi, contra])
 
-
         col_labels = ['Ipsi', 'Contra', 'Ipsi', 'Contra']
         for ci, mat in enumerate(col_data):
             ax = axes[row_idx, ci]
@@ -313,33 +313,52 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
                 ax.set_title(f'{band_name.capitalize()} — {col_labels[ci]}')
                 continue
 
+            gamma_store[ci].append(mat[gamma_mask, :])   # stash for bottom row
+
             im = ax.imshow(mat, aspect='auto', origin='lower',
                            extent=[-1.0, 1.0, freqs[0], freqs[-1]],
                            cmap='RdBu_r', interpolation='bilinear',
-                           vmin=-0.2, vmax=0.2)
+                           vmin=-0.1, vmax=0.1)
             ax.set_xlim([-0.5, 0.5])
             ax.axvline(0, color='black', linestyle='--', alpha=0.8, linewidth=1.2)
 
-            # Row label on left-most column
             if ci == 0:
                 ax.set_ylabel(f'{band_name.capitalize()}\nPower Freq (Hz)', fontsize=9)
             else:
                 ax.set_yticklabels([])
 
-            # X-axis label only on bottom row
-            if row_idx == len(bands_list) - 1:
-                ax.set_xlabel('Time from Trough (s)', fontsize=8)
-            else:
-                ax.set_xticklabels([])
-
+            ax.set_xticklabels([])   # x-labels only on bottom row
             ax.set_yticks(freqs[::4])
 
+    # ── Bottom row: mean 30-50 Hz power across all phase-band conditions ──────
+    for ci in range(4):
+        ax = axes[3, ci]
+        if gamma_store[ci]:
+            gamma_mean  = np.mean(np.stack(gamma_store[ci], axis=0), axis=0)  # (n_gamma, n_times)
+            time_extent = np.linspace(-1.0, 1.0, gamma_mean.shape[1])
+            mean_trace  = gamma_mean.mean(axis=0)
+            vm = (time_extent >= -0.5) & (time_extent <= 0.5)
+
+            ax.plot(time_extent[vm], mean_trace[vm], color='steelblue', linewidth=1.5)
+            ax.fill_between(time_extent[vm], mean_trace[vm], 0,
+                            where=mean_trace[vm] > 0, alpha=0.2, color='steelblue')
+            ax.fill_between(time_extent[vm], mean_trace[vm], 0,
+                            where=mean_trace[vm] < 0, alpha=0.2, color='red')
+            ax.axhline(0,  color='k',     linestyle='--', alpha=0.5, linewidth=0.8)
+            ax.axvline(0,  color='black', linestyle='--', alpha=0.8, linewidth=1.2)
+            ax.set_xlim([-0.5, 0.5])
+            ax.set_xlabel('Time from Trough (s)', fontsize=8)
+            if ci == 0:
+                ax.set_ylabel('Mean Power\n30–50 Hz', fontsize=8)
+        else:
+            ax.axis('off')
+
     if im is not None:
-        cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+        cbar_ax = fig.add_axes([0.92, 0.25, 0.015, 0.60])
         fig.colorbar(im, cax=cbar_ax, label='Power Fold Change (baseline-normalized)')
 
     plot_fname = os.path.join(figures_dir, f'sub-{subjID:02d}_{region_name}_TFR_IpsiContra.png')
-    fig.subplots_adjust(left=0.07, right=0.91, top=0.88, bottom=0.07, wspace=0.08, hspace=0.25)
+    fig.subplots_adjust(left=0.07, right=0.91, top=0.90, bottom=0.06, wspace=0.08, hspace=0.30)
     fig.savefig(plot_fname, dpi=300)
     plt.close(fig)
     print(f"  Saved: {plot_fname}")
