@@ -315,7 +315,8 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
 
             im = ax.imshow(mat, aspect='auto', origin='lower',
                            extent=[-1.0, 1.0, freqs[0], freqs[-1]],
-                           cmap='RdBu_r', interpolation='bilinear')
+                           cmap='RdBu_r', interpolation='bilinear',
+                           vmin=-0.2, vmax=0.2)
             ax.set_xlim([-0.5, 0.5])
             ax.axvline(0, color='black', linestyle='--', alpha=0.8, linewidth=1.2)
 
