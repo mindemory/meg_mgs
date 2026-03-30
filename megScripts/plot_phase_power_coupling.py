@@ -13,10 +13,14 @@ def get_compute_profile():
     h = socket.gethostname()
     if h == 'zod':
         return 'mac', 4          # Local Mac M1
-    elif 'vader' in h.lower():
+    elif h == 'vader':
         return 'vader', 48       # Vader local cluster (50 cores)
     else:
         return 'hpc', 10         # Greene HPC or other
+
+def is_local():
+    """True on zod (Mac) or vader — both have direct DATD access."""
+    return socket.gethostname() in ('zod', 'vader')
 
 # Define Reference Phase Frequency Bands
 FREQUENCY_BANDS = {
@@ -61,11 +65,13 @@ def load_and_prepare_data(subjID, bidsRoot, taskName, voxRes):
     source_data_fpath = os.path.join(sourceReconRoot, f'{subName}_task-{taskName}_sourceSpaceData_{surface_resolution}.mat')
 
     if socket.gethostname() == 'zod':
+        # Mac needs a temp Desktop copy due to network mount quirks
         source_data_temp_path = os.path.join('/Users/mrugank/Desktop', f'{subName}_task-{taskName}_sourceSpaceData_raw_{surface_resolution}.mat')
         copyfile(source_data_fpath, source_data_temp_path)
         source_data = h5py.File(source_data_temp_path, 'r')
         os.remove(source_data_temp_path)
     else:
+        # Vader and HPC both read directly
         source_data = h5py.File(source_data_fpath, 'r')
 
     sourcedata_group = source_data['sourcedataCombined']
@@ -90,11 +96,13 @@ def load_and_prepare_data(subjID, bidsRoot, taskName, voxRes):
                                    f'sub-{subjID:02d}_task-{taskName}-iisess_forSource.mat')
 
     if socket.gethostname() == 'zod':
+        # Mac needs a temp Desktop copy due to network mount quirks
         behav_data_temp_path = os.path.join('/Users/mrugank/Desktop', f'sub-{subjID:02d}_task-{taskName}-iisess_forSource.mat')
         copyfile(behav_data_path, behav_data_temp_path)
         behav_data = h5py.File(behav_data_temp_path, 'r')
         os.remove(behav_data_temp_path)
     else:
+        # Vader and HPC both read directly
         behav_data = h5py.File(behav_data_path, 'r')
 
     ii_sess_forSource = behav_data['ii_sess_forSource']
@@ -326,8 +334,11 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
 
 
 def main(subjID, voxRes='10mm'):
-    if socket.gethostname() == 'zod':
+    h = socket.gethostname()
+    if h == 'zod':
         bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
+    elif h == 'vader':
+        bidsRoot = '/d/DATD/datd/MEG_MGS/MEG_BIDS'
     else:
         bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
 
