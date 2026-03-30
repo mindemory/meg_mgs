@@ -64,14 +64,22 @@ def load_and_prepare_data(subjID, bidsRoot, taskName, voxRes):
     surface_resolution = int(voxRes[:-2])
     source_data_fpath = os.path.join(sourceReconRoot, f'{subName}_task-{taskName}_sourceSpaceData_{surface_resolution}.mat')
 
+    VADER_TEMP = '/d/DATD/home/mrugank/Documents'
+    
     if socket.gethostname() == 'zod':
-        # Mac needs a temp Desktop copy due to network mount quirks
+        # Mac: copy to Desktop to avoid network mount issues
         source_data_temp_path = os.path.join('/Users/mrugank/Desktop', f'{subName}_task-{taskName}_sourceSpaceData_raw_{surface_resolution}.mat')
         copyfile(source_data_fpath, source_data_temp_path)
         source_data = h5py.File(source_data_temp_path, 'r')
         os.remove(source_data_temp_path)
+    elif socket.gethostname() == 'vader':
+        # Vader: copy to local home Documents to avoid network mount issues
+        source_data_temp_path = os.path.join(VADER_TEMP, f'{subName}_task-{taskName}_sourceSpaceData_raw_{surface_resolution}.mat')
+        copyfile(source_data_fpath, source_data_temp_path)
+        source_data = h5py.File(source_data_temp_path, 'r')
+        os.remove(source_data_temp_path)
     else:
-        # Vader and HPC both read directly
+        # HPC: read directly
         source_data = h5py.File(source_data_fpath, 'r')
 
     sourcedata_group = source_data['sourcedataCombined']
@@ -96,13 +104,19 @@ def load_and_prepare_data(subjID, bidsRoot, taskName, voxRes):
                                    f'sub-{subjID:02d}_task-{taskName}-iisess_forSource.mat')
 
     if socket.gethostname() == 'zod':
-        # Mac needs a temp Desktop copy due to network mount quirks
+        # Mac: copy to Desktop to avoid network mount issues
         behav_data_temp_path = os.path.join('/Users/mrugank/Desktop', f'sub-{subjID:02d}_task-{taskName}-iisess_forSource.mat')
         copyfile(behav_data_path, behav_data_temp_path)
         behav_data = h5py.File(behav_data_temp_path, 'r')
         os.remove(behav_data_temp_path)
+    elif socket.gethostname() == 'vader':
+        # Vader: copy to local home Documents to avoid network mount issues
+        behav_data_temp_path = os.path.join(VADER_TEMP, f'sub-{subjID:02d}_task-{taskName}-iisess_forSource.mat')
+        copyfile(behav_data_path, behav_data_temp_path)
+        behav_data = h5py.File(behav_data_temp_path, 'r')
+        os.remove(behav_data_temp_path)
     else:
-        # Vader and HPC both read directly
+        # HPC: read directly
         behav_data = h5py.File(behav_data_path, 'r')
 
     ii_sess_forSource = behav_data['ii_sess_forSource']
