@@ -1,24 +1,24 @@
 """
 plot_modulation_index.py
 
-Phase-Amplitude Coupling Comodulogram using the Mean Vector Length (MVL)
-as described in Canolty et al. (2006, Science).
+Phase-Amplitude Coupling Comodulogram using the Modulation Index (MI)
+(Tort et al. 2010, J Neurophysiol).
 
-  Composite signal: z(t) = A_high(t) * exp(i * phi_low(t))
-  MVL = |mean(z)| / mean(A_high)   [normalized]
+  MI = KL divergence of amplitude-per-phase-bin distribution from uniform.
+  Amplitude-invariant — safer for Ipsi/Contra condition contrasts.
 
-  X-axis : Phase frequency (f_phase, 2–30 Hz)
-  Y-axis : Amplitude frequency (f_amp, 4–50 Hz)
-  Color  : MVL strength
+  X-axis : Phase frequency (2–30 Hz)
+  Y-axis : Amplitude frequency (4–50 Hz)
+  Color  : MI strength / difference
 
 Layout per region (Visual / Frontal):
-  2 rows (Stimulus interval | Delay interval)
+  2 rows (Stimulus | Delay)
   x
-  2 cols (Ipsilateral | Contralateral)
+  3 cols (Ipsilateral | Contralateral | Contra − Ipsi)
 
 Reference:
-  Canolty et al. (2006). High gamma power is phase-locked to theta oscillations
-  in human neocortex. Science 313:1626-1628.
+  Tort et al. (2010). Measuring phase-amplitude coupling between neuronal
+  oscillations of different frequencies. J Neurophysiol 104:1195-1210.
 """
 
 import os, h5py, socket, gc, smtplib
@@ -64,17 +64,26 @@ def bandpass(data, f_lo, f_hi, sfreq, order=FILTER_ORDER):
     return signal.filtfilt(b, a, data, axis=-1)
 
 
-def mean_vector_length(phase, amplitude):
+def modulation_index(phase, amplitude, n_bins=N_PHASE_BINS):
     """
-    Canolty et al. (2006) normalized Mean Vector Length.
-    z(t) = A_high(t) * exp(i * phi_low(t))
-    MVL  = |mean(z)| / mean(A_high)
-    Returns scalar in [0, 1].
+    Tort et al. (2010) MI — KL divergence of amplitude-per-phase-bin
+    distribution from uniform. Amplitude-invariant.
+    Returns scalar MI in [0, 1].
     """
-    if len(phase) == 0:
+    bins = np.linspace(-np.pi, np.pi, n_bins + 1)
+    amp_dist = np.zeros(n_bins)
+    for b in range(n_bins):
+        mask = (phase >= bins[b]) & (phase < bins[b + 1])
+        if mask.any():
+            amp_dist[b] = amplitude[mask].mean()
+    total = amp_dist.sum()
+    if total == 0:
         return 0.0
-    z = amplitude * np.exp(1j * phase)
-    return float(np.abs(np.mean(z)) / (np.mean(amplitude) + 1e-12))
+    p = amp_dist / total
+    q = 1.0 / n_bins
+    with np.errstate(divide='ignore', invalid='ignore'):
+        kl = np.sum(p * np.log(p / q + 1e-12))
+    return float(kl / np.log(n_bins))
 
 
 def compute_mi_pair(roi_signal, dt, t_idx, f_phase, f_amp):
@@ -104,7 +113,7 @@ def compute_mi_pair(roi_signal, dt, t_idx, f_phase, f_amp):
     for tr in range(roi_signal.shape[0]):
         ph  = np.angle(signal.hilbert(filt_phase[tr, t_idx]))
         amp = np.abs(  signal.hilbert(filt_amp  [tr, t_idx]))
-        trial_mis.append(mean_vector_length(ph, amp))
+        trial_mis.append(modulation_index(ph, amp))
 
     return float(np.mean(trial_mis))
 
@@ -226,16 +235,17 @@ def process_region(region_name, roi_dict, left_tgt, right_tgt,
     left_roi  = roi_dict['left_roi']
     right_roi = roi_dict['right_roi']
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 3, figsize=(20, 10))
     fig.suptitle(
-        f'{region_name} ROI — MVL Comodulogram (Canolty et al. 2006)\n'
+        f'{region_name} ROI — MI Comodulogram (Tort et al. 2010)\n'
         f'Subject {subjID:02d}',
         fontsize=14)
+    for ci, ct in enumerate(['Ipsilateral', 'Contralateral', 'Contra \u2212 Ipsi']):
+        axes[0, ci].set_title(ct, fontsize=11, fontweight='bold')
 
     im = None
     for row, (iname, t0, t1) in enumerate(INTERVALS):
         print(f'  Interval: {iname.strip()}')
-        # Compute 4 condition MI matrices
         print('    LL...'); mi_LL = compute_comodulogram(left_roi,  left_tgt,  dt, time_vector, t0, t1)
         print('    RR...'); mi_RR = compute_comodulogram(right_roi, right_tgt, dt, time_vector, t0, t1)
         print('    LR...'); mi_LR = compute_comodulogram(left_roi,  right_tgt, dt, time_vector, t0, t1)
@@ -243,25 +253,34 @@ def process_region(region_name, roi_dict, left_tgt, right_tgt,
 
         ipsi  = (mi_LL + mi_RR) / 2.0
         contra = (mi_LR + mi_RL) / 2.0
+        diff  = contra - ipsi
 
-        for col, (label, mat) in enumerate([('Ipsilateral', ipsi), ('Contralateral', contra)]):
+        col_data = [
+            ('MI',    ipsi,  'RdBu_r', False),
+            ('MI',    contra, 'RdBu_r', False),
+            ('\u0394MI', diff,   'RdBu_r', True),
+        ]
+
+        for col, (clabel, mat, cmap, sym) in enumerate(col_data):
             ax = axes[row, col]
+            vmax = np.abs(mat).max() if sym else None
+            vmin = -vmax if sym else None
             im = ax.imshow(mat, aspect='auto', origin='lower',
                            extent=[PHASE_FREQS[0], PHASE_FREQS[-1],
                                    AMP_FREQS[0],   AMP_FREQS[-1]],
-                           cmap='RdBu_r', interpolation='bilinear')
-            ax.set_title(f'{iname.strip()} — {label}', fontsize=10)
-            if row == 1:
-                ax.set_xlabel('Phase Frequency (Hz)')
-            else:
-                ax.set_xticklabels([])
+                           cmap=cmap, interpolation='bilinear',
+                           vmin=vmin, vmax=vmax)
             if col == 0:
-                ax.set_ylabel('Amplitude Frequency (Hz)')
+                ax.set_ylabel(f'{iname.strip()}\nAmplitude Freq (Hz)', fontsize=9)
             else:
                 ax.set_yticklabels([])
-            fig.colorbar(im, ax=ax, label='MVL', shrink=0.8)
+            if row == len(INTERVALS) - 1:
+                ax.set_xlabel('Phase Frequency (Hz)', fontsize=9)
+            else:
+                ax.set_xticklabels([])
+            fig.colorbar(im, ax=ax, label=clabel, shrink=0.8)
 
-    fname = os.path.join(figures_dir, f'sub-{subjID:02d}_{region_name}_MVL_Comodulogram.png')
+    fname = os.path.join(figures_dir, f'sub-{subjID:02d}_{region_name}_MI_Comodulogram.png')
     fig.tight_layout()
     fig.savefig(fname, dpi=300)
     plt.close(fig)
