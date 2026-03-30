@@ -1,10 +1,15 @@
 """
 plot_modulation_index.py
 
-Classic Phase-Amplitude Coupling Comodulogram using the Modulation Index (Tort et al. 2010).
-  X-axis : Phase frequency (f_phase)
-  Y-axis : Amplitude frequency (f_amp)
-  Color  : Modulation Index (MI)
+Phase-Amplitude Coupling Comodulogram using the Mean Vector Length (MVL)
+as described in Canolty et al. (2006, Science).
+
+  Composite signal: z(t) = A_high(t) * exp(i * phi_low(t))
+  MVL = |mean(z)| / mean(A_high)   [normalized]
+
+  X-axis : Phase frequency (f_phase, 2–30 Hz)
+  Y-axis : Amplitude frequency (f_amp, 4–50 Hz)
+  Color  : MVL strength
 
 Layout per region (Visual / Frontal):
   2 rows (Stimulus interval | Delay interval)
@@ -12,8 +17,8 @@ Layout per region (Visual / Frontal):
   2 cols (Ipsilateral | Contralateral)
 
 Reference:
-  Tort et al. (2010). Measuring phase-amplitude coupling between neuronal oscillations
-  of different frequencies. J Neurophysiol 104:1195-1210.
+  Canolty et al. (2006). High gamma power is phase-locked to theta oscillations
+  in human neocortex. Science 313:1626-1628.
 """
 
 import os, h5py, socket, gc, smtplib
@@ -26,9 +31,9 @@ from joblib import Parallel, delayed
 import sys
 
 # ── Frequency axes ────────────────────────────────────────────────────────────
-PHASE_FREQS  = np.arange(4,  32, 2, dtype=float)   # 4–30 Hz (phase providing)
+PHASE_FREQS  = np.arange(2,  32, 2, dtype=float)   # 2–30 Hz (phase providing)
 AMP_FREQS    = np.arange(4,  52, 2, dtype=float)   # 4–50 Hz (amplitude)
-N_PHASE_BINS = 18                                   # bins for MI
+N_PHASE_BINS = 18                                   # kept for legacy; not used by MVL
 FILTER_ORDER = 4                                    # Butterworth order
 
 # ── Intervals ─────────────────────────────────────────────────────────────────
@@ -59,28 +64,17 @@ def bandpass(data, f_lo, f_hi, sfreq, order=FILTER_ORDER):
     return signal.filtfilt(b, a, data, axis=-1)
 
 
-def modulation_index(phase, amplitude, n_bins=N_PHASE_BINS):
+def mean_vector_length(phase, amplitude):
     """
-    Tort et al. (2010) MI from instantaneous phase and amplitude arrays.
-    Both must be 1-D and equal length (samples from one trial/window).
-    Returns a scalar MI in [0, 1].
+    Canolty et al. (2006) normalized Mean Vector Length.
+    z(t) = A_high(t) * exp(i * phi_low(t))
+    MVL  = |mean(z)| / mean(A_high)
+    Returns scalar in [0, 1].
     """
-    bins = np.linspace(-np.pi, np.pi, n_bins + 1)
-    amp_dist = np.zeros(n_bins)
-    for b in range(n_bins):
-        mask = (phase >= bins[b]) & (phase < bins[b + 1])
-        if mask.any():
-            amp_dist[b] = amplitude[mask].mean()
-    # Normalize to probability distribution
-    total = amp_dist.sum()
-    if total == 0:
+    if len(phase) == 0:
         return 0.0
-    p = amp_dist / total
-    # KL divergence from uniform
-    q = 1.0 / n_bins
-    with np.errstate(divide='ignore', invalid='ignore'):
-        kl = np.sum(p * np.log(p / q + 1e-12))
-    return kl / np.log(n_bins)
+    z = amplitude * np.exp(1j * phase)
+    return float(np.abs(np.mean(z)) / (np.mean(amplitude) + 1e-12))
 
 
 def compute_mi_pair(roi_signal, dt, t_idx, f_phase, f_amp):
@@ -110,7 +104,7 @@ def compute_mi_pair(roi_signal, dt, t_idx, f_phase, f_amp):
     for tr in range(roi_signal.shape[0]):
         ph  = np.angle(signal.hilbert(filt_phase[tr, t_idx]))
         amp = np.abs(  signal.hilbert(filt_amp  [tr, t_idx]))
-        trial_mis.append(modulation_index(ph, amp))
+        trial_mis.append(mean_vector_length(ph, amp))
 
     return float(np.mean(trial_mis))
 
@@ -234,8 +228,8 @@ def process_region(region_name, roi_dict, left_tgt, right_tgt,
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle(
-        f'{region_name} ROI — Modulation Index Comodulogram\n'
-        f'Tort et al. (2010) | Subject {subjID:02d}',
+        f'{region_name} ROI — MVL Comodulogram (Canolty et al. 2006)\n'
+        f'Subject {subjID:02d}',
         fontsize=14)
 
     im = None
@@ -265,9 +259,9 @@ def process_region(region_name, roi_dict, left_tgt, right_tgt,
                 ax.set_ylabel('Amplitude Frequency (Hz)')
             else:
                 ax.set_yticklabels([])
-            fig.colorbar(im, ax=ax, label='MI', shrink=0.8)
+            fig.colorbar(im, ax=ax, label='MVL', shrink=0.8)
 
-    fname = os.path.join(figures_dir, f'sub-{subjID:02d}_{region_name}_MI_Comodulogram.png')
+    fname = os.path.join(figures_dir, f'sub-{subjID:02d}_{region_name}_MVL_Comodulogram.png')
     fig.tight_layout()
     fig.savefig(fname, dpi=300)
     plt.close(fig)
