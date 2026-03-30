@@ -263,9 +263,9 @@ legend('Location', 'best');
 sgtitle(sprintf('Visual Power Spectra Analysis - %dmm Resolution (Fixation vs Delay)', volRes), 'FontSize', 16);
 
 % Save the main figure
-saveas(gcf, fullfile(figures_dir, sprintf('power_spectra_matched_conditions_%dmm.png', volRes)));
-saveas(gcf, fullfile(figures_dir, sprintf('power_spectra_matched_conditions_%dmm.fig', volRes)));
-saveas(gcf, fullfile(figures_dir, sprintf('power_spectra_matched_conditions_%dmm.svg', volRes)));
+% saveas(gcf, fullfile(figures_dir, sprintf('power_spectra_matched_conditions_%dmm.png', volRes)));
+% saveas(gcf, fullfile(figures_dir, sprintf('power_spectra_matched_conditions_%dmm.fig', volRes)));
+% saveas(gcf, fullfile(figures_dir, sprintf('power_spectra_matched_conditions_%dmm.svg', volRes)));
 
 
 
