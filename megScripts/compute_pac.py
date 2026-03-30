@@ -1,7 +1,6 @@
-import os, h5py, socket, gc, smtplib
+import os, h5py, socket, gc, smtplib, pickle
 import numpy as np
 from shutil import copyfile
-import matplotlib.pyplot as plt
 from scipy.io import loadmat
 from scipy import signal
 from mne.time_frequency import tfr_array_morlet
@@ -249,20 +248,14 @@ def get_condition_tfr(roi_data, tgt_mask, dt, freqs, f_min, f_max, time_vector, 
     return normalized_tfr
 
 
-COL_TITLES = ['Stimulus — Ipsi', 'Stimulus — Contra', 'Delay — Ipsi', 'Delay — Contra']
 
 
-def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_tgt_mask,
-                                dt, freqs, figures_dir, subjID, time_vector):
-    """Compute trough-locked TFR for all bands and save two figures:
-
-    Figure A (sub-XX_<Region>_TFR_Comodulograms.png)
-        3 rows (Theta / Alpha / Beta) × 4 cols (Stim-Ipsi | Stim-Contra | Delay-Ipsi | Delay-Contra)
-        Each cell: TFR heatmap (power freq × time-from-trough)
-
-    Figure B (sub-XX_<Region>_GammaTraces.png)
-        3 rows (Theta / Alpha / Beta) × 4 cols (same conditions)
-        Each cell: mean 30-50 Hz power trace vs time-from-trough
+def compute_and_save_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_tgt_mask,
+                                        dt, freqs, subjID, time_vector, bidsRoot, voxRes):
+    """Compute trough-locked TFR for all bands and save dictionary to disk.
+    
+    Returns:
+        None. Saves a pickle file internally.
     """
     print(f"\nProcessing Event-Related lateralized region: {region_name}")
 
@@ -308,96 +301,22 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
 
         band_data[band_name] = (f_min, f_max, col_data)
 
-    # ── Figure A: TFR Comodulograms  (3 rows × 4 cols) ───────────────────────
-    fig_a, axes_a = plt.subplots(3, 4, figsize=(22, 13))
-    fig_a.suptitle(
-        f'{region_name} ROI — Trough-Locked TFR | Subject {subjID:02d}\n'
-        f'Rows: Theta / Alpha / Beta   |   '
-        f'Cols: Stim-Ipsi | Stim-Contra | Delay-Ipsi | Delay-Contra',
-        fontsize=13
-    )
-    for ci, ct in enumerate(COL_TITLES):
-        axes_a[0, ci].set_title(ct, fontsize=10, fontweight='bold')
+    # ── Save results to disk ─────────────────────────────────────────────────
+    pac_cache = {
+        'freqs': freqs,
+        'dt': dt,
+        'region_name': region_name,
+        'band_data': band_data
+    }
 
-    im_a = None
-    for row_idx, (band_name, _) in enumerate(bands_list):
-        _, _, col_data = band_data[band_name]
-        for ci, mat in enumerate(col_data):
-            ax = axes_a[row_idx, ci]
-            if mat is None:
-                ax.text(0.5, 0.5, 'Insufficient\nData', ha='center', va='center',
-                        transform=ax.transAxes, fontsize=9)
-                continue
-            im_a = ax.imshow(mat, aspect='auto', origin='lower',
-                             extent=[-1.0, 1.0, freqs[0], freqs[-1]],
-                             cmap='RdBu_r', interpolation='bilinear',
-                             vmin=-0.1, vmax=0.1)
-            ax.set_xlim([-0.25, 0.25])
-            ax.axvline(0, color='black', linestyle='--', alpha=0.8, linewidth=1.2)
-            ax.set_yticks(freqs[::4])
-            if ci == 0:
-                ax.set_ylabel(f'{band_name.capitalize()}\nPower Freq (Hz)', fontsize=9)
-            else:
-                ax.set_yticklabels([])
-            if row_idx < 2:
-                ax.set_xticklabels([])
-            else:
-                ax.set_xlabel('Time from Trough (s)', fontsize=8)
-
-    if im_a is not None:
-        cbar_ax = fig_a.add_axes([0.92, 0.15, 0.015, 0.70])
-        fig_a.colorbar(im_a, cax=cbar_ax, label='Power Fold Change (baseline-normalized)')
-
-    fname_a = os.path.join(figures_dir, f'sub-{subjID:02d}_{region_name}_TFR_Comodulograms.png')
-    fig_a.subplots_adjust(left=0.07, right=0.91, top=0.88, bottom=0.07, wspace=0.07, hspace=0.25)
-    fig_a.savefig(fname_a, dpi=300)
-    plt.close(fig_a)
-    print(f"  Saved: {fname_a}")
-
-    # ── Figure B: Mean 30-50 Hz Gamma Traces  (3 rows × 4 cols) ─────────────
-    fig_b, axes_b = plt.subplots(3, 4, figsize=(22, 10), sharey='row')
-    fig_b.suptitle(
-        f'{region_name} ROI — Mean 30–50 Hz Power (Trough-Locked) | Subject {subjID:02d}\n'
-        f'Rows: Theta / Alpha / Beta phase   |   '
-        f'Cols: Stim-Ipsi | Stim-Contra | Delay-Ipsi | Delay-Contra',
-        fontsize=13
-    )
-    for ci, ct in enumerate(COL_TITLES):
-        axes_b[0, ci].set_title(ct, fontsize=10, fontweight='bold')
-
-    for row_idx, (band_name, _) in enumerate(bands_list):
-        _, _, col_data = band_data[band_name]
-        for ci, mat in enumerate(col_data):
-            ax = axes_b[row_idx, ci]
-            if mat is None:
-                ax.axis('off')
-                continue
-
-            time_extent = np.linspace(-1.0, 1.0, mat.shape[1])
-            trace = mat[gamma_mask, :].mean(axis=0)
-            vm    = (time_extent >= -0.25) & (time_extent <= 0.25)
-
-            ax.plot(time_extent[vm], trace[vm], color='steelblue', linewidth=1.5)
-            ax.fill_between(time_extent[vm], trace[vm], 0,
-                            where=trace[vm] > 0, alpha=0.25, color='steelblue')
-            ax.fill_between(time_extent[vm], trace[vm], 0,
-                            where=trace[vm] < 0, alpha=0.25, color='crimson')
-            ax.axhline(0,  color='k',     linestyle='--', alpha=0.5, linewidth=0.8)
-            ax.axvline(0,  color='black', linestyle='--', alpha=0.8, linewidth=1.2)
-            ax.set_xlim([-0.25, 0.25])
-
-            if ci == 0:
-                ax.set_ylabel(f'{band_name.capitalize()}\nMean Power', fontsize=9)
-            if row_idx < 2:
-                ax.set_xticklabels([])
-            else:
-                ax.set_xlabel('Time from Trough (s)', fontsize=8)
-
-    fname_b = os.path.join(figures_dir, f'sub-{subjID:02d}_{region_name}_GammaTraces.png')
-    fig_b.subplots_adjust(left=0.07, right=0.97, top=0.88, bottom=0.08, wspace=0.10, hspace=0.25)
-    fig_b.savefig(fname_b, dpi=300)
-    plt.close(fig_b)
-    print(f"  Saved: {fname_b}")
+    output_dir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', 'pac_data')
+    os.makedirs(output_dir, exist_ok=True)
+    
+    out_file = os.path.join(output_dir, f'sub-{subjID:02d}_task-mgs_PAC_{region_name}_{voxRes}.pkl')
+    with open(out_file, 'wb') as f:
+        pickle.dump(pac_cache, f)
+        
+    print(f"  Saved PAC cache: {out_file}")
 
 def main(subjID, voxRes='10mm'):
     h = socket.gethostname()
@@ -408,34 +327,31 @@ def main(subjID, voxRes='10mm'):
     else:
         bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
 
-    figures_dir = os.path.join(bidsRoot, 'derivatives', 'figures', 'phase_power_coupling')
-    os.makedirs(figures_dir, exist_ok=True)
-
     try:
         roi_dict, left_tgt_mask, right_tgt_mask, dt, time_vector = load_and_prepare_data(
             subjID, bidsRoot, 'mgs', voxRes)
 
         freqs = np.arange(4, 51, 2)
 
-        process_lateralized_region('Visual', roi_dict['Visual'], left_tgt_mask, right_tgt_mask,
-                                   dt, freqs, figures_dir, subjID, time_vector)
-        process_lateralized_region('Frontal', roi_dict['Frontal'], left_tgt_mask, right_tgt_mask,
-                                   dt, freqs, figures_dir, subjID, time_vector)
+        compute_and_save_lateralized_region('Visual', roi_dict['Visual'], left_tgt_mask, right_tgt_mask,
+                                            dt, freqs, subjID, time_vector, bidsRoot, voxRes)
+        compute_and_save_lateralized_region('Frontal', roi_dict['Frontal'], left_tgt_mask, right_tgt_mask,
+                                            dt, freqs, subjID, time_vector, bidsRoot, voxRes)
 
-        print("\nDone! All analysis and plotting complete.")
-        send_completion_email(subjID, voxRes, figures_dir, success=True)
+        print("\nDone! PAC computation complete.")
+        send_completion_email(subjID, voxRes, 'Cached sequentially to .pkl', success=True)
 
     except Exception as e:
         import traceback
         err = traceback.format_exc()
         print(f"\nScript failed:\n{err}")
-        send_completion_email(subjID, voxRes, figures_dir, success=False, error_msg=err)
+        send_completion_email(subjID, voxRes, 'FAILED', success=False, error_msg=err)
         raise
 
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print("Usage: python plot_phase_power_coupling.py <subjID> [voxRes]")
+        print("Usage: python compute_pac.py <subjID> [voxRes]")
         sys.exit(1)
 
     subjID = int(sys.argv[1])
