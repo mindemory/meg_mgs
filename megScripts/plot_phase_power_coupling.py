@@ -249,6 +249,88 @@ def get_condition_tfr(roi_data, tgt_mask, dt, freqs, f_min, f_max, time_vector, 
     return normalized_tfr
 
 
+COL_TITLES = ['Stimulus — Ipsi', 'Stimulus — Contra', 'Delay — Ipsi', 'Delay — Contra']
+
+
+def _save_band_figure(band_name, f_min, f_max, col_data, freqs,
+                      gamma_mask, figures_dir, subjID, region_name):
+    """Save a standalone figure for a single phase-frequency band.
+
+    Layout: 2 rows × 4 cols
+      Row 0: TFR heatmap (power freq vs time-from-trough)
+      Row 1: Mean 30-50 Hz power trace
+    """
+    fig, axes = plt.subplots(2, 4, figsize=(20, 7),
+                             gridspec_kw={'height_ratios': [1, 0.45]})
+    fig.suptitle(
+        f'{region_name} — {band_name.capitalize()} Phase ({f_min}–{f_max} Hz) | '
+        f'Trough-Locked TFR | Subject {subjID:02d}',
+        fontsize=13
+    )
+    for ci, ct in enumerate(COL_TITLES):
+        axes[0, ci].set_title(ct, fontsize=10, fontweight='bold')
+
+    im = None
+    gamma_per_col = []
+    col_labels = ['Ipsi', 'Contra', 'Ipsi', 'Contra']
+
+    for ci, mat in enumerate(col_data):
+        ax = axes[0, ci]
+        if mat is None:
+            ax.text(0.5, 0.5, 'Insufficient\nData', ha='center', va='center',
+                    transform=ax.transAxes, fontsize=9)
+            gamma_per_col.append(None)
+            continue
+
+        gamma_per_col.append(mat[gamma_mask, :])
+        im = ax.imshow(mat, aspect='auto', origin='lower',
+                       extent=[-1.0, 1.0, freqs[0], freqs[-1]],
+                       cmap='RdBu_r', interpolation='bilinear',
+                       vmin=-0.1, vmax=0.1)
+        ax.set_xlim([-0.25, 0.25])
+        ax.axvline(0, color='black', linestyle='--', alpha=0.8, linewidth=1.2)
+        ax.set_xticklabels([])
+        ax.set_yticks(freqs[::4])
+        if ci == 0:
+            ax.set_ylabel('Power Freq (Hz)', fontsize=9)
+        else:
+            ax.set_yticklabels([])
+
+    # Bottom row: 30-50 Hz mean trace per column
+    for ci in range(4):
+        ax = axes[1, ci]
+        g = gamma_per_col[ci] if ci < len(gamma_per_col) else None
+        if g is not None:
+            time_extent = np.linspace(-1.0, 1.0, g.shape[1])
+            trace = g.mean(axis=0)
+            vm    = (time_extent >= -0.25) & (time_extent <= 0.25)
+            ax.plot(time_extent[vm], trace[vm], color='steelblue', linewidth=1.5)
+            ax.fill_between(time_extent[vm], trace[vm], 0,
+                            where=trace[vm] > 0, alpha=0.2, color='steelblue')
+            ax.fill_between(time_extent[vm], trace[vm], 0,
+                            where=trace[vm] < 0, alpha=0.2, color='red')
+            ax.axhline(0,  color='k',     linestyle='--', alpha=0.5, linewidth=0.8)
+            ax.axvline(0,  color='black', linestyle='--', alpha=0.8, linewidth=1.2)
+            ax.set_xlim([-0.25, 0.25])
+            ax.set_xlabel('Time from Trough (s)', fontsize=8)
+            if ci == 0:
+                ax.set_ylabel('Mean Power\n30–50 Hz', fontsize=8)
+        else:
+            ax.axis('off')
+
+    if im is not None:
+        cbar_ax = fig.add_axes([0.92, 0.35, 0.015, 0.50])
+        fig.colorbar(im, cax=cbar_ax, label='Power Fold Change')
+
+    fname = os.path.join(figures_dir,
+                         f'sub-{subjID:02d}_{region_name}_{band_name.capitalize()}_TFR.png')
+    fig.subplots_adjust(left=0.06, right=0.91, top=0.88, bottom=0.10,
+                        wspace=0.06, hspace=0.20)
+    fig.savefig(fname, dpi=300)
+    plt.close(fig)
+    print(f"    Saved band figure: {fname}")
+
+
 def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_tgt_mask,
                                 dt, freqs, figures_dir, subjID, time_vector):
     print(f"\nProcessing Event-Related lateralized region: {region_name}")
@@ -329,6 +411,10 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
 
             ax.set_xticklabels([])   # x-labels only on bottom row
             ax.set_yticks(freqs[::4])
+
+        # ── Save standalone per-band figure ──────────────────────────────────
+        _save_band_figure(band_name, f_min, f_max, col_data, freqs,
+                          gamma_mask, figures_dir, subjID, region_name)
 
     # ── Bottom row: mean 30-50 Hz power across all phase-band conditions ──────
     for ci in range(4):
