@@ -206,7 +206,7 @@ def extract_epochs(roi_data, troughs, dt, epoch_window=(-1.0, 1.0)):
 
 def _compute_single_epoch_tfr(epoch, sfreq, freqs, dyn_cycles):
     """Helper for joblib: computes TFR for a single epoch (1, sources, times)."""
-    return tfr_array_morlet(epoch[np.newaxis], sfreq, freqs, n_cycles=dyn_cycles, output='power', n_jobs=1)[0]
+    return tfr_array_morlet(epoch[np.newaxis], sfreq, freqs, n_cycles=dyn_cycles, output='power', zero_mean=False, n_jobs=1)[0]
 
 
 def get_condition_tfr(roi_data, tgt_mask, dt, freqs, f_min, f_max, time_vector, t_start, t_end, w=7):
