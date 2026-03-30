@@ -1,3 +1,13 @@
+import os, h5py, socket, gc, smtplib
+import numpy as np
+from shutil import copyfile
+import matplotlib.pyplot as plt
+from scipy.io import loadmat
+from scipy import signal
+from mne.time_frequency import tfr_array_morlet
+from joblib import Parallel, delayed
+import sys
+
 # Hostname → compute profile mapping
 def get_compute_profile():
     h = socket.gethostname()
@@ -7,14 +17,6 @@ def get_compute_profile():
         return 'vader', 48       # Vader local cluster (50 cores)
     else:
         return 'hpc', 10         # Greene HPC or other
-import numpy as np
-from shutil import copyfile
-import matplotlib.pyplot as plt
-from scipy.io import loadmat
-from scipy import signal
-from mne.time_frequency import tfr_array_morlet
-from joblib import Parallel, delayed
-import sys
 
 # Define Reference Phase Frequency Bands
 FREQUENCY_BANDS = {
