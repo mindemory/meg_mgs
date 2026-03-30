@@ -252,118 +252,37 @@ def get_condition_tfr(roi_data, tgt_mask, dt, freqs, f_min, f_max, time_vector, 
 COL_TITLES = ['Stimulus — Ipsi', 'Stimulus — Contra', 'Delay — Ipsi', 'Delay — Contra']
 
 
-def _save_band_figure(band_name, f_min, f_max, col_data, freqs,
-                      gamma_mask, figures_dir, subjID, region_name):
-    """Save a standalone figure for a single phase-frequency band.
-
-    Layout: 2 rows × 4 cols
-      Row 0: TFR heatmap (power freq vs time-from-trough)
-      Row 1: Mean 30-50 Hz power trace
-    """
-    fig, axes = plt.subplots(2, 4, figsize=(20, 7),
-                             gridspec_kw={'height_ratios': [1, 0.45]})
-    fig.suptitle(
-        f'{region_name} — {band_name.capitalize()} Phase ({f_min}–{f_max} Hz) | '
-        f'Trough-Locked TFR | Subject {subjID:02d}',
-        fontsize=13
-    )
-    for ci, ct in enumerate(COL_TITLES):
-        axes[0, ci].set_title(ct, fontsize=10, fontweight='bold')
-
-    im = None
-    gamma_per_col = []
-    col_labels = ['Ipsi', 'Contra', 'Ipsi', 'Contra']
-
-    for ci, mat in enumerate(col_data):
-        ax = axes[0, ci]
-        if mat is None:
-            ax.text(0.5, 0.5, 'Insufficient\nData', ha='center', va='center',
-                    transform=ax.transAxes, fontsize=9)
-            gamma_per_col.append(None)
-            continue
-
-        gamma_per_col.append(mat[gamma_mask, :])
-        im = ax.imshow(mat, aspect='auto', origin='lower',
-                       extent=[-1.0, 1.0, freqs[0], freqs[-1]],
-                       cmap='RdBu_r', interpolation='bilinear',
-                       vmin=-0.1, vmax=0.1)
-        ax.set_xlim([-0.25, 0.25])
-        ax.axvline(0, color='black', linestyle='--', alpha=0.8, linewidth=1.2)
-        ax.set_xticklabels([])
-        ax.set_yticks(freqs[::4])
-        if ci == 0:
-            ax.set_ylabel('Power Freq (Hz)', fontsize=9)
-        else:
-            ax.set_yticklabels([])
-
-    # Bottom row: 30-50 Hz mean trace per column
-    for ci in range(4):
-        ax = axes[1, ci]
-        g = gamma_per_col[ci] if ci < len(gamma_per_col) else None
-        if g is not None:
-            time_extent = np.linspace(-1.0, 1.0, g.shape[1])
-            trace = g.mean(axis=0)
-            vm    = (time_extent >= -0.25) & (time_extent <= 0.25)
-            ax.plot(time_extent[vm], trace[vm], color='steelblue', linewidth=1.5)
-            ax.fill_between(time_extent[vm], trace[vm], 0,
-                            where=trace[vm] > 0, alpha=0.2, color='steelblue')
-            ax.fill_between(time_extent[vm], trace[vm], 0,
-                            where=trace[vm] < 0, alpha=0.2, color='red')
-            ax.axhline(0,  color='k',     linestyle='--', alpha=0.5, linewidth=0.8)
-            ax.axvline(0,  color='black', linestyle='--', alpha=0.8, linewidth=1.2)
-            ax.set_xlim([-0.25, 0.25])
-            ax.set_xlabel('Time from Trough (s)', fontsize=8)
-            if ci == 0:
-                ax.set_ylabel('Mean Power\n30–50 Hz', fontsize=8)
-        else:
-            ax.axis('off')
-
-    if im is not None:
-        cbar_ax = fig.add_axes([0.92, 0.35, 0.015, 0.50])
-        fig.colorbar(im, cax=cbar_ax, label='Power Fold Change')
-
-    fname = os.path.join(figures_dir,
-                         f'sub-{subjID:02d}_{region_name}_{band_name.capitalize()}_TFR.png')
-    fig.subplots_adjust(left=0.06, right=0.91, top=0.88, bottom=0.10,
-                        wspace=0.06, hspace=0.20)
-    fig.savefig(fname, dpi=300)
-    plt.close(fig)
-    print(f"    Saved band figure: {fname}")
-
-
 def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_tgt_mask,
                                 dt, freqs, figures_dir, subjID, time_vector):
+    """Compute trough-locked TFR for all bands and save two figures:
+
+    Figure A (sub-XX_<Region>_TFR_Comodulograms.png)
+        3 rows (Theta / Alpha / Beta) × 4 cols (Stim-Ipsi | Stim-Contra | Delay-Ipsi | Delay-Contra)
+        Each cell: TFR heatmap (power freq × time-from-trough)
+
+    Figure B (sub-XX_<Region>_GammaTraces.png)
+        3 rows (Theta / Alpha / Beta) × 4 cols (same conditions)
+        Each cell: mean 30-50 Hz power trace vs time-from-trough
+    """
     print(f"\nProcessing Event-Related lateralized region: {region_name}")
 
-    left_roi = roi_data_dict['left_roi']
+    left_roi  = roi_data_dict['left_roi']
     right_roi = roi_data_dict['right_roi']
 
     intervals = [
         ('Stimulus\n[-0.5s to 0.5s]', -0.5, 0.5),
-        ('Delay\n[0.5s to 1.5s]', 0.5, 1.5)
+        ('Delay\n[0.5s to 1.5s]',    0.5, 1.5),
     ]
-
     bands_list = list(FREQUENCY_BANDS.items())
+    gamma_mask = (freqs >= 30) & (freqs <= 50)
 
-    # 4 rows (3 phase bands + 1 gamma summary) × 4 cols
-    fig, axes = plt.subplots(4, 4, figsize=(22, 18),
-                             gridspec_kw={'height_ratios': [1, 1, 1, 0.6]})
-    fig.suptitle(
-        f'{region_name} ROI — Trough-Locked TFR PAC | Subject {subjID:02d}\n'
-        f'Columns: [Stimulus Ipsi | Stimulus Contra | Delay Ipsi | Delay Contra]',
-        fontsize=14
-    )
+    # ── One compute pass — store results per band ─────────────────────────────
+    # band_data[band_name] = (f_min, f_max, col_data)
+    # col_data: list of 4 matrices [Stim-Ipsi, Stim-Contra, Delay-Ipsi, Delay-Contra]
+    band_data = {}
 
-    col_titles = ['Stimulus — Ipsi', 'Stimulus — Contra', 'Delay — Ipsi', 'Delay — Contra']
-    for ci, ct in enumerate(col_titles):
-        axes[0, ci].set_title(ct, fontsize=11, fontweight='bold')
-
-    gamma_mask  = (freqs >= 30) & (freqs <= 50)
-    gamma_store = {ci: [] for ci in range(4)}   # stores (n_gamma_freqs, n_times) per column per band
-    im = None
-
-    for row_idx, (band_name, (f_min, f_max)) in enumerate(bands_list):
-        print(f"  Phase tracking: {band_name.capitalize()} ({f_min}-{f_max} Hz)")
+    for band_name, (f_min, f_max) in bands_list:
+        print(f"  Phase: {band_name.capitalize()} ({f_min}-{f_max} Hz)")
 
         tfr_cache = {}
         for interval_name, t_start, t_end in intervals:
@@ -382,73 +301,103 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
             if any(v is None for v in c.values()):
                 col_data.extend([None, None])
             else:
-                ipsi  = (c['LL'] + c['RR']) / 2.0
-                contra = (c['LR'] + c['RL']) / 2.0
-                col_data.extend([ipsi, contra])
+                col_data.extend([
+                    (c['LL'] + c['RR']) / 2.0,   # Ipsi
+                    (c['LR'] + c['RL']) / 2.0,   # Contra
+                ])
 
-        col_labels = ['Ipsi', 'Contra', 'Ipsi', 'Contra']
+        band_data[band_name] = (f_min, f_max, col_data)
+
+    # ── Figure A: TFR Comodulograms  (3 rows × 4 cols) ───────────────────────
+    fig_a, axes_a = plt.subplots(3, 4, figsize=(22, 13))
+    fig_a.suptitle(
+        f'{region_name} ROI — Trough-Locked TFR | Subject {subjID:02d}\n'
+        f'Rows: Theta / Alpha / Beta   |   '
+        f'Cols: Stim-Ipsi | Stim-Contra | Delay-Ipsi | Delay-Contra',
+        fontsize=13
+    )
+    for ci, ct in enumerate(COL_TITLES):
+        axes_a[0, ci].set_title(ct, fontsize=10, fontweight='bold')
+
+    im_a = None
+    for row_idx, (band_name, _) in enumerate(bands_list):
+        _, _, col_data = band_data[band_name]
         for ci, mat in enumerate(col_data):
-            ax = axes[row_idx, ci]
+            ax = axes_a[row_idx, ci]
             if mat is None:
                 ax.text(0.5, 0.5, 'Insufficient\nData', ha='center', va='center',
                         transform=ax.transAxes, fontsize=9)
-                ax.set_title(f'{band_name.capitalize()} — {col_labels[ci]}')
                 continue
-
-            gamma_store[ci].append(mat[gamma_mask, :])   # stash for bottom row
-
-            im = ax.imshow(mat, aspect='auto', origin='lower',
-                           extent=[-1.0, 1.0, freqs[0], freqs[-1]],
-                           cmap='RdBu_r', interpolation='bilinear',
-                           vmin=-0.1, vmax=0.1)
+            im_a = ax.imshow(mat, aspect='auto', origin='lower',
+                             extent=[-1.0, 1.0, freqs[0], freqs[-1]],
+                             cmap='RdBu_r', interpolation='bilinear',
+                             vmin=-0.1, vmax=0.1)
             ax.set_xlim([-0.25, 0.25])
             ax.axvline(0, color='black', linestyle='--', alpha=0.8, linewidth=1.2)
-
+            ax.set_yticks(freqs[::4])
             if ci == 0:
                 ax.set_ylabel(f'{band_name.capitalize()}\nPower Freq (Hz)', fontsize=9)
             else:
                 ax.set_yticklabels([])
+            if row_idx < 2:
+                ax.set_xticklabels([])
+            else:
+                ax.set_xlabel('Time from Trough (s)', fontsize=8)
 
-            ax.set_xticklabels([])   # x-labels only on bottom row
-            ax.set_yticks(freqs[::4])
+    if im_a is not None:
+        cbar_ax = fig_a.add_axes([0.92, 0.15, 0.015, 0.70])
+        fig_a.colorbar(im_a, cax=cbar_ax, label='Power Fold Change (baseline-normalized)')
 
-        # ── Save standalone per-band figure ──────────────────────────────────
-        _save_band_figure(band_name, f_min, f_max, col_data, freqs,
-                          gamma_mask, figures_dir, subjID, region_name)
+    fname_a = os.path.join(figures_dir, f'sub-{subjID:02d}_{region_name}_TFR_Comodulograms.png')
+    fig_a.subplots_adjust(left=0.07, right=0.91, top=0.88, bottom=0.07, wspace=0.07, hspace=0.25)
+    fig_a.savefig(fname_a, dpi=300)
+    plt.close(fig_a)
+    print(f"  Saved: {fname_a}")
 
-    # ── Bottom row: mean 30-50 Hz power across all phase-band conditions ──────
-    for ci in range(4):
-        ax = axes[3, ci]
-        if gamma_store[ci]:
-            gamma_mean  = np.mean(np.stack(gamma_store[ci], axis=0), axis=0)  # (n_gamma, n_times)
-            time_extent = np.linspace(-1.0, 1.0, gamma_mean.shape[1])
-            mean_trace  = gamma_mean.mean(axis=0)
-            vm = (time_extent >= -0.25) & (time_extent <= 0.25)
+    # ── Figure B: Mean 30-50 Hz Gamma Traces  (3 rows × 4 cols) ─────────────
+    fig_b, axes_b = plt.subplots(3, 4, figsize=(22, 10), sharey='row')
+    fig_b.suptitle(
+        f'{region_name} ROI — Mean 30–50 Hz Power (Trough-Locked) | Subject {subjID:02d}\n'
+        f'Rows: Theta / Alpha / Beta phase   |   '
+        f'Cols: Stim-Ipsi | Stim-Contra | Delay-Ipsi | Delay-Contra',
+        fontsize=13
+    )
+    for ci, ct in enumerate(COL_TITLES):
+        axes_b[0, ci].set_title(ct, fontsize=10, fontweight='bold')
 
-            ax.plot(time_extent[vm], mean_trace[vm], color='steelblue', linewidth=1.5)
-            ax.fill_between(time_extent[vm], mean_trace[vm], 0,
-                            where=mean_trace[vm] > 0, alpha=0.2, color='steelblue')
-            ax.fill_between(time_extent[vm], mean_trace[vm], 0,
-                            where=mean_trace[vm] < 0, alpha=0.2, color='red')
+    for row_idx, (band_name, _) in enumerate(bands_list):
+        _, _, col_data = band_data[band_name]
+        for ci, mat in enumerate(col_data):
+            ax = axes_b[row_idx, ci]
+            if mat is None:
+                ax.axis('off')
+                continue
+
+            time_extent = np.linspace(-1.0, 1.0, mat.shape[1])
+            trace = mat[gamma_mask, :].mean(axis=0)
+            vm    = (time_extent >= -0.25) & (time_extent <= 0.25)
+
+            ax.plot(time_extent[vm], trace[vm], color='steelblue', linewidth=1.5)
+            ax.fill_between(time_extent[vm], trace[vm], 0,
+                            where=trace[vm] > 0, alpha=0.25, color='steelblue')
+            ax.fill_between(time_extent[vm], trace[vm], 0,
+                            where=trace[vm] < 0, alpha=0.25, color='crimson')
             ax.axhline(0,  color='k',     linestyle='--', alpha=0.5, linewidth=0.8)
             ax.axvline(0,  color='black', linestyle='--', alpha=0.8, linewidth=1.2)
             ax.set_xlim([-0.25, 0.25])
-            ax.set_xlabel('Time from Trough (s)', fontsize=8)
+
             if ci == 0:
-                ax.set_ylabel('Mean Power\n30–50 Hz', fontsize=8)
-        else:
-            ax.axis('off')
+                ax.set_ylabel(f'{band_name.capitalize()}\nMean Power', fontsize=9)
+            if row_idx < 2:
+                ax.set_xticklabels([])
+            else:
+                ax.set_xlabel('Time from Trough (s)', fontsize=8)
 
-    if im is not None:
-        cbar_ax = fig.add_axes([0.92, 0.25, 0.015, 0.60])
-        fig.colorbar(im, cax=cbar_ax, label='Power Fold Change (baseline-normalized)')
-
-    plot_fname = os.path.join(figures_dir, f'sub-{subjID:02d}_{region_name}_TFR_IpsiContra.png')
-    fig.subplots_adjust(left=0.07, right=0.91, top=0.90, bottom=0.06, wspace=0.08, hspace=0.30)
-    fig.savefig(plot_fname, dpi=300)
-    plt.close(fig)
-    print(f"  Saved: {plot_fname}")
-
+    fname_b = os.path.join(figures_dir, f'sub-{subjID:02d}_{region_name}_GammaTraces.png')
+    fig_b.subplots_adjust(left=0.07, right=0.97, top=0.88, bottom=0.08, wspace=0.10, hspace=0.25)
+    fig_b.savefig(fname_b, dpi=300)
+    plt.close(fig_b)
+    print(f"  Saved: {fname_b}")
 
 def main(subjID, voxRes='10mm'):
     h = socket.gethostname()
