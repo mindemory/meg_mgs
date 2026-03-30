@@ -77,7 +77,8 @@ def modulation_index_vectorized(phase, amplitude, n_bins=N_PHASE_BINS):
         mask = (phase >= bins[b]) & (phase < bins[b + 1])   # (N, T)
         count = mask.sum(axis=1)                             # (N,)
         amp_sum = (amplitude * mask).sum(axis=1)             # (N,)
-        amp_dist[:, b] = np.where(count > 0, amp_sum / count, 0.0)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            amp_dist[:, b] = np.where(count > 0, amp_sum / count, 0.0)
     total = amp_dist.sum(axis=1, keepdims=True)
     p = amp_dist / (total + 1e-12)
     q = 1.0 / n_bins
