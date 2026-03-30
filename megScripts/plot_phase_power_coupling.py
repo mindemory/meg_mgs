@@ -64,8 +64,6 @@ def load_and_prepare_data(subjID, bidsRoot, taskName, voxRes):
     surface_resolution = int(voxRes[:-2])
     source_data_fpath = os.path.join(sourceReconRoot, f'{subName}_task-{taskName}_sourceSpaceData_{surface_resolution}.mat')
 
-    VADER_TEMP = '/localhome/curtisadmin/Pictures/'
-    
     if socket.gethostname() == 'zod':
         # Mac: copy to Desktop to avoid network mount issues
         source_data_temp_path = os.path.join('/Users/mrugank/Desktop', f'{subName}_task-{taskName}_sourceSpaceData_raw_{surface_resolution}.mat')
@@ -73,11 +71,14 @@ def load_and_prepare_data(subjID, bidsRoot, taskName, voxRes):
         source_data = h5py.File(source_data_temp_path, 'r')
         os.remove(source_data_temp_path)
     elif socket.gethostname() == 'vader':
-        # Vader: copy to local home Documents to avoid network mount issues
-        source_data_temp_path = os.path.join(VADER_TEMP, f'{subName}_task-{taskName}_sourceSpaceData_raw_{surface_resolution}.mat')
-        copyfile(source_data_fpath, source_data_temp_path)
-        source_data = h5py.File(source_data_temp_path, 'r')
-        os.remove(source_data_temp_path)
+        # Vader: NFS mount has locking issues - try locking=False first, else copy to /tmp
+        try:
+            source_data = h5py.File(source_data_fpath, 'r', locking=False)
+        except Exception:
+            source_data_temp_path = os.path.join('/tmp', f'{subName}_task-{taskName}_sourceSpaceData_raw_{surface_resolution}.mat')
+            copyfile(source_data_fpath, source_data_temp_path)
+            source_data = h5py.File(source_data_temp_path, 'r')
+            os.remove(source_data_temp_path)
     else:
         # HPC: read directly
         source_data = h5py.File(source_data_fpath, 'r')
@@ -110,11 +111,14 @@ def load_and_prepare_data(subjID, bidsRoot, taskName, voxRes):
         behav_data = h5py.File(behav_data_temp_path, 'r')
         os.remove(behav_data_temp_path)
     elif socket.gethostname() == 'vader':
-        # Vader: copy to local home Documents to avoid network mount issues
-        behav_data_temp_path = os.path.join(VADER_TEMP, f'sub-{subjID:02d}_task-{taskName}-iisess_forSource.mat')
-        copyfile(behav_data_path, behav_data_temp_path)
-        behav_data = h5py.File(behav_data_temp_path, 'r')
-        os.remove(behav_data_temp_path)
+        # Vader: NFS mount has locking issues - try locking=False first, else copy to /tmp
+        try:
+            behav_data = h5py.File(behav_data_path, 'r', locking=False)
+        except Exception:
+            behav_data_temp_path = os.path.join('/tmp', f'sub-{subjID:02d}_task-{taskName}-iisess_forSource.mat')
+            copyfile(behav_data_path, behav_data_temp_path)
+            behav_data = h5py.File(behav_data_temp_path, 'r')
+            os.remove(behav_data_temp_path)
     else:
         # HPC: read directly
         behav_data = h5py.File(behav_data_path, 'r')
