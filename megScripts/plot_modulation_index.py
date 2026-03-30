@@ -26,7 +26,7 @@ from joblib import Parallel, delayed
 import sys
 
 # ── Frequency axes ────────────────────────────────────────────────────────────
-PHASE_FREQS  = np.arange(4,  52, 2, dtype=float)   # 4–50 Hz (phase providing)
+PHASE_FREQS  = np.arange(4,  32, 2, dtype=float)   # 4–30 Hz (phase providing)
 AMP_FREQS    = np.arange(4,  52, 2, dtype=float)   # 4–50 Hz (amplitude)
 N_PHASE_BINS = 18                                   # bins for MI
 FILTER_ORDER = 4                                    # Butterworth order
