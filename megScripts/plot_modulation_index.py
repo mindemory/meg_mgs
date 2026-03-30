@@ -64,74 +64,74 @@ def bandpass(data, f_lo, f_hi, sfreq, order=FILTER_ORDER):
     return signal.filtfilt(b, a, data, axis=-1)
 
 
-def modulation_index(phase, amplitude, n_bins=N_PHASE_BINS):
+def modulation_index_vectorized(phase, amplitude, n_bins=N_PHASE_BINS):
     """
-    Tort et al. (2010) MI — KL divergence of amplitude-per-phase-bin
-    distribution from uniform. Amplitude-invariant.
-    Returns scalar MI in [0, 1].
+    Vectorized Tort MI across N signals simultaneously.
+    phase, amplitude : (N, T) — N signals, T time samples
+    Returns : (N,) array of MI values
     """
     bins = np.linspace(-np.pi, np.pi, n_bins + 1)
-    amp_dist = np.zeros(n_bins)
+    N = phase.shape[0]
+    amp_dist = np.zeros((N, n_bins))
     for b in range(n_bins):
-        mask = (phase >= bins[b]) & (phase < bins[b + 1])
-        if mask.any():
-            amp_dist[b] = amplitude[mask].mean()
-    total = amp_dist.sum()
-    if total == 0:
-        return 0.0
-    p = amp_dist / total
+        mask = (phase >= bins[b]) & (phase < bins[b + 1])   # (N, T)
+        count = mask.sum(axis=1)                             # (N,)
+        amp_sum = (amplitude * mask).sum(axis=1)             # (N,)
+        amp_dist[:, b] = np.where(count > 0, amp_sum / count, 0.0)
+    total = amp_dist.sum(axis=1, keepdims=True)
+    p = amp_dist / (total + 1e-12)
     q = 1.0 / n_bins
     with np.errstate(divide='ignore', invalid='ignore'):
-        kl = np.sum(p * np.log(p / q + 1e-12))
-    return float(kl / np.log(n_bins))
+        kl = np.sum(p * np.log(p / q + 1e-12), axis=1)
+    return kl / np.log(n_bins)
 
 
-def compute_mi_pair(roi_signal, dt, t_idx, f_phase, f_amp):
+def compute_mi_pair(roi_data, dt, t_idx, f_phase, f_amp):
     """
-    Compute single-trial-averaged MI for one (f_phase, f_amp) pair.
-    roi_signal : (trials, times)  — ROI-averaged broadband signal
-    t_idx      : boolean mask of time samples within the interval
-    Returns scalar MI.
+    Compute MI for one (f_phase, f_amp) pair across ALL sources.
+    roi_data : (trials, times, sources)
+    Returns scalar MI averaged over trials and sources.
     """
+    n_trials, n_times, n_sources = roi_data.shape
     sfreq = 1.0 / dt
-    half_bw = max(1.0, f_phase * 0.5)  # ±50 % bandwidth for narrow bands
+    half_bw = max(1.0, f_phase * 0.5)
 
-    # Phase band
     lo_p = max(0.5, f_phase - half_bw)
     hi_p = f_phase + half_bw
-    # Amplitude band: use ±10 % BW
     lo_a = f_amp * 0.9
     hi_a = f_amp * 1.1
 
     try:
-        filt_phase = bandpass(roi_signal, lo_p, hi_p, sfreq)
-        filt_amp   = bandpass(roi_signal, lo_a, hi_a, sfreq)
+        # Reshape to (trials*sources, times) for batch bandpass
+        data_2d = roi_data.transpose(0, 2, 1).reshape(n_trials * n_sources, n_times)
+        filt_p = bandpass(data_2d, lo_p, hi_p, sfreq)   # (trials*sources, times)
+        filt_a = bandpass(data_2d, lo_a, hi_a, sfreq)
     except Exception:
         return 0.0
 
-    trial_mis = []
-    for tr in range(roi_signal.shape[0]):
-        ph  = np.angle(signal.hilbert(filt_phase[tr, t_idx]))
-        amp = np.abs(  signal.hilbert(filt_amp  [tr, t_idx]))
-        trial_mis.append(modulation_index(ph, amp))
+    # Select time window, compute Hilbert for all signals at once
+    ph  = np.angle(signal.hilbert(filt_p[:, t_idx], axis=1))  # (trials*sources, T)
+    amp = np.abs(  signal.hilbert(filt_a[:, t_idx], axis=1))
 
-    return float(np.mean(trial_mis))
+    # Vectorized MI across all (trial, source) combinations
+    mi_all = modulation_index_vectorized(ph, amp)   # (trials*sources,)
+    return float(mi_all.mean())
 
 
 def compute_comodulogram(roi_data, tgt_mask, dt, time_vector, t_start, t_end):
     """
     Full MI comodulogram for one condition.
+    MI is computed per source then averaged — consistent with plot_phase_power_coupling.
     Returns array of shape (len(AMP_FREQS), len(PHASE_FREQS)).
     """
-    data = roi_data[tgt_mask]               # (trials, times, sources)
-    roi_signal = data.mean(axis=2)          # (trials, times)
+    data  = roi_data[tgt_mask]    # (trials, times, sources)
     t_idx = (time_vector >= t_start) & (time_vector <= t_end)
 
     _, n_cores = get_compute_profile()
     pairs = [(fp, fa) for fp in PHASE_FREQS for fa in AMP_FREQS]
 
     results = Parallel(n_jobs=n_cores)(
-        delayed(compute_mi_pair)(roi_signal, dt, t_idx, fp, fa)
+        delayed(compute_mi_pair)(data, dt, t_idx, fp, fa)
         for fp, fa in pairs
     )
 
