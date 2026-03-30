@@ -303,12 +303,6 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
                 contra = (c['LR'] + c['RL']) / 2.0
                 col_data.extend([ipsi, contra])
 
-        # Symmetric colormap scale across Ipsi+Contra for this row
-        valid_mats = [m for m in col_data if m is not None]
-        if valid_mats:
-            row_vmax = max(np.abs(m).max() for m in valid_mats)
-        else:
-            row_vmax = 1.0
 
         col_labels = ['Ipsi', 'Contra', 'Ipsi', 'Contra']
         for ci, mat in enumerate(col_data):
@@ -321,8 +315,7 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
 
             im = ax.imshow(mat, aspect='auto', origin='lower',
                            extent=[-1.0, 1.0, freqs[0], freqs[-1]],
-                           cmap='RdBu_r', interpolation='bilinear',
-                           vmin=-row_vmax, vmax=row_vmax)
+                           cmap='RdBu_r', interpolation='bilinear')
             ax.set_xlim([-0.5, 0.5])
             ax.axvline(0, color='black', linestyle='--', alpha=0.8, linewidth=1.2)
 
