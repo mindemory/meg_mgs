@@ -64,7 +64,7 @@ def load_and_prepare_data(subjID, bidsRoot, taskName, voxRes):
     surface_resolution = int(voxRes[:-2])
     source_data_fpath = os.path.join(sourceReconRoot, f'{subName}_task-{taskName}_sourceSpaceData_{surface_resolution}.mat')
 
-    VADER_TEMP = '/d/DATD/home/mrugank/Documents'
+    VADER_TEMP = '/localhome/curtisadmin/Pictures/'
     
     if socket.gethostname() == 'zod':
         # Mac: copy to Desktop to avoid network mount issues
