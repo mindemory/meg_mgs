@@ -319,7 +319,7 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
                            extent=[-1.0, 1.0, freqs[0], freqs[-1]],
                            cmap='RdBu_r', interpolation='bilinear',
                            vmin=-0.1, vmax=0.1)
-            ax.set_xlim([-0.5, 0.5])
+            ax.set_xlim([-0.25, 0.25])
             ax.axvline(0, color='black', linestyle='--', alpha=0.8, linewidth=1.2)
 
             if ci == 0:
@@ -337,7 +337,7 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
             gamma_mean  = np.mean(np.stack(gamma_store[ci], axis=0), axis=0)  # (n_gamma, n_times)
             time_extent = np.linspace(-1.0, 1.0, gamma_mean.shape[1])
             mean_trace  = gamma_mean.mean(axis=0)
-            vm = (time_extent >= -0.5) & (time_extent <= 0.5)
+            vm = (time_extent >= -0.25) & (time_extent <= 0.25)
 
             ax.plot(time_extent[vm], mean_trace[vm], color='steelblue', linewidth=1.5)
             ax.fill_between(time_extent[vm], mean_trace[vm], 0,
@@ -346,7 +346,7 @@ def process_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_
                             where=mean_trace[vm] < 0, alpha=0.2, color='red')
             ax.axhline(0,  color='k',     linestyle='--', alpha=0.5, linewidth=0.8)
             ax.axvline(0,  color='black', linestyle='--', alpha=0.8, linewidth=1.2)
-            ax.set_xlim([-0.5, 0.5])
+            ax.set_xlim([-0.25, 0.25])
             ax.set_xlabel('Time from Trough (s)', fontsize=8)
             if ci == 0:
                 ax.set_ylabel('Mean Power\n30–50 Hz', fontsize=8)
