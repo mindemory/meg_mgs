@@ -26,8 +26,8 @@ from joblib import Parallel, delayed
 import sys
 
 # ── Frequency axes ────────────────────────────────────────────────────────────
-PHASE_FREQS  = np.arange(2,  22, 2,  dtype=float)   # 2–20 Hz  (phase providing)
-AMP_FREQS    = np.arange(20, 105, 5, dtype=float)   # 20–100 Hz (amplitude)
+PHASE_FREQS  = np.arange(4,  52, 2, dtype=float)   # 4–50 Hz (phase providing)
+AMP_FREQS    = np.arange(4,  52, 2, dtype=float)   # 4–50 Hz (amplitude)
 N_PHASE_BINS = 18                                   # bins for MI
 FILTER_ORDER = 4                                    # Butterworth order
 
@@ -255,7 +255,7 @@ def process_region(region_name, roi_dict, left_tgt, right_tgt,
             im = ax.imshow(mat, aspect='auto', origin='lower',
                            extent=[PHASE_FREQS[0], PHASE_FREQS[-1],
                                    AMP_FREQS[0],   AMP_FREQS[-1]],
-                           cmap='hot', interpolation='bilinear')
+                           cmap='RdBu_r', interpolation='bilinear')
             ax.set_title(f'{iname.strip()} — {label}', fontsize=10)
             if row == 1:
                 ax.set_xlabel('Phase Frequency (Hz)')
