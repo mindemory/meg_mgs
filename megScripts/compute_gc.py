@@ -141,83 +141,61 @@ def load_and_prepare_data(subjID, bidsRoot, taskName, voxRes):
 
     return roi_dict, left_tgt_mask, right_tgt_mask, dt, time_vector
 
-def _compute_chunk(roi1, roi2, pair_indices, sfreq, fmin, fmax):
-    warnings.filterwarnings('ignore') # Ignore internal MNE warnings in workers
-    
-    gc_1to2 = []
-    gc_2to1 = []
-    freqs = None
-    
-    for i, j in pair_indices:
-        d_seed = roi1[:, :, i]
-        d_tgt  = roi2[:, :, j]
-        
-        # Standardize & regularize per dipole
-        s1_std = np.std(d_seed, axis=1, keepdims=True); s1_std[s1_std==0] = 1.0
-        s2_std = np.std(d_tgt, axis=1, keepdims=True); s2_std[s2_std==0] = 1.0
-        d_seed = (d_seed - np.mean(d_seed, axis=1, keepdims=True)) / s1_std + np.random.normal(0, 1e-3, d_seed.shape)
-        d_tgt = (d_tgt - np.mean(d_tgt, axis=1, keepdims=True)) / s2_std + np.random.normal(0, 1e-3, d_tgt.shape)
-        
-        data = np.stack([d_seed, d_tgt], axis=1) # (epochs, 2, times)
-        try:
-            con = spectral_connectivity_epochs(
-                data, method='gc', sfreq=sfreq, fmin=fmin, fmax=fmax,
-                mode='multitaper', indices=([[0], [1]], [[1], [0]]), n_jobs=1, verbose=False
-            )
-            vals = con.get_data() # (2, n_freqs) -> 0: seed->tgt, 1: tgt->seed
-            gc_1to2.append(vals[0])  
-            gc_2to1.append(vals[1])  
-            if freqs is None:
-                freqs = con.freqs
-        except Exception as e:
-            # We skip this pair if it's too unstable (rank info suppressed)
-            pass
-            
-    if not gc_1to2:
-        return None, None, None, 0
-    
-    # Pre-sum locally to minimize payload sent back to main process
-    s_1to2 = np.sum(np.stack(gc_1to2), axis=0)
-    s_2to1 = np.sum(np.stack(gc_2to1), axis=0)
-    return s_1to2, s_2to1, freqs, len(gc_1to2)
+from sklearn.decomposition import PCA
+from spectral_connectivity import Multitaper, Connectivity
 
-
-def get_bivariate_gc_for_roi_pair(roi1, roi2, sfreq, fmin, fmax, n_jobs=48):
-    n_dipoles1 = roi1.shape[2]
-    n_dipoles2 = roi2.shape[2]
-    
-    # Generate all pairwise combinations
-    all_pairs = list(itertools.product(range(n_dipoles1), range(n_dipoles2)))
-    chunks = np.array_split(all_pairs, n_jobs)
-    
-    # We use backend='loky' to avoid Python multiprocessing passing huge contiguous arrays 
-    # if joblib detects threading is insufficient. MNE/scipy releases GIL during lapack calls.
-    results = Parallel(n_jobs=n_jobs, backend='loky')(
-        delayed(_compute_chunk)(roi1, roi2, chunk, sfreq, fmin, fmax) 
-        for chunk in chunks if len(chunk) > 0
-    )
-    
-    total_1to2 = None
-    total_2to1 = None
-    total_count = 0
-    freqs = None
-    
-    for sum12, sum21, fqs, count in results:
-        if count > 0:
-            if total_1to2 is None:
-                total_1to2 = sum12
-                total_2to1 = sum21
-                freqs = fqs
-            else:
-                total_1to2 += sum12
-                total_2to1 += sum21
-            total_count += count
-            
-    if total_count == 0:
-        return None, None, None
+def get_pca_time_series(epoch_data):
+    """
+    Extracts the 1st Principal Component for each epoch across all dipoles.
+    epoch_data shape: (n_epochs, n_times, n_dipoles)
+    Returns: (n_epochs, n_times)
+    """
+    n_epochs, n_times, n_dipoles = epoch_data.shape
+    pca_ts = np.zeros((n_epochs, n_times))
+    for e in range(n_epochs):
+        # PCA requires (n_samples, n_features) -> (n_times, n_dipoles)
+        # We standard-scale data to ensure dipoles contribute equally across the parcel
+        e_data = epoch_data[e]
+        std = np.std(e_data, axis=0, keepdims=True); std[std==0] = 1.0
+        e_data = (e_data - np.mean(e_data, axis=0, keepdims=True)) / std
         
-    # Global average across all valid dipole pairs
-    return total_1to2 / total_count, total_2to1 / total_count, freqs
+        pca = PCA(n_components=1)
+        pca_ts[e, :] = pca.fit_transform(e_data)[:, 0]
+    return pca_ts
+
+def get_dhamala_gc_for_roi_pair(epoch_seed, epoch_tgt, sfreq, fmin, fmax):
+    """
+    Computes Non-Parametric Dhamala Granger Causality (Michalareas 2016)
+    on the 1st Principal Component of the ROIs.
+    """
+    # 1. PCA Spatial Pooling (solves signal cancellation)
+    ts_seed = get_pca_time_series(epoch_seed) # (n_epochs, n_times)
+    ts_tgt = get_pca_time_series(epoch_tgt)   # (n_epochs, n_times)
+    
+    # 2. Stack for Multitaper & Transpose to (n_times, n_epochs, n_signals)
+    data = np.stack([ts_seed, ts_tgt], axis=2)
+    data = np.swapaxes(data, 0, 1)
+    
+    # 3. Non-parametric Multitaper CSD & Wilson-Burg Factorization
+    # time_halfbandwidth_product=4 ensures sufficient frequency smoothing
+    m = Multitaper(time_series=data, sampling_frequency=sfreq, time_halfbandwidth_product=4)
+    con = Connectivity.from_multitaper(m)
+    
+    # 4. Extract Directed GC
+    # gc shape: (1, n_freqs, 2, 2)
+    gc_tensor = con.pairwise_spectral_granger_prediction()
+    freqs = con.frequencies
+    
+    # We only care about fmin to fmax
+    f_mask = (freqs >= fmin) & (freqs <= fmax)
+    freqs_band = freqs[f_mask]
+    
+    # gc[0, f, tgt, seed] -> effect of seed on tgt
+    # Signal 0 is seed, Signal 1 is tgt
+    gc_1to2 = gc_tensor[0, f_mask, 1, 0] # seed -> tgt
+    gc_2to1 = gc_tensor[0, f_mask, 0, 1] # tgt -> seed
+    
+    return gc_1to2, gc_2to1, freqs_band
 
 
 def get_condition_gc(l_vis, r_vis, l_front, r_front, tgt_mask, time_vector, dt, t_start, t_end, fmin=5, fmax=50, n_jobs=48):
@@ -235,12 +213,12 @@ def get_condition_gc(l_vis, r_vis, l_front, r_front, tgt_mask, time_vector, dt, 
     if epoch_lv.size == 0 or epoch_lv.shape[0] < 2:
         return None, None
         
-    print(f"      (Parallel pairwise GC across {epoch_lf.shape[2]*epoch_lv.shape[2]:,} LF->LV inter-parcel pairs)")
+    print("      (Extracting 1st Principal Component for pooling & calculating Non-Parametric Dhamala GC)")
     
-    lf_lv, lv_lf, freqs = get_bivariate_gc_for_roi_pair(epoch_lf, epoch_lv, sfreq, fmin, fmax, n_jobs=n_jobs)
-    lf_rv, rv_lf, _     = get_bivariate_gc_for_roi_pair(epoch_lf, epoch_rv, sfreq, fmin, fmax, n_jobs=n_jobs)
-    rf_lv, lv_rf, _     = get_bivariate_gc_for_roi_pair(epoch_rf, epoch_lv, sfreq, fmin, fmax, n_jobs=n_jobs)
-    rf_rv, rv_rf, _     = get_bivariate_gc_for_roi_pair(epoch_rf, epoch_rv, sfreq, fmin, fmax, n_jobs=n_jobs)
+    lf_lv, lv_lf, freqs = get_dhamala_gc_for_roi_pair(epoch_lf, epoch_lv, sfreq, fmin, fmax)
+    lf_rv, rv_lf, _     = get_dhamala_gc_for_roi_pair(epoch_lf, epoch_rv, sfreq, fmin, fmax)
+    rf_lv, lv_rf, _     = get_dhamala_gc_for_roi_pair(epoch_rf, epoch_lv, sfreq, fmin, fmax)
+    rf_rv, rv_rf, _     = get_dhamala_gc_for_roi_pair(epoch_rf, epoch_rv, sfreq, fmin, fmax)
     
     res = {
         'lf_lv': lf_lv, 'lf_rv': lf_rv,
