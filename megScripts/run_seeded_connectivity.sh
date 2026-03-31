@@ -19,8 +19,8 @@ subjects=(1 2 3 4 5 6 7 9 10 12 13 15 17 18 19 23 24 25 29 31 32)
 # (Loading once per subject/band/seed, calculating all combinations in RAM)
 METRICS="imcoh,dpli"
 TARGETS="left,right"
-SEEDS=("left_visual" "right_visual" "left_frontal" "right_frontal")
-BANDS=("theta" "alpha" "beta" "lowgamma")
+seeds=("left_visual" "right_visual" "left_frontal" "right_frontal")
+bands=("theta" "alpha" "beta" "lowgamma")
 
 echo "========================================================"
 echo " Seeded Connectivity Bulk Runner"
