@@ -13,7 +13,7 @@ def get_compute_profile():
     if h == 'zod':
         return 'mac', 4
     elif h == 'vader':
-        return 'vader', 48
+        return 'vader', 24       # Cap at 24 to ensure memory headroom on shared node
     else:
         return 'hpc', 10
 
@@ -117,16 +117,23 @@ def _compute_single_timepoint(t_idx, n_timepoints, window_half_samples, data_mat
         batch_indices = np.arange(batch_start, batch_end)
         
         target_data_batch = time_window_data[:, :, batch_indices]
-        cross_spectrum_batch = np.mean(seed_data[:, :, :, np.newaxis] * np.conj(target_data_batch[np.newaxis, :, :, :]), axis=1)
-        target_power_batch = np.mean(target_data_batch * np.conj(target_data_batch), axis=0)
         
-        if connectivityType == 'coh':
-            connectivity_mag_batch = np.abs(cross_spectrum_batch)**2 / (seed_power[:, :, np.newaxis] * target_power_batch[np.newaxis, :, :] + 1e-10)
-        elif connectivityType == 'imcoh':
-            connectivity_mag_batch = np.abs(np.imag(cross_spectrum_batch)) / np.sqrt(seed_power[:, :, np.newaxis] * target_power_batch[np.newaxis, :, :] + 1e-10)
-        elif connectivityType == 'dpli':
-            cross_spectrum_trials = seed_data[:, :, :, np.newaxis] * np.conj(target_data_batch[np.newaxis, :, :, :])
-            connectivity_mag_batch = np.mean(np.heaviside(np.imag(cross_spectrum_trials), 0.5), axis=1)
+        if connectivityType == 'dpli':
+            # Accumulate trial-by-trial to save memory (prevents 16GB intermediate Matrix)
+            n_trials = seed_data.shape[1]
+            dpli_acc = np.zeros((seed_data.shape[0], seed_data.shape[2], batch_indices.shape[0]))
+            for tr in range(n_trials):
+                trial_csd = seed_data[:, tr, :, np.newaxis] * np.conj(target_data_batch[tr, :, :, :])
+                dpli_acc += np.heaviside(np.imag(trial_csd), 0.5)
+            connectivity_mag_batch = dpli_acc / n_trials
+        else:
+            cross_spectrum_batch = np.mean(seed_data[:, :, :, np.newaxis] * np.conj(target_data_batch[np.newaxis, :, :, :]), axis=1)
+            target_power_batch = np.mean(target_data_batch * np.conj(target_data_batch), axis=0)
+            
+            if connectivityType == 'coh':
+                connectivity_mag_batch = np.abs(cross_spectrum_batch)**2 / (seed_power[:, :, np.newaxis] * target_power_batch[np.newaxis, :, :] + 1e-10)
+            elif connectivityType == 'imcoh':
+                connectivity_mag_batch = np.abs(np.imag(cross_spectrum_batch)) / np.sqrt(seed_power[:, :, np.newaxis] * target_power_batch[np.newaxis, :, :] + 1e-10)
         
         tp_results[batch_indices] = np.mean(connectivity_mag_batch, axis=(0, 1))
         
@@ -150,9 +157,10 @@ def compute_connectivity_measures(seed_indices, data_matrix, time_vector, connec
     
     _, n_cores = get_compute_profile()
     print(f"Computing {connectivityType} for {n_seeds} seeds -> {n_sources} sources.")
-    print(f"Parallelizing across {n_cores} cores.")
+    print(f"Parallelizing across {n_cores} cores using threading backend.")
 
-    results = Parallel(n_jobs=n_cores)(
+    # Use threading backend to avoid memory duplication
+    results = Parallel(n_jobs=n_cores, backend='threading')(
         delayed(_compute_single_timepoint)(
             t_idx, n_timepoints, window_half_samples, data_matrix, seed_indices, 
             n_sources, batch_size, n_batches, connectivityType
