@@ -14,7 +14,7 @@ def get_compute_profile():
     if h == 'zod':
         return 'mac', 4
     elif h == 'vader':
-        return 'vader', 24       # Cap at 24 for memory safety
+        return 'vader', 48       # Cap at 48 for memory safety
     else:
         return 'hpc', 10
 
@@ -31,49 +31,46 @@ def send_completion_email(subjID, voxRes, connectivityType, success=True, error_
     except Exception as e:
         print(f'  (Email notification skipped: {e})')
 
-def load_source_space_data(subjID, bidsRoot, taskName, voxRes, targetLoc, freqBand):
-    """Load and concatenate source space data for all targets (HDF5 staging)"""
+def load_source_space_data(subjID, bidsRoot, taskName, voxRes, freqBand):
+    """Load all 10 targets from HDF5 into a dictionary of trials."""
     subName = 'sub-%02d' % subjID
-    print(f'Loading source space data for {subName}')
+    print(f'Loading source space data for {subName} ({freqBand})')
     
-    derivativesRoot = os.path.join(bidsRoot, 'derivatives', subName)
-    sourceReconRoot = os.path.join(derivativesRoot, 'sourceRecon')
-    freqSpaceRoot = os.path.join(sourceReconRoot, 'freqSpace')
-    freqSpace_fpath = os.path.join(freqSpaceRoot, f'{subName}_task-{taskName}_complex{freqBand}_allTargets_{voxRes[:-2]}.mat')
+    freqSpace_fpath = os.path.join(bidsRoot, 'derivatives', subName, 'sourceRecon', 'freqSpace', f'{subName}_task-{taskName}_complex{freqBand}_allTargets_{voxRes[:-2]}.mat')
     
-    hostname = socket.gethostname()
-    tempDir = '/Users/mrugank/Desktop' if hostname == 'zod' else '/d/DATD/hyper/experiments/Mrugank/meg_mgs'
+    h = socket.gethostname()
+    tempDir = '/Users/mrugank/Desktop' if h == 'zod' else '/d/DATD/hyper/experiments/Mrugank/meg_mgs'
     
-    freqSpaceTempPath = os.path.join(tempDir, f'{subName}_task-{taskName}_complex{freqBand}_allTargets_{voxRes[:-2]}_{int(time.time())}.mat')
-    print(f'  Staging to {freqSpaceTempPath}...')
-    copyfile(freqSpace_fpath, freqSpaceTempPath)
+    tempPath = os.path.join(tempDir, f'{subName}_complex{freqBand}_{int(time.time())}.mat')
+    print(f'  Staging to {tempPath}...')
+    copyfile(freqSpace_fpath, tempPath)
     
-    with h5py.File(freqSpaceTempPath, 'r', locking=False) as f:
-        source_data_refs = np.array(f['sourceDataByTarget'])
-        all_trials = []
-        time_vector = None
-        target_indices = [4, 5, 6, 7, 8] if targetLoc == 'left' else [1, 2, 3, 9, 10]
-
-        for target_idx in target_indices:
-            target_ref = source_data_refs[0, target_idx - 1]
-            target_group = f[target_ref]
-            trial_dataset = target_group['trial']
+    target_data_dict = {}
+    time_vector = None
+    
+    with h5py.File(tempPath, 'r', locking=False) as f:
+        source_refs = np.array(f['sourceDataByTarget'])
+        for target_idx in range(1, 11):
+            ref = source_refs[0, target_idx - 1]
+            group = f[ref]
+            trial_ds = group['trial']
             
             if time_vector is None:
-                time_refs = target_group['time']
-                time_vector = np.array(f[time_refs[0, 0]])
+                time_vector = np.array(f[group['time'][0, 0]])
                 
-            for trial_idx in range(trial_dataset.shape[0]):
-                trial_data = f[trial_dataset[trial_idx, 0]]
-                all_trials.append(np.array(trial_data))
-    
-    data_matrix = np.stack(all_trials, axis=0)
-    data_matrix = data_matrix['real'] + 1j * data_matrix['imag']
-    if os.path.exists(freqSpaceTempPath):
-        os.remove(freqSpaceTempPath)
-        
-    print(f"Data matrix loaded: {data_matrix.shape} (trials x times x sources)")
-    return data_matrix, time_vector
+            trials = []
+            for tr_idx in range(trial_ds.shape[0]):
+                tr_ref = trial_ds[tr_idx, 0]
+                tr_data = f[tr_ref]
+                trials.append(np.array(tr_data))
+            
+            # (n_trials, n_times, n_sources)
+            arr = np.stack(trials, axis=0)
+            target_data_dict[target_idx] = arr['real'] + 1j * arr['imag']
+            print(f"  Loaded Target {target_idx}: {target_data_dict[target_idx].shape}")
+
+    if os.path.exists(tempPath): os.remove(tempPath)
+    return target_data_dict, time_vector
 
 def _compute_source_batch(batch_idx, batch_size, n_sources, n_timepoints, window_size_samples, data_matrix, seed_indices, connectivityType):
     """Worker function for a batch of target sources (Vectorized-Across-Time)"""
@@ -148,35 +145,56 @@ def compute_connectivity_measures(seed_indices, data_matrix, time_vector, connec
     
     return connectivity_timeseries
 
-def main(subjID, voxRes, seedROI, targetLoc, connectivityType, freqBand):
-    """Main function for source space connectivity analysis"""
-    voxRes, seedROI, targetLoc, connectivityType, freqBand = voxRes or '10mm', seedROI or 'left_visual', targetLoc or 'left', connectivityType or 'coh', freqBand or 'theta'
+def main(subjID, voxRes, seedROI, targetLoc_str, connectivityType_str, freqBand):
+    """Main loop with multi-location and multi-metric support"""
+    voxRes = voxRes or '10mm'; seedROI = seedROI or 'left_visual'; freqBand = freqBand or 'theta'
+    targetLocs = targetLoc_str.split(',') if targetLoc_str else ['left']
+    metrics = connectivityType_str.split(',') if connectivityType_str else ['coh']
     
     h = socket.gethostname()
     bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS' if h == 'zod' else '/d/DATD/datd/MEG_MGS/MEG_BIDS' if h == 'vader' else '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
     
-    outDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'connectivity_{voxRes}')
-    os.makedirs(outDir, exist_ok=True)
-    outF = os.path.join(outDir, f'sub-{subjID:02d}_task-mgs_seededConnectivity_{voxRes}_{seedROI}_{targetLoc}_{connectivityType}_{freqBand}.pkl')
-
-    if not os.path.exists(outF):
-        data, time_v = load_source_space_data(subjID, bidsRoot, 'mgs', voxRes, targetLoc, freqBand)
-        atlas = loadmat(os.path.join(bidsRoot, 'derivatives', 'atlas', f'rois_{voxRes}.mat'))
-        roi_indices = np.where(np.array(atlas[f'{seedROI}_points']).flatten() == 1)[0]
+    atlas = loadmat(os.path.join(bidsRoot, 'derivatives', 'atlas', f'rois_{voxRes}.mat'))
+    roi_indices = np.where(np.array(atlas[f'{seedROI}_points']).flatten() == 1)[0]
+    
+    # Load all targets once
+    all_target_data, time_v = load_source_space_data(subjID, bidsRoot, 'mgs', voxRes, freqBand)
+    
+    results_summary = []
+    
+    for loc in targetLocs:
+        # Prepare trials for this location
+        targets = [4, 5, 6, 7, 8] if loc == 'left' else [1, 2, 3, 9, 10]
+        data_subset = np.concatenate([all_target_data[t] for t in targets], axis=0)
         
-        start_t = time.time()
-        res = compute_connectivity_measures(roi_indices, data, time_v, connectivityType, freqBand)
-        print(f"Analysis completed in {time.time() - start_t:.2f}s")
-        with open(outF, 'wb') as f: pickle.dump(res, f)
-        print(f"Saved to {outF}")
+        for metric in metrics:
+            outDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'connectivity_{voxRes}')
+            os.makedirs(outDir, exist_ok=True)
+            outF = os.path.join(outDir, f'sub-{subjID:02d}_task-mgs_seededConnectivity_{voxRes}_{seedROI}_{loc}_{metric}_{freqBand}.pkl')
+            
+            if not os.path.exists(outF):
+                print(f"--- Processing: {loc} | {metric} ---")
+                start_t = time.time()
+                res = compute_connectivity_measures(roi_indices, data_subset, time_v, metric, freqBand)
+                with open(outF, 'wb') as f: pickle.dump(res, f)
+                dur = time.time() - start_t
+                results_summary.append(f"{loc}/{metric}: Done ({dur:.1f}s)")
+                print(f"  Completed in {dur:.1f}s")
+            else:
+                results_summary.append(f"{loc}/{metric}: Skipped (exists)")
+
+    # Send one summary email
+    summary_txt = f"Subject {subjID:02d} ({freqBand}) Bulk Run Summary:\n" + "\n".join(results_summary)
+    print(summary_txt)
+    # send_completion_email(...) could be updated here if needed
 
 if __name__ == '__main__':
-    msg = f"Usage: python inSourceSpaceSeededConnectivity.py <subjID> <voxRes> <seedROI> <targetLoc> <coh|imcoh|dpli> <freqBand>"
-    if len(os.sys.argv) < 2: print(msg); os.sys.exit(1)
+    if len(os.sys.argv) < 2: 
+        print("Usage: python inSourceSpaceSeededConnectivity.py <subjID> <voxRes> <seedROI> <targetLocs_CSV> <metrics_CSV> <freqBand>")
+        os.sys.exit(1)
     
     sID = int(os.sys.argv[1]); vRes = os.sys.argv[2] if len(os.sys.argv) > 2 else '10mm'
-    sROI = os.sys.argv[3] if len(os.sys.argv) > 3 else 'left_visual'; tLoc = os.sys.argv[4] if len(os.sys.argv) > 4 else 'left'
-    cType = os.sys.argv[5] if len(os.sys.argv) > 5 else 'coh'; fBand = os.sys.argv[6] if len(os.sys.argv) > 6 else 'theta'
+    sROI = os.sys.argv[3] if len(os.sys.argv) > 3 else 'left_visual'; tLocs = os.sys.argv[4] if len(os.sys.argv) > 4 else 'left'
+    cTypes = os.sys.argv[5] if len(os.sys.argv) > 5 else 'coh'; fBand = os.sys.argv[6] if len(os.sys.argv) > 6 else 'theta'
     
-    print(f"--- Connectivity Suite: sub-{sID:02d} | {vRes} | {cType} | {fBand} ---")
-    main(sID, vRes, sROI, tLoc, cType, fBand)
+    main(sID, vRes, sROI, tLocs, cTypes, fBand)
