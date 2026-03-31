@@ -54,16 +54,16 @@ def load_source_space_data(subjID, bidsRoot, taskName, voxRes, targetLoc, freqBa
     if hostname == 'zod':
         freqSpaceTempPath = os.path.join('/Users/mrugank/Desktop', f'{subName}_task-{taskName}_complex{freqBand}_allTargets_{voxRes[:-2]}.mat')
         copyfile(freqSpace_fpath, freqSpaceTempPath)
-        freqSpace_data = h5py.File(freqSpaceTempPath, 'r')
+        freqSpace_data = h5py.File(freqSpaceTempPath, 'r', locking=False)
         os.remove(freqSpaceTempPath)
     elif hostname == 'vader':
         # On Vader, use the local hyper project directory for temporary staging
         freqSpaceTempPath = os.path.join('/d/DATD/hyper/experiments/Mrugank/meg_mgs', f'{subName}_task-{taskName}_complex{freqBand}_allTargets_{voxRes[:-2]}.mat')
         copyfile(freqSpace_fpath, freqSpaceTempPath)
-        freqSpace_data = h5py.File(freqSpaceTempPath, 'r')
+        freqSpace_data = h5py.File(freqSpaceTempPath, 'r', locking=False)
         os.remove(freqSpaceTempPath)
     else:
-        freqSpace_data = h5py.File(freqSpace_fpath, 'r')
+        freqSpace_data = h5py.File(freqSpace_fpath, 'r', locking=False)
     
     # Get sourceDataByTarget
     source_data = np.array(freqSpace_data['sourceDataByTarget'])
