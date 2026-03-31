@@ -87,8 +87,11 @@ def main(voxRes='10mm'):
     figures_dir = os.path.join(bidsRoot, 'derivatives', 'figures', 'granger_causality', 'group')
     os.makedirs(figures_dir, exist_ok=True)
     
-    search_pattern = os.path.join(bidsRoot, 'derivatives', 'sub-*', 'sourceRecon', 'gc_data', f'*_GC_{voxRes}.pkl')
-    all_files = glob.glob(search_pattern)
+    subj_list = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, 18, 19, 23, 24, 25, 26, 27, 28, 29, 31, 32]
+    all_files = []
+    for s in subj_list:
+        sub_pattern = os.path.join(bidsRoot, 'derivatives', f'sub-{s:02d}', 'sourceRecon', 'gc_data', f'*_GC_{voxRes}.pkl')
+        all_files.extend(glob.glob(sub_pattern))
     
     if not all_files:
         print(f"No GC pre-computed files found for voxRes={voxRes} using pattern:\n{search_pattern}")

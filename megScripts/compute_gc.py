@@ -162,8 +162,8 @@ def get_condition_gc(l_vis, r_vis, l_front, r_front, tgt_mask, time_vector, dt, 
         s_std = np.std(s, axis=1, keepdims=True)
         s_std[s_std == 0] = 1.0 # Avoid div by zero
         s_norm = (s - np.mean(s, axis=1, keepdims=True)) / s_std
-        # Add regularization noise (1e-6 relative to unit variance)
-        s_norm += np.random.normal(0, 1e-6, s_norm.shape)
+        # Add regularization noise (1e-3 relative to unit variance)
+        s_norm += np.random.normal(0, 1e-3, s_norm.shape)
         processed_sigs.append(s_norm)
 
     # Stack to shape (n_epochs, 4, n_times)

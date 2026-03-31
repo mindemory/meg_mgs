@@ -19,16 +19,8 @@ BIDS_ROOT="$(python3 -c "import socket; h=socket.gethostname(); \
   else '/d/DATD/datd/MEG_MGS/MEG_BIDS' if h=='vader' \
   else '/scratch/mdd9787/meg_prf_greene/MEG_HPC')")"
 
-# Discover subjects that have sourceRecon data
-SUBJ_LIST=()
-for subdir in "${BIDS_ROOT}/derivatives"/sub-*/sourceRecon; do
-    subname=$(basename "$(dirname "$subdir")")
-    subjID="${subname#sub-}"
-    # Check at least one source task-mgs file exists
-    if ls "${subdir}/${subname}_task-mgs_sourceSpaceData_"*.mat &>/dev/null 2>&1; then
-        SUBJ_LIST+=("$subjID")
-    fi
-done
+# Explicit subject list for the project
+SUBJ_LIST=(01 02 03 04 05 06 07 09 10 12 13 15 17 18 19 23 24 25 29 31 32)
 
 echo "========================================================"
 echo " PAC Batch Runner (Caching)"
