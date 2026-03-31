@@ -51,3 +51,16 @@ done
 
 echo "========================================================"
 echo "✓ All Seeded Connectivity computations for metric '$CON_TYPE' complete!"
+
+# Send bulk completion email
+python -c "import smtplib, socket
+try:
+    hostname = socket.gethostname()
+    subject = f'Subject: [Batch Complete] {\"$CON_TYPE\"} {\"$VOXRES\"} DONE on {hostname}'
+    body = f'The automated 21-subject seeded connectivity batch run for metric {\"$CON_TYPE\"} at {\"$VOXRES\"} across all bands, seeds, and targets has successfully finished processing.'
+    msg = f'{subject}\n\n{body}'
+    with smtplib.SMTP('localhost') as s:
+        s.sendmail('mrugank.dake@nyu.edu', 'mrugank.dake@nyu.edu', msg)
+    print('  [✓] Bulk completion email successfully dispatched.')
+except Exception as e:
+    print(f'  [✗] Email notification skipped: {e}')"

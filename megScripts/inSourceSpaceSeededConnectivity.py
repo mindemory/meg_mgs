@@ -4,6 +4,26 @@ from shutil import copyfile
 import pickle
 from scipy.io import loadmat
 import time
+import smtplib
+
+NOTIFY_EMAIL = 'mrugank.dake@nyu.edu'
+
+def send_completion_email(subjID, voxRes, connectivityType, success=True, error_msg=None):
+    try:
+        hostname = socket.gethostname()
+        if success:
+            subject = f'[SeededConnectivity] sub-{subjID:02d} {voxRes} {connectivityType} DONE on {hostname}'
+            body = f'Seeded Connectivity analysis complete!\n\nSubject: {subjID:02d}\nResolution: {voxRes}\nMetric: {connectivityType}'
+        else:
+            subject = f'[SeededConnectivity] sub-{subjID:02d} {voxRes} {connectivityType} FAILED on {hostname}'
+            body = f'Script failed with error:\n{error_msg}'
+
+        msg = f'Subject: {subject}\n\n{body}'
+        with smtplib.SMTP('localhost') as s:
+            s.sendmail(NOTIFY_EMAIL, NOTIFY_EMAIL, msg)
+        print(f'  Notification email sent to {NOTIFY_EMAIL}')
+    except Exception as e:
+        print(f'  (Email notification skipped: {e})')
 
 # Make sure to run conda activate megAnalyses before running this script
 
@@ -178,7 +198,7 @@ def main(subjID, voxRes, seedROI, targetLoc, connectivityType, freqBand):
         bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
     taskName = 'mgs'
 
-    outputDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'connectivity_{voxRes}')
+    outputDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', 'connectivity')
     if not os.path.exists(outputDir):
         os.makedirs(outputDir)
     outputFile = os.path.join(outputDir, f'sub-{subjID:02d}_task-{taskName}_seededConnectivity_{voxRes}_{seedROI}_{targetLoc}_{connectivityType}_{freqBand}.pkl')
