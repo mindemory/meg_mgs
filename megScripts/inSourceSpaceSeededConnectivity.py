@@ -1,4 +1,5 @@
 import os, h5py, socket, gc
+os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
 import numpy as np
 from shutil import copyfile
 import pickle
