@@ -43,7 +43,7 @@ for subjID in "${SUBJ_LIST[@]}"; do
 
     echo ""
     echo "[${COUNT}/${TOTAL}] Running GC sub-${subjID} | $(date '+%H:%M:%S')"
-    /users/mrugank/.conda/envs/megAnalyses/bin/python3 megScripts/compute_gc.py "$subjID" "$VOX_RES"
+    python3 megScripts/compute_gc.py "$subjID" "$VOX_RES"
     echo "[${COUNT}/${TOTAL}] Done    sub-${subjID} | $(date '+%H:%M:%S')"
 done
 
