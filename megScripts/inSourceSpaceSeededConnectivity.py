@@ -4,6 +4,7 @@ import numpy as np
 from shutil import copyfile
 import pickle
 from scipy.io import loadmat
+from scipy.ndimage import uniform_filter1d
 import time
 import smtplib
 from joblib import Parallel, delayed
@@ -13,7 +14,7 @@ def get_compute_profile():
     if h == 'zod':
         return 'mac', 4
     elif h == 'vader':
-        return 'vader', 24       # Cap at 24 to ensure memory headroom on shared node
+        return 'vader', 24       # Cap at 24 for memory safety
     else:
         return 'hpc', 10
 
@@ -22,231 +23,160 @@ NOTIFY_EMAIL = 'mrugank.dake@nyu.edu'
 def send_completion_email(subjID, voxRes, connectivityType, success=True, error_msg=None):
     try:
         hostname = socket.gethostname()
-        if success:
-            subject = f'[SeededConnectivity] sub-{subjID:02d} {voxRes} {connectivityType} DONE on {hostname}'
-            body = f'Seeded Connectivity analysis complete!\n\nSubject: {subjID:02d}\nResolution: {voxRes}\nMetric: {connectivityType}'
-        else:
-            subject = f'[SeededConnectivity] sub-{subjID:02d} {voxRes} {connectivityType} FAILED on {hostname}'
-            body = f'Script failed with error:\n{error_msg}'
-
-        msg = f'Subject: {subject}\n\n{body}'
+        msg = f"Subject: [Connectivity] sub-{subjID:02d} {voxRes} {connectivityType} {'DONE' if success else 'FAILED'}\n\n"
+        msg += f"Subject: {subjID:02d}\nMetric: {connectivityType}\n{'Error: ' + error_msg if error_msg else 'Success!'}"
         with smtplib.SMTP('localhost') as s:
             s.sendmail(NOTIFY_EMAIL, NOTIFY_EMAIL, msg)
         print(f'  Notification email sent to {NOTIFY_EMAIL}')
     except Exception as e:
         print(f'  (Email notification skipped: {e})')
 
-# Make sure to run conda activate megAnalyses before running this script
-
 def load_source_space_data(subjID, bidsRoot, taskName, voxRes, targetLoc, freqBand):
-    """Load and concatenate source space data for all targets"""
+    """Load and concatenate source space data for all targets (HDF5 staging)"""
     subName = 'sub-%02d' % subjID
     print(f'Loading source space data for {subName}')
     
-    # File paths
     derivativesRoot = os.path.join(bidsRoot, 'derivatives', subName)
     sourceReconRoot = os.path.join(derivativesRoot, 'sourceRecon')
     freqSpaceRoot = os.path.join(sourceReconRoot, 'freqSpace')
     freqSpace_fpath = os.path.join(freqSpaceRoot, f'{subName}_task-{taskName}_complex{freqBand}_allTargets_{voxRes[:-2]}.mat')
     
-    # Load data with temporary copy approach to avoid network I/O bottlenecks
     hostname = socket.gethostname()
-    if hostname == 'zod':
-        freqSpaceTempPath = os.path.join('/Users/mrugank/Desktop', f'{subName}_task-{taskName}_complex{freqBand}_allTargets_{voxRes[:-2]}.mat')
-        copyfile(freqSpace_fpath, freqSpaceTempPath)
-        freqSpace_data = h5py.File(freqSpaceTempPath, 'r', locking=False)
-        os.remove(freqSpaceTempPath)
-    elif hostname == 'vader':
-        # On Vader, use the local hyper project directory for temporary staging
-        freqSpaceTempPath = os.path.join('/d/DATD/hyper/experiments/Mrugank/meg_mgs', f'{subName}_task-{taskName}_complex{freqBand}_allTargets_{voxRes[:-2]}.mat')
-        copyfile(freqSpace_fpath, freqSpaceTempPath)
-        freqSpace_data = h5py.File(freqSpaceTempPath, 'r', locking=False)
-        os.remove(freqSpaceTempPath)
-    else:
-        freqSpace_data = h5py.File(freqSpace_fpath, 'r', locking=False)
+    tempDir = '/Users/mrugank/Desktop' if hostname == 'zod' else '/d/DATD/hyper/experiments/Mrugank/meg_mgs'
     
-    # Get sourceDataByTarget
-    source_data = np.array(freqSpace_data['sourceDataByTarget'])
+    freqSpaceTempPath = os.path.join(tempDir, f'{subName}_task-{taskName}_complex{freqBand}_allTargets_{voxRes[:-2]}_{int(time.time())}.mat')
+    print(f'  Staging to {freqSpaceTempPath}...')
+    copyfile(freqSpace_fpath, freqSpaceTempPath)
     
-    # Extract all trials from all targets
-    all_trials = []
-    
-    if targetLoc == 'left':
-        target_indices = [4, 5, 6, 7, 8]
-    elif targetLoc == 'right':
-        target_indices = [1, 2, 3, 9, 10]
+    with h5py.File(freqSpaceTempPath, 'r', locking=False) as f:
+        source_data_refs = np.array(f['sourceDataByTarget'])
+        all_trials = []
+        time_vector = None
+        target_indices = [4, 5, 6, 7, 8] if targetLoc == 'left' else [1, 2, 3, 9, 10]
 
-    for target_idx in target_indices:
-        target_data = source_data[0, target_idx - 1]
-        target_group = freqSpace_data[target_data]
-        trial_dataset = target_group['trial']
-        
-        # Extract time vector from first target
-        if target_idx == target_indices[0]:
-            time_data = target_group['time']
-            first_time_ref = time_data[0, 0]
-            time_vector = np.array(freqSpace_data[first_time_ref])
+        for target_idx in target_indices:
+            target_ref = source_data_refs[0, target_idx - 1]
+            target_group = f[target_ref]
+            trial_dataset = target_group['trial']
             
-        print(f"Target {target_idx} trials: {trial_dataset.shape}")
-        for trial_idx in range(trial_dataset.shape[0]):
-            trial_ref = trial_dataset[trial_idx, 0] 
-            trial_data = freqSpace_data[trial_ref]
-            trial_array = np.array(trial_data)
-            all_trials.append(trial_array)
+            if time_vector is None:
+                time_refs = target_group['time']
+                time_vector = np.array(f[time_refs[0, 0]])
+                
+            for trial_idx in range(trial_dataset.shape[0]):
+                trial_data = f[trial_dataset[trial_idx, 0]]
+                all_trials.append(np.array(trial_data))
     
-    # Stack all trials (trials × time × sources)
     data_matrix = np.stack(all_trials, axis=0)
     data_matrix = data_matrix['real'] + 1j * data_matrix['imag']
-    
+    if os.path.exists(freqSpaceTempPath):
+        os.remove(freqSpaceTempPath)
+        
+    print(f"Data matrix loaded: {data_matrix.shape} (trials x times x sources)")
     return data_matrix, time_vector
 
-def _compute_single_timepoint(t_idx, n_timepoints, window_half_samples, data_matrix, seed_indices, n_sources, batch_size, n_batches, connectivityType):
-    """Worker function for single time point connectivity."""
-    start_idx = max(0, t_idx - window_half_samples)
-    end_idx = min(n_timepoints, t_idx + window_half_samples + 1)
+def _compute_source_batch(batch_idx, batch_size, n_sources, n_timepoints, window_size_samples, data_matrix, seed_indices, connectivityType):
+    """Worker function for a batch of target sources (Vectorized-Across-Time)"""
+    batch_start = batch_idx * batch_size
+    batch_end = min((batch_idx + 1) * batch_size, n_sources)
+    batch_indices = np.arange(batch_start, batch_end)
+    n_batch_sources = batch_indices.shape[0]
     
-    time_window_data = data_matrix[:, start_idx:end_idx, :]
-    seed_data = time_window_data[:, :, seed_indices].transpose(2, 0, 1)  # (n_seeds, n_trials, window_timepoints)
-    seed_power = np.mean(seed_data * np.conj(seed_data), axis=1)  # (n_seeds, window_timepoints)
+    # 1. target_data: (n_trials, n_timepoints, n_batch_sources)
+    target_data = data_matrix[:, :, batch_indices]
     
-    tp_results = np.empty(n_sources)
+    # 2. seed_data: (seeds, trials, n_timepoints)
+    seed_data = data_matrix[:, :, seed_indices].transpose(2, 0, 1)
     
-    for batch_idx in range(n_batches):
-        batch_start = batch_idx * batch_size
-        batch_end = min((batch_idx + 1) * batch_size, n_sources)
-        batch_indices = np.arange(batch_start, batch_end)
+    if connectivityType == 'dpli':
+        # (seeds, trials, times, 1) * (1, trials, times, sources) -> Im(cross_trials)
+        # We do this in one NumPy broadcasting shot (Uses ~3GB RAM for batch=25)
+        cross_complex = seed_data[:, :, :, np.newaxis] * np.conj(target_data[np.newaxis, :, :, :])
+        # heaviside_trials: (seeds, trials, times, sources)
+        heaviside_trials = np.heaviside(np.imag(cross_complex), 0.5)
+        # Average over trials (axis 1)
+        # conn_over_time: (seeds, times, sources)
+        conn_over_time = np.mean(heaviside_trials, axis=1)
         
-        target_data_batch = time_window_data[:, :, batch_indices]
+    else:
+        # Vectorized (Im)Coh math for full trial
+        cross_spec = np.mean(seed_data[:, :, :, np.newaxis] * np.conj(target_data[np.newaxis, :, :, :]), axis=1)
+        seed_pow = np.mean(seed_data * np.conj(seed_data), axis=1)
+        target_pow = np.mean(target_data * np.conj(target_data), axis=0)
         
-        if connectivityType == 'dpli':
-            # Accumulate trial-by-trial to save memory (prevents 16GB intermediate Matrix)
-            n_trials = seed_data.shape[1]
-            dpli_acc = np.zeros((seed_data.shape[0], seed_data.shape[2], batch_indices.shape[0]))
-            for tr in range(n_trials):
-                trial_csd = seed_data[:, tr, :, np.newaxis] * np.conj(target_data_batch[tr, :, :])
-                dpli_acc += np.heaviside(np.imag(trial_csd), 0.5)
-            connectivity_mag_batch = dpli_acc / n_trials
-        else:
-            cross_spectrum_batch = np.mean(seed_data[:, :, :, np.newaxis] * np.conj(target_data_batch[np.newaxis, :, :, :]), axis=1)
-            target_power_batch = np.mean(target_data_batch * np.conj(target_data_batch), axis=0)
-            
-            if connectivityType == 'coh':
-                connectivity_mag_batch = np.abs(cross_spectrum_batch)**2 / (seed_power[:, :, np.newaxis] * target_power_batch[np.newaxis, :, :] + 1e-10)
-            elif connectivityType == 'imcoh':
-                connectivity_mag_batch = np.abs(np.imag(cross_spectrum_batch)) / np.sqrt(seed_power[:, :, np.newaxis] * target_power_batch[np.newaxis, :, :] + 1e-10)
-        
-        tp_results[batch_indices] = np.mean(connectivity_mag_batch, axis=(0, 1))
-        
-    return tp_results
+        if connectivityType == 'coh':
+            conn_over_time = np.abs(cross_spec)**2 / (seed_pow[:, :, np.newaxis] * target_pow[np.newaxis, :, :] + 1e-10)
+        elif connectivityType == 'imcoh':
+            conn_over_time = np.abs(np.imag(cross_spec)) / np.sqrt(seed_pow[:, :, np.newaxis] * target_pow[np.newaxis, :, :] + 1e-10)
+    
+    # 3. Sliding Window Average across Time (axis 1)
+    # Average across seeds (axis 0) first to get (times, sources)
+    seed_avg_conn = np.mean(conn_over_time, axis=0)  # (times, sources)
+    
+    # Apply sliding window mean using uniform_filter1d (Lightning Fast)
+    # window_size_samples is the total window width (e.g. 1.25s / dt)
+    batch_final = uniform_filter1d(seed_avg_conn, size=window_size_samples, axis=0, mode='constant', cval=0.0)
+    
+    # Transpose back to (sources, times) as requested by main pipeline
+    return batch_final.T, batch_indices
 
-def compute_connectivity_measures(seed_indices, data_matrix, time_vector, connectivityType, freqBand, batch_size=500):
-    """Parallelized whole-brain connectivity computation."""
+def compute_connectivity_measures(seed_indices, data_matrix, time_vector, connectivityType, freqBand, batch_size=20):
+    """Parallelized whole-brain connectivity (Parallel-Over-Sources, Vectorized-Over-Time)"""
     _, n_timepoints, n_sources = data_matrix.shape
     n_seeds = len(seed_indices)
     
-    sfreq = 1 / np.mean(np.diff(time_vector.flatten()))
-    
-    if freqBand == 'theta': window_size = 1.25
-    elif freqBand == 'alpha': window_size = 0.77
-    elif freqBand == 'beta': window_size = 0.40
-    elif freqBand == 'lowgamma': window_size = 0.20
-    else: window_size = 0.5
-    
-    window_half_samples = int((window_size / 2) * sfreq)
+    dt = np.mean(np.diff(time_vector.flatten()))
+    window_sizes = {'theta': 1.25, 'alpha': 0.77, 'beta': 0.40, 'lowgamma': 0.20}
+    window_samples = int(window_sizes.get(freqBand, 0.5) / dt)
     n_batches = int(np.ceil(n_sources / batch_size))
     
     _, n_cores = get_compute_profile()
-    print(f"Computing {connectivityType} for {n_seeds} seeds -> {n_sources} sources.")
-    print(f"Parallelizing across {n_cores} cores using threading backend.")
+    print(f"Computing {connectivityType} ({freqBand}) for {n_seeds} seeds -> {n_sources} sources.")
+    print(f"Parallelizing across {n_batches} batches on {n_cores} cores.")
 
-    # Use threading backend to avoid memory duplication
-    results = Parallel(n_jobs=n_cores, backend='threading')(
-        delayed(_compute_single_timepoint)(
-            t_idx, n_timepoints, window_half_samples, data_matrix, seed_indices, 
-            n_sources, batch_size, n_batches, connectivityType
+    results = Parallel(n_jobs=n_cores, backend='threading', verbose=10)(
+        delayed(_compute_source_batch)(
+            batch_idx, batch_size, n_sources, n_timepoints, window_samples, 
+            data_matrix, seed_indices, connectivityType
         )
-        for t_idx in range(n_timepoints)
+        for batch_idx in range(n_batches)
     )
 
-    connectivity_timeseries = np.stack(results, axis=1)
+    connectivity_timeseries = np.empty((n_sources, n_timepoints))
+    for batch_res, indices in results:
+        connectivity_timeseries[indices, :] = batch_res
+    
     return connectivity_timeseries
 
 def main(subjID, voxRes, seedROI, targetLoc, connectivityType, freqBand):
     """Main function for source space connectivity analysis"""
-    if voxRes is None: voxRes = '10mm'
-    if seedROI is None: seedROI = 'left_visual'
-    if targetLoc is None: targetLoc = 'left'
-    if connectivityType is None: connectivityType = 'coh'
-    if freqBand is None: freqBand = 'theta'
+    voxRes, seedROI, targetLoc, connectivityType, freqBand = voxRes or '10mm', seedROI or 'left_visual', targetLoc or 'left', connectivityType or 'coh', freqBand or 'theta'
     
-    hostname = socket.gethostname()
-    if hostname == 'zod':
-        bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
-    elif hostname == 'vader':
-        bidsRoot = '/d/DATD/datd/MEG_MGS/MEG_BIDS'
-    else:
-        bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
+    h = socket.gethostname()
+    bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS' if h == 'zod' else '/d/DATD/datd/MEG_MGS/MEG_BIDS' if h == 'vader' else '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
     
-    taskName = 'mgs'
-    # Save to connectivity_{voxRes} to prevent overwriting different resolutions
-    outputDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'connectivity_{voxRes}')
-    if not os.path.exists(outputDir):
-        os.makedirs(outputDir, exist_ok=True)
-    
-    outputFile = os.path.join(outputDir, f'sub-{subjID:02d}_task-{taskName}_seededConnectivity_{voxRes}_{seedROI}_{targetLoc}_{connectivityType}_{freqBand}.pkl')
+    outDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'connectivity_{voxRes}')
+    os.makedirs(outDir, exist_ok=True)
+    outF = os.path.join(outDir, f'sub-{subjID:02d}_task-mgs_seededConnectivity_{voxRes}_{seedROI}_{targetLoc}_{connectivityType}_{freqBand}.pkl')
 
-    if not os.path.exists(outputFile):
-        data_matrix, time_vector = load_source_space_data(subjID, bidsRoot, taskName, voxRes, targetLoc, freqBand)
-
-        # Load atlas data
-        atlas_fpath = os.path.join(bidsRoot, 'derivatives', 'atlas', f'rois_{voxRes}.mat')
-        atlas_data = loadmat(atlas_fpath)
-
-        # Define ROI indices
-        left_visual_points = np.array(atlas_data['left_visual_points']).flatten()
-        right_visual_points = np.array(atlas_data['right_visual_points']).flatten()
-        left_frontal_points = np.array(atlas_data['left_frontal_points']).flatten()
-        right_frontal_points = np.array(atlas_data['right_frontal_points']).flatten()
+    if not os.path.exists(outF):
+        data, time_v = load_source_space_data(subjID, bidsRoot, 'mgs', voxRes, targetLoc, freqBand)
+        atlas = loadmat(os.path.join(bidsRoot, 'derivatives', 'atlas', f'rois_{voxRes}.mat'))
+        roi_indices = np.where(np.array(atlas[f'{seedROI}_points']).flatten() == 1)[0]
         
-        left_visual_indices = np.where(left_visual_points == 1)[0]
-        right_visual_indices = np.where(right_visual_points == 1)[0]
-        left_frontal_indices = np.where(left_frontal_points == 1)[0]
-        right_frontal_indices = np.where(right_frontal_points == 1)[0]
-
-        start_time = time.time()
-        print(f"Computing connectivity measures for {targetLoc} targets...")
-        
-        if seedROI == 'left_visual':
-            connectivity_measure = compute_connectivity_measures(left_visual_indices, data_matrix, time_vector, connectivityType, freqBand)
-        elif seedROI == 'right_visual':
-            connectivity_measure = compute_connectivity_measures(right_visual_indices, data_matrix, time_vector, connectivityType, freqBand)
-        elif seedROI == 'left_frontal':
-            connectivity_measure = compute_connectivity_measures(left_frontal_indices, data_matrix, time_vector, connectivityType, freqBand)
-        elif seedROI == 'right_frontal':
-            connectivity_measure = compute_connectivity_measures(right_frontal_indices, data_matrix, time_vector, connectivityType, freqBand)
-        else:
-            print("Invalid seed ROI")
-            return
-            
-        end_time = time.time()
-        print(f"Connectivity analysis completed in {end_time - start_time:.2f} seconds")
-
-        with open(outputFile, 'wb') as f:
-            pickle.dump(connectivity_measure, f)
-        print(f"Connectivity measure saved to {outputFile}")
+        start_t = time.time()
+        res = compute_connectivity_measures(roi_indices, data, time_v, connectivityType, freqBand)
+        print(f"Analysis completed in {time.time() - start_t:.2f}s")
+        with open(outF, 'wb') as f: pickle.dump(res, f)
+        print(f"Saved to {outF}")
 
 if __name__ == '__main__':
-    import sys
-    if len(sys.argv) < 2:
-        print("Usage: python inSourceSpaceSeededConnectivity.py <subjID> [voxRes] [seedROI] [targetLoc] [coh|imcoh|dpli] [freqBand]")
-        sys.exit(1)
+    msg = f"Usage: python inSourceSpaceSeededConnectivity.py <subjID> <voxRes> <seedROI> <targetLoc> <coh|imcoh|dpli> <freqBand>"
+    if len(os.sys.argv) < 2: print(msg); os.sys.exit(1)
     
-    subjID = int(sys.argv[1])
-    voxRes = sys.argv[2] if len(sys.argv) > 2 else '10mm'
-    seedROI = sys.argv[3] if len(sys.argv) > 3 else 'left_visual'
-    targetLoc = sys.argv[4] if len(sys.argv) > 4 else 'left'
-    connectivityType = sys.argv[5] if len(sys.argv) > 5 else 'coh'
-    freqBand = sys.argv[6] if len(sys.argv) > 6 else 'theta'
+    sID = int(os.sys.argv[1]); vRes = os.sys.argv[2] if len(os.sys.argv) > 2 else '10mm'
+    sROI = os.sys.argv[3] if len(os.sys.argv) > 3 else 'left_visual'; tLoc = os.sys.argv[4] if len(os.sys.argv) > 4 else 'left'
+    cType = os.sys.argv[5] if len(os.sys.argv) > 5 else 'coh'; fBand = os.sys.argv[6] if len(os.sys.argv) > 6 else 'theta'
     
-    print(f"--- Seeded Connectivity: sub-{subjID:02d} | {voxRes} | {connectivityType} | {freqBand} ---")
-    main(subjID, voxRes, seedROI, targetLoc, connectivityType, freqBand)
+    print(f"--- Connectivity Suite: sub-{sID:02d} | {vRes} | {cType} | {fBand} ---")
+    main(sID, vRes, sROI, tLoc, cType, fBand)
