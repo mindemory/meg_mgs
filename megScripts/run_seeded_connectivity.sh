@@ -12,6 +12,9 @@ if [ -z "$1" ]; then
 fi
 
 VOXRES=$1
+# List of 21 subjects to process
+subjects=(1 2 3 4 5 6 7 9 10 12 13 15 17 18 19 23 24 25 29 31 32)
+
 # Full list of metrics and targets to process in bulk
 # (Loading once per subject/band/seed, calculating all combinations in RAM)
 METRICS="imcoh,dpli"
