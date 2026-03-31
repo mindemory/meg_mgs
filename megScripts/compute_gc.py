@@ -2,6 +2,8 @@ import os, h5py, socket, sys, smtplib, gc, pickle
 import numpy as np
 from shutil import copyfile
 from scipy.io import loadmat
+import itertools, warnings
+from joblib import Parallel, delayed
 
 try:
     from mne_connectivity import spectral_connectivity_epochs
@@ -139,72 +141,120 @@ def load_and_prepare_data(subjID, bidsRoot, taskName, voxRes):
 
     return roi_dict, left_tgt_mask, right_tgt_mask, dt, time_vector
 
-def get_condition_gc(l_vis, r_vis, l_front, r_front, tgt_mask, time_vector, dt, t_start, t_end, fmin=5, fmax=50):
+def _compute_chunk(roi1, roi2, pair_indices, sfreq, fmin, fmax):
+    warnings.filterwarnings('ignore') # Ignore internal MNE warnings in workers
+    
+    gc_1to2 = []
+    gc_2to1 = []
+    freqs = None
+    
+    for i, j in pair_indices:
+        d_seed = roi1[:, :, i]
+        d_tgt  = roi2[:, :, j]
+        
+        # Standardize & regularize per dipole
+        s1_std = np.std(d_seed, axis=1, keepdims=True); s1_std[s1_std==0] = 1.0
+        s2_std = np.std(d_tgt, axis=1, keepdims=True); s2_std[s2_std==0] = 1.0
+        d_seed = (d_seed - np.mean(d_seed, axis=1, keepdims=True)) / s1_std + np.random.normal(0, 1e-3, d_seed.shape)
+        d_tgt = (d_tgt - np.mean(d_tgt, axis=1, keepdims=True)) / s2_std + np.random.normal(0, 1e-3, d_tgt.shape)
+        
+        data = np.stack([d_seed, d_tgt], axis=1) # (epochs, 2, times)
+        try:
+            con = spectral_connectivity_epochs(
+                data, method='gc', sfreq=sfreq, fmin=fmin, fmax=fmax,
+                mode='multitaper', indices=([[0], [1]], [[1], [0]]), n_jobs=1, verbose=False
+            )
+            vals = con.get_data() # (2, n_freqs) -> 0: seed->tgt, 1: tgt->seed
+            gc_1to2.append(vals[0])  
+            gc_2to1.append(vals[1])  
+            if freqs is None:
+                freqs = con.freqs
+        except Exception as e:
+            # We skip this pair if it's too unstable (rank info suppressed)
+            pass
+            
+    if not gc_1to2:
+        return None, None, None, 0
+    
+    # Pre-sum locally to minimize payload sent back to main process
+    s_1to2 = np.sum(np.stack(gc_1to2), axis=0)
+    s_2to1 = np.sum(np.stack(gc_2to1), axis=0)
+    return s_1to2, s_2to1, freqs, len(gc_1to2)
+
+
+def get_bivariate_gc_for_roi_pair(roi1, roi2, sfreq, fmin, fmax, n_jobs=48):
+    n_dipoles1 = roi1.shape[2]
+    n_dipoles2 = roi2.shape[2]
+    
+    # Generate all pairwise combinations
+    all_pairs = list(itertools.product(range(n_dipoles1), range(n_dipoles2)))
+    chunks = np.array_split(all_pairs, n_jobs)
+    
+    # We use backend='loky' to avoid Python multiprocessing passing huge contiguous arrays 
+    # if joblib detects threading is insufficient. MNE/scipy releases GIL during lapack calls.
+    results = Parallel(n_jobs=n_jobs, backend='loky')(
+        delayed(_compute_chunk)(roi1, roi2, chunk, sfreq, fmin, fmax) 
+        for chunk in chunks if len(chunk) > 0
+    )
+    
+    total_1to2 = None
+    total_2to1 = None
+    total_count = 0
+    freqs = None
+    
+    for sum12, sum21, fqs, count in results:
+        if count > 0:
+            if total_1to2 is None:
+                total_1to2 = sum12
+                total_2to1 = sum21
+                freqs = fqs
+            else:
+                total_1to2 += sum12
+                total_2to1 += sum21
+            total_count += count
+            
+    if total_count == 0:
+        return None, None, None
+        
+    # Global average across all valid dipole pairs
+    return total_1to2 / total_count, total_2to1 / total_count, freqs
+
+
+def get_condition_gc(l_vis, r_vis, l_front, r_front, tgt_mask, time_vector, dt, t_start, t_end, fmin=5, fmax=50, n_jobs=48):
     sfreq = 1 / dt
     
-    # 1. Spatial pool (mean across sources)
-    sig_lv = l_vis[tgt_mask].mean(axis=2)
-    sig_rv = r_vis[tgt_mask].mean(axis=2)
-    sig_lf = l_front[tgt_mask].mean(axis=2)
-    sig_rf = r_front[tgt_mask].mean(axis=2)
-    
-    # 2. Extract stationary time window
+    # Extract stationary time window FIRST (keeps original dipoles un-pooled)
     t_mask = (time_vector >= t_start) & (time_vector <= t_end)
-    sigs = [sig_lv[:, t_mask], sig_rv[:, t_mask], sig_lf[:, t_mask], sig_rf[:, t_mask]]
     
-    if sigs[0].size == 0 or sigs[0].shape[0] < 2:
+    # Shape: (n_epochs, n_times, n_dipoles)
+    epoch_lv = l_vis[tgt_mask][:, t_mask, :]
+    epoch_rv = r_vis[tgt_mask][:, t_mask, :]
+    epoch_lf = l_front[tgt_mask][:, t_mask, :]
+    epoch_rf = r_front[tgt_mask][:, t_mask, :]
+    
+    if epoch_lv.size == 0 or epoch_lv.shape[0] < 2:
         return None, None
         
-    # 3. Numerical Stability Patch: Z-score & add tiny white noise
-    processed_sigs = []
-    for s in sigs:
-        # Standardize per trial/epoch
-        s_std = np.std(s, axis=1, keepdims=True)
-        s_std[s_std == 0] = 1.0 # Avoid div by zero
-        s_norm = (s - np.mean(s, axis=1, keepdims=True)) / s_std
-        # Add regularization noise (1e-3 relative to unit variance)
-        s_norm += np.random.normal(0, 1e-3, s_norm.shape)
-        processed_sigs.append(s_norm)
-
-    # Stack to shape (n_epochs, 4, n_times)
-    # Ch 0: LV, 1: RV, 2: LF, 3: RF
-    data = np.stack(processed_sigs, axis=1)
+    print(f"      (Parallel pairwise GC across {epoch_lf.shape[2]*epoch_lv.shape[2]:,} LF->LV inter-parcel pairs)")
     
-    try:
-        # Define 8 cross-region directional indices:
-        seeds   = [[2], [2], [3], [3], [0], [0], [1], [1]]
-        targets = [[0], [1], [0], [1], [2], [3], [2], [3]]
-        
-        con = spectral_connectivity_epochs(
-            data,
-            method='gc',
-            sfreq=sfreq,
-            fmin=fmin,
-            fmax=fmax,
-            mode='multitaper',
-            indices=(seeds, targets),
-            n_jobs=1,
-            verbose=False
-        )
-        gc_vals = con.get_data() # shape (8, n_freqs)
-        freqs = con.freqs
-        
-        # Result mapping:
-        res = {
-            'lf_lv': gc_vals[0], 'lf_rv': gc_vals[1],
-            'rf_lv': gc_vals[2], 'rf_rv': gc_vals[3],
-            'lv_lf': gc_vals[4], 'lv_rf': gc_vals[5],
-            'rv_lf': gc_vals[6], 'rv_rf': gc_vals[7]
-        }
-        
-        return res, freqs
-        
-    except Exception as e:
-        print(f"    GC extraction failed: {e}")
-        return None, None
+    lf_lv, lv_lf, freqs = get_bivariate_gc_for_roi_pair(epoch_lf, epoch_lv, sfreq, fmin, fmax, n_jobs=n_jobs)
+    lf_rv, rv_lf, _     = get_bivariate_gc_for_roi_pair(epoch_lf, epoch_rv, sfreq, fmin, fmax, n_jobs=n_jobs)
+    rf_lv, lv_rf, _     = get_bivariate_gc_for_roi_pair(epoch_rf, epoch_lv, sfreq, fmin, fmax, n_jobs=n_jobs)
+    rf_rv, rv_rf, _     = get_bivariate_gc_for_roi_pair(epoch_rf, epoch_rv, sfreq, fmin, fmax, n_jobs=n_jobs)
+    
+    res = {
+        'lf_lv': lf_lv, 'lf_rv': lf_rv,
+        'rf_lv': rf_lv, 'rf_rv': rf_rv,
+        'lv_lf': lv_lf, 'lv_rf': lv_rf,
+        'rv_lf': rv_lf, 'rv_rf': rv_rf
+    }
+    
+    return res, freqs
 
 def main(subjID, voxRes='10mm'):
     h = socket.gethostname()
+    host_name, core_count = get_compute_profile()
+    
     if h == 'zod':
         bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
     elif h == 'vader':
@@ -233,7 +283,7 @@ def main(subjID, voxRes='10mm'):
             l_front, r_front = roi_dict['Frontal']['left_roi'], roi_dict['Frontal']['right_roi']
 
             for tgt_name, mask in [('TargetLeft', left_tgt_mask), ('TargetRight', right_tgt_mask)]:
-                res_dict, fqs = get_condition_gc(l_vis, r_vis, l_front, r_front, mask, time_vector, dt, t_start, t_end)
+                res_dict, fqs = get_condition_gc(l_vis, r_vis, l_front, r_front, mask, time_vector, dt, t_start, t_end, n_jobs=core_count)
                 if fqs is not None and interval_name not in window_freqs:
                     window_freqs[interval_name] = fqs
                 results[interval_name][tgt_name] = res_dict
