@@ -49,7 +49,7 @@ def plot_group_region(region_name, group_data, freqs, figures_dir, n_subjects):
             im_a = ax.imshow(mat, aspect='auto', origin='lower',
                              extent=[-1.0, 1.0, freqs[0], freqs[-1]],
                              cmap='RdBu_r', interpolation='bilinear',
-                             vmin=-0.1, vmax=0.1)
+                             vmin=-0.05, vmax=0.05)
             # Set absolute fixed limits
             ax.set_xlim([-0.4, 0.4])
             ax.axvline(0, color='black', linestyle='--', alpha=0.8, linewidth=1.2)
