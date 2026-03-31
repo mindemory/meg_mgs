@@ -44,6 +44,11 @@ def load_source_space_data(subjID, bidsRoot, taskName, voxRes, targetLoc, freqBa
         copyfile(freqSpace_fpath, freqSpaceTempPath)
         freqSpace_data = h5py.File(freqSpaceTempPath, 'r')
         os.remove(freqSpaceTempPath)
+    elif socket.gethostname() == 'vader':
+        freqSpaceTempPath = os.path.join('/d/DATD/hyper/experiments/Mrugank/meg_mgs', f'{subName}_task-{taskName}_complex{freqBand}_allTargets_{voxRes[:-2]}.mat')
+        copyfile(freqSpace_fpath, freqSpaceTempPath)
+        freqSpace_data = h5py.File(freqSpaceTempPath, 'r')
+        os.remove(freqSpaceTempPath)
     else:
         freqSpace_data = h5py.File(freqSpace_fpath, 'r')
     
@@ -194,6 +199,8 @@ def main(subjID, voxRes, seedROI, targetLoc, connectivityType, freqBand):
         freqBand = 'theta'
     if socket.gethostname() == 'zod':
         bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
+    elif socket.gethostname() == 'vader':
+        bidsRoot = '/d/DATD/datd/MEG_MGS/MEG_BIDS'
     else:
         bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
     taskName = 'mgs'
