@@ -145,9 +145,10 @@ def compute_connectivity_measures(seed_indices, data_matrix, time_vector, connec
     
     return connectivity_timeseries
 
-def main(subjID, voxRes, seedROI, targetLoc_str, connectivityType_str, freqBand):
-    """Main loop with multi-location and multi-metric support"""
-    voxRes = voxRes or '10mm'; seedROI = seedROI or 'left_visual'; freqBand = freqBand or 'theta'
+def main(subjID, voxRes, seedROI_str, targetLoc_str, connectivityType_str, freqBand):
+    """Main loop with multi-seed, multi-location, and multi-metric support"""
+    voxRes = voxRes or '10mm'; freqBand = freqBand or 'theta'
+    seedROIs = seedROI_str.split(',') if seedROI_str else ['left_visual']
     targetLocs = targetLoc_str.split(',') if targetLoc_str else ['left']
     metrics = connectivityType_str.split(',') if connectivityType_str else ['coh']
     
@@ -155,38 +156,42 @@ def main(subjID, voxRes, seedROI, targetLoc_str, connectivityType_str, freqBand)
     bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS' if h == 'zod' else '/d/DATD/datd/MEG_MGS/MEG_BIDS' if h == 'vader' else '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
     
     atlas = loadmat(os.path.join(bidsRoot, 'derivatives', 'atlas', f'rois_{voxRes}.mat'))
-    roi_indices = np.where(np.array(atlas[f'{seedROI}_points']).flatten() == 1)[0]
     
-    # Load all targets once
+    # Load all spectral target data once per band
     all_target_data, time_v = load_source_space_data(subjID, bidsRoot, 'mgs', voxRes, freqBand)
     
     results_summary = []
     
-    for loc in targetLocs:
-        # Prepare trials for this location
-        targets = [4, 5, 6, 7, 8] if loc == 'left' else [1, 2, 3, 9, 10]
-        data_subset = np.concatenate([all_target_data[t] for t in targets], axis=0)
+    for seedROI in seedROIs:
+        print(f"\n--- SEED ROI: {seedROI} ---")
+        roi_indices = np.where(np.array(atlas[f'{seedROI}_points']).flatten() == 1)[0]
         
-        for metric in metrics:
-            outDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'connectivity_{voxRes}')
-            os.makedirs(outDir, exist_ok=True)
-            outF = os.path.join(outDir, f'sub-{subjID:02d}_task-mgs_seededConnectivity_{voxRes}_{seedROI}_{loc}_{metric}_{freqBand}.pkl')
+        for loc in targetLocs:
+            # Prepare trials for this location
+            targets = [4, 5, 6, 7, 8] if loc == 'left' else [1, 2, 3, 9, 10]
+            data_subset = np.concatenate([all_target_data[t] for t in targets], axis=0)
             
-            if not os.path.exists(outF):
-                print(f"--- Processing: {loc} | {metric} ---")
-                start_t = time.time()
-                res = compute_connectivity_measures(roi_indices, data_subset, time_v, metric, freqBand)
-                with open(outF, 'wb') as f: pickle.dump(res, f)
-                dur = time.time() - start_t
-                results_summary.append(f"{loc}/{metric}: Done ({dur:.1f}s)")
-                print(f"  Completed in {dur:.1f}s")
-            else:
-                results_summary.append(f"{loc}/{metric}: Skipped (exists)")
+            for metric in metrics:
+                outDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'connectivity_{voxRes}')
+                os.makedirs(outDir, exist_ok=True)
+                outF = os.path.join(outDir, f'sub-{subjID:02d}_task-mgs_seededConnectivity_{voxRes}_{seedROI}_{loc}_{metric}_{freqBand}.pkl')
+                
+                if not os.path.exists(outF):
+                    print(f"  -> Path: {loc} | {metric}")
+                    start_t = time.time()
+                    res = compute_connectivity_measures(roi_indices, data_subset, time_v, metric, freqBand)
+                    with open(outF, 'wb') as f: pickle.dump(res, f)
+                    dur = time.time() - start_t
+                    results_summary.append(f"{seedROI}/{loc}/{metric}: Done ({dur:.1f}s)")
+                    print(f"  Completed {metric} in {dur:.1f}s")
+                else:
+                    results_summary.append(f"{seedROI}/{loc}/{metric}: Skip (exists)")
 
-    # Send one summary email
-    summary_txt = f"Subject {subjID:02d} ({freqBand}) Bulk Run Summary:\n" + "\n".join(results_summary)
+    # Send one summary email at the very end
+    summary_txt = f"Subject {subjID:02d} ({freqBand}) Super-Bulk Summary:\n" + "\n".join(results_summary)
+    print("\n" + "="*60)
     print(summary_txt)
-    # send_completion_email(...) could be updated here if needed
+    print("="*60)
 
 if __name__ == '__main__':
     if len(os.sys.argv) < 2: 

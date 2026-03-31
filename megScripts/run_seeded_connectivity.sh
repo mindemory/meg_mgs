@@ -15,36 +15,33 @@ VOXRES=$1
 # List of 21 subjects to process
 subjects=(1 2 3 4 5 6 7 9 10 12 13 15 17 18 19 23 24 25 29 31 32)
 
-# Full list of metrics and targets to process in bulk
-# (Loading once per subject/band/seed, calculating all combinations in RAM)
+# Full list of metrics, targets, and seeds to process in bulk
+# (Loading once per subject per band, calculating all 16 combinations in RAM)
 METRICS="imcoh,dpli"
 TARGETS="left,right"
-seeds=("left_visual" "right_visual" "left_frontal" "right_frontal")
+SEEDS="left_visual,right_visual,left_frontal,right_frontal"
 bands=("theta" "alpha" "beta" "lowgamma")
 
 echo "========================================================"
-echo " Seeded Connectivity Bulk Runner"
+echo " Seeded Connectivity Super-Bulk Runner"
 echo " Metrics : $METRICS"
 echo " Targets : $TARGETS"
+echo " Seeds   : $SEEDS"
 echo " VoxRes  : $VOXRES"
 echo " Host    : $(hostname)"
 echo "========================================================"
 
 for sub in "${subjects[@]}"; do
     echo "--------------------------------------------------------"
-    echo "▶ Bulk processing sub-${sub}"
+    echo "▶ Super-Bulk processing sub-${sub}"
     
     for band in "${bands[@]}"; do
-        for seed in "${seeds[@]}"; do
-            
-            echo "  -> Processing [${band}] | ${seed} | Bulk: ${METRICS} x ${TARGETS}"
-            python megScripts/inSourceSpaceSeededConnectivity.py $sub $VOXRES $seed "$TARGETS" "$METRICS" $band
-            
-            if [ $? -ne 0 ]; then
-                echo "  [✗] Error processing sub-${sub} / ${band} / ${seed}"
-            fi
-            
-        done
+        echo "  -> Processing [${band}] | All Seeds | All Metrics"
+        python megScripts/inSourceSpaceSeededConnectivity.py $sub $VOXRES "$SEEDS" "$TARGETS" "$METRICS" $band
+        
+        if [ $? -ne 0 ]; then
+            echo "  [✗] Error processing sub-${sub} / ${band}"
+        fi
     done
 done
 
