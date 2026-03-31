@@ -21,7 +21,7 @@ def plot_gc_spectrum(group_data, window_freqs, figures_dir, n_subjects, voxRes):
     fig.suptitle(f'Group Averaged Granger Causality Spectrum (N={n_subjects} | {voxRes})', fontsize=15, fontweight='bold')
     
     windows = ['Stimulus', 'Delay']
-    directions = [('f2v', 'Frontal → Visual'), ('v2f', 'Visual → Frontal')]
+    directions = [('v2f', 'Visual → Frontal'), ('f2v', 'Frontal → Visual')]
     
     # Path mappings for legend
     labels = {
@@ -30,8 +30,8 @@ def plot_gc_spectrum(group_data, window_freqs, figures_dir, n_subjects, voxRes):
     }
     
     colors = {
-        'f2v': {'if2iv': 'darkorange', 'if2cv': 'gold', 'cf2iv': 'teal', 'cf2cv': 'darkcyan'},
-        'v2f': {'iv2if': 'darkorange', 'iv2cf': 'gold', 'cv2if': 'teal', 'cv2cf': 'darkcyan'}
+        'f2v': {'if2iv': 'dodgerblue', 'if2cv': 'tomato', 'cf2iv': 'mediumseagreen', 'cf2cv': 'mediumorchid'},
+        'v2f': {'iv2if': 'dodgerblue', 'iv2cf': 'tomato', 'cv2if': 'mediumseagreen', 'cv2cf': 'mediumorchid'}
     }
     
     for row_idx, window in enumerate(windows):
@@ -43,15 +43,24 @@ def plot_gc_spectrum(group_data, window_freqs, figures_dir, n_subjects, voxRes):
             dir_colors = colors[dir_key]
             
             for path_key, label in dir_labels.items():
-                mean_spectrum = group_data[window][dir_key][path_key]
-                if mean_spectrum is None:
+                res = group_data[window][dir_key][path_key]
+                if res is None:
                     continue
+                
+                mean_spectrum, sem_spectrum = res
                 
                 # Plot the line
                 ax.plot(freqs, mean_spectrum, 
                         color=dir_colors[path_key], 
                         linewidth=2.0, 
                         label=label)
+                
+                # Plot the SEM shaded region
+                ax.fill_between(freqs, 
+                                mean_spectrum - sem_spectrum, 
+                                mean_spectrum + sem_spectrum, 
+                                color=dir_colors[path_key], 
+                                alpha=0.15, linewidth=0)
             
             # Formatting
             if row_idx == 0:
@@ -138,7 +147,10 @@ def main(voxRes='10mm'):
             for path_key in accum[w][dir_key]:
                 mat_list = accum[w][dir_key][path_key]
                 if mat_list:
-                    group_data[w][dir_key][path_key] = np.mean(np.stack(mat_list), axis=0)
+                    data_stack = np.stack(mat_list)
+                    mean_val = np.mean(data_stack, axis=0)
+                    sem_val = np.std(data_stack, axis=0) / np.sqrt(len(data_stack))
+                    group_data[w][dir_key][path_key] = (mean_val, sem_val)
             
     plot_gc_spectrum(group_data, window_freqs, figures_dir, n_subs, voxRes)
     print(f"\nDone! Group-level GC plotting complete.")

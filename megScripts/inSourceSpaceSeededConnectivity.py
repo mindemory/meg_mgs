@@ -148,7 +148,12 @@ def compute_connectivity_measures(seed_indices, data_matrix, time_vector, connec
             elif connectivityType == 'imcoh':
                 connectivity_mag_batch = np.abs(np.imag(cross_spectrum_batch)) / np.sqrt(seed_power[:, :, np.newaxis] * target_power_batch[np.newaxis, :, :] + 1e-10)
                 # Shape: (n_seeds, window_timepoints, batch_size)
-            # elif connectivityType == 'pcoh':
+            elif connectivityType == 'dpli':
+                # Directed Phase Lag Index: measures directional flow (Seed leads Target > 0.5)
+                # Requires calculating Heaviside phase angles per trial before averaging
+                cross_spectrum_trials = seed_data[:, :, :, np.newaxis] * np.conj(target_data_batch[np.newaxis, :, :, :])
+                connectivity_mag_batch = np.mean(np.heaviside(np.imag(cross_spectrum_trials), 0.5), axis=1)
+                # Shape: (n_seeds, window_timepoints, batch_size)
             # Compute connectivity magnitude for all pairs in this batch
             connectivity_timeseries[batch_indices, t_idx] = np.mean(connectivity_mag_batch, axis=(0, 1))  # Result: (batch_size,)
     
@@ -173,7 +178,7 @@ def main(subjID, voxRes, seedROI, targetLoc, connectivityType, freqBand):
         bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
     taskName = 'mgs'
 
-    outputDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', 'connectivity')
+    outputDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'connectivity_{voxRes}')
     if not os.path.exists(outputDir):
         os.makedirs(outputDir)
     outputFile = os.path.join(outputDir, f'sub-{subjID:02d}_task-{taskName}_seededConnectivity_{voxRes}_{seedROI}_{targetLoc}_{connectivityType}_{freqBand}.pkl')
@@ -225,8 +230,8 @@ if __name__ == '__main__':
     import sys
     
     if len(sys.argv) < 2:
-        print("Usage: python inSourceSpaceSeededConnectivity.py <subjID> [voxRes] [seedROI] [targetLoc] [connectivityType]")
-        print("Example: python inSourceSpaceSeededConnectivity.py 1 10mm left_visual left coh")
+        print("Usage: python inSourceSpaceSeededConnectivity.py <subjID> [voxRes] [seedROI] [targetLoc] [coh|imcoh|dpli]")
+        print("Example: python inSourceSpaceSeededConnectivity.py 1 10mm left_visual left dpli")
         sys.exit(1)
     
     subjID = int(sys.argv[1])

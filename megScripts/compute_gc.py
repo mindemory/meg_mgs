@@ -141,59 +141,32 @@ def load_and_prepare_data(subjID, bidsRoot, taskName, voxRes):
 
     return roi_dict, left_tgt_mask, right_tgt_mask, dt, time_vector
 
-from sklearn.decomposition import PCA
-from spectral_connectivity import Multitaper, Connectivity
-
-def get_pca_time_series(epoch_data):
+def get_mne_gc_for_roi_pair(epoch_seed, epoch_tgt, sfreq, fmin, fmax):
     """
-    Extracts the 1st Principal Component for each epoch across all dipoles.
-    epoch_data shape: (n_epochs, n_times, n_dipoles)
-    Returns: (n_epochs, n_times)
+    Computes parametric Granger Causality on the spatial average of the ROIs.
     """
-    n_epochs, n_times, n_dipoles = epoch_data.shape
-    pca_ts = np.zeros((n_epochs, n_times))
-    for e in range(n_epochs):
-        # PCA requires (n_samples, n_features) -> (n_times, n_dipoles)
-        # We standard-scale data to ensure dipoles contribute equally across the parcel
-        e_data = epoch_data[e]
-        std = np.std(e_data, axis=0, keepdims=True); std[std==0] = 1.0
-        e_data = (e_data - np.mean(e_data, axis=0, keepdims=True)) / std
-        
-        pca = PCA(n_components=1)
-        pca_ts[e, :] = pca.fit_transform(e_data)[:, 0]
-    return pca_ts
-
-def get_dhamala_gc_for_roi_pair(epoch_seed, epoch_tgt, sfreq, fmin, fmax):
-    """
-    Computes Non-Parametric Dhamala Granger Causality (Michalareas 2016)
-    on the 1st Principal Component of the ROIs.
-    """
-    # 1. PCA Spatial Pooling (solves signal cancellation)
-    ts_seed = get_pca_time_series(epoch_seed) # (n_epochs, n_times)
-    ts_tgt = get_pca_time_series(epoch_tgt)   # (n_epochs, n_times)
+    # 1. Spatial Pooling (Exact Match to compute_pac.py: mean across dipoles)
+    ts_seed = epoch_seed.mean(axis=2) # (n_epochs, n_times)
+    ts_tgt = epoch_tgt.mean(axis=2)   # (n_epochs, n_times)
     
-    # 2. Stack for Multitaper & Transpose to (n_times, n_epochs, n_signals)
-    data = np.stack([ts_seed, ts_tgt], axis=2)
-    data = np.swapaxes(data, 0, 1)
+    # 2. Stack for MNE Parametric AR (n_epochs, n_signals, n_times)
+    data = np.stack([ts_seed, ts_tgt], axis=1)
     
-    # 3. Non-parametric Multitaper CSD & Wilson-Burg Factorization
-    # time_halfbandwidth_product=4 ensures sufficient frequency smoothing
-    m = Multitaper(time_series=data, sampling_frequency=sfreq, time_halfbandwidth_product=4)
-    con = Connectivity.from_multitaper(m)
-    
-    # 4. Extract Directed GC
-    # gc shape: (1, n_freqs, 2, 2)
-    gc_tensor = con.pairwise_spectral_granger_prediction()
-    freqs = con.frequencies
-    
-    # We only care about fmin to fmax
-    f_mask = (freqs >= fmin) & (freqs <= fmax)
-    freqs_band = freqs[f_mask]
-    
-    # gc[0, f, tgt, seed] -> effect of seed on tgt
-    # Signal 0 is seed, Signal 1 is tgt
-    gc_1to2 = gc_tensor[0, f_mask, 1, 0] # seed -> tgt
-    gc_2to1 = gc_tensor[0, f_mask, 0, 1] # tgt -> seed
+    # 3. MNE Connectivity Parametric GC (AR model)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            con = spectral_connectivity_epochs(
+                data, method='gc', sfreq=sfreq, fmin=fmin, fmax=fmax,
+                mode='multitaper', indices=([[0], [1]], [[1], [0]]), n_jobs=1, verbose=False
+            )
+            vals = con.get_data() # (2, n_freqs) -> 0: seed->tgt, 1: tgt->seed
+            gc_1to2 = vals[0]
+            gc_2to1 = vals[1]
+            freqs_band = con.freqs
+    except Exception as e:
+        print(f"        [!] MNE parametric solver failed for pair: {e}")
+        return None, None, None
     
     return gc_1to2, gc_2to1, freqs_band
 
@@ -201,7 +174,7 @@ def get_dhamala_gc_for_roi_pair(epoch_seed, epoch_tgt, sfreq, fmin, fmax):
 def get_condition_gc(l_vis, r_vis, l_front, r_front, tgt_mask, time_vector, dt, t_start, t_end, fmin=5, fmax=50, n_jobs=48):
     sfreq = 1 / dt
     
-    # Extract stationary time window FIRST (keeps original dipoles un-pooled)
+    # Extract stationary time window FIRST
     t_mask = (time_vector >= t_start) & (time_vector <= t_end)
     
     # Shape: (n_epochs, n_times, n_dipoles)
@@ -213,12 +186,12 @@ def get_condition_gc(l_vis, r_vis, l_front, r_front, tgt_mask, time_vector, dt, 
     if epoch_lv.size == 0 or epoch_lv.shape[0] < 2:
         return None, None
         
-    print("      (Extracting 1st Principal Component for pooling & calculating Non-Parametric Dhamala GC)")
+    print("      (Averaging dipoles & calculating Parametric GC via mne_connectivity)")
     
-    lf_lv, lv_lf, freqs = get_dhamala_gc_for_roi_pair(epoch_lf, epoch_lv, sfreq, fmin, fmax)
-    lf_rv, rv_lf, _     = get_dhamala_gc_for_roi_pair(epoch_lf, epoch_rv, sfreq, fmin, fmax)
-    rf_lv, lv_rf, _     = get_dhamala_gc_for_roi_pair(epoch_rf, epoch_lv, sfreq, fmin, fmax)
-    rf_rv, rv_rf, _     = get_dhamala_gc_for_roi_pair(epoch_rf, epoch_rv, sfreq, fmin, fmax)
+    lf_lv, lv_lf, freqs = get_mne_gc_for_roi_pair(epoch_lf, epoch_lv, sfreq, fmin, fmax)
+    lf_rv, rv_lf, _     = get_mne_gc_for_roi_pair(epoch_lf, epoch_rv, sfreq, fmin, fmax)
+    rf_lv, lv_rf, _     = get_mne_gc_for_roi_pair(epoch_rf, epoch_lv, sfreq, fmin, fmax)
+    rf_rv, rv_rf, _     = get_mne_gc_for_roi_pair(epoch_rf, epoch_rv, sfreq, fmin, fmax)
     
     res = {
         'lf_lv': lf_lv, 'lf_rv': lf_rv,

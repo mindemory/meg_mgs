@@ -1,0 +1,53 @@
+#!/bin/bash
+# ==============================================================================
+# run_seeded_connectivity.sh
+# Batch execution script to calculate Seeded Source Connectivity measures.
+# ==============================================================================
+
+if [ -z "$1" ]; then
+    echo "Usage: bash run_seeded_connectivity.sh <VoxRes> <ConnectivityType>"
+    echo "Example (Runs standard Coherence): bash run_seeded_connectivity.sh 10mm coh"
+    echo "Example (Runs new Directed PLI)  : bash run_seeded_connectivity.sh 10mm dpli"
+    exit 1
+fi
+
+VOXRES=$1
+CON_TYPE=$2   # coh / imcoh / dpli
+
+# Fully Processed Subjects
+declare -a subjects=(1 2 3 4 5 6 7 9 10 12 13 15 17 18 19 23 24 25 29 31 32)
+declare -a bands=("theta" "alpha" "beta" "lowgamma")
+declare -a seeds=("left_visual" "right_visual" "left_frontal" "right_frontal")
+declare -a targets=("left" "right")
+
+echo "========================================================"
+echo " Seeded Connectivity Batch Runner"
+echo " Metric  : $CON_TYPE"
+echo " VoxRes  : $VOXRES"
+echo " Host    : $(hostname)"
+echo "========================================================"
+
+# Loop over all dimensions
+for sub in "${subjects[@]}"; do
+    echo "--------------------------------------------------------"
+    echo "▶ Processing sub-${sub} | Metric: ${CON_TYPE}"
+    
+    for band in "${bands[@]}"; do
+        for seed in "${seeds[@]}"; do
+            for tgt in "${targets[@]}"; do
+            
+                echo "  -> running [${band}] | ${seed} -> ${tgt}"
+                python megScripts/inSourceSpaceSeededConnectivity.py $sub $VOXRES $seed $tgt $CON_TYPE $band
+                
+                # Check exit status
+                if [ $? -ne 0 ]; then
+                    echo "  [✗] Error processing sub-${sub} / ${band} / ${seed} / ${tgt}"
+                fi
+                
+            done
+        done
+    done
+done
+
+echo "========================================================"
+echo "✓ All Seeded Connectivity computations for metric '$CON_TYPE' complete!"
