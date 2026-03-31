@@ -123,7 +123,7 @@ def _compute_single_timepoint(t_idx, n_timepoints, window_half_samples, data_mat
             n_trials = seed_data.shape[1]
             dpli_acc = np.zeros((seed_data.shape[0], seed_data.shape[2], batch_indices.shape[0]))
             for tr in range(n_trials):
-                trial_csd = seed_data[:, tr, :, np.newaxis] * np.conj(target_data_batch[tr, :, :, :])
+                trial_csd = seed_data[:, tr, :, np.newaxis] * np.conj(target_data_batch[tr, :, :])
                 dpli_acc += np.heaviside(np.imag(trial_csd), 0.5)
             connectivity_mag_batch = dpli_acc / n_trials
         else:
