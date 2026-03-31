@@ -311,13 +311,32 @@ def plot_roi_connectivity_patterns(averaged_roi_connectivity_left, averaged_roi_
         ax.axvline(x=1.7, color='green', linestyle='--', alpha=0.7, linewidth=1)
         
         ax.set_xlabel('Time (s)', fontsize=12)
-        ax.set_ylabel('Relative Connectivity', fontsize=12)
+        y_label = 'Phase Lead/Lag Index' if 'dpli' in save_path.lower() else 'Relative Connectivity'
+        ax.set_ylabel(y_label, fontsize=12)
         ax.set_title(f'{seed_name.replace("_", " ").title()} → {roi_label}', fontsize=13, fontweight='bold')
+        
+        # Calculate focal y-limits base only on visible data (-0.5 to 1.5s)
+        vis_mask = (time_vector >= -0.5) & (time_vector <= 1.5)
+        all_visible_vals = []
+        
+        if roi_key in averaged_roi_connectivity_left:
+            mv = averaged_roi_connectivity_left[roi_key]['mean'][vis_mask]
+            sv = averaged_roi_connectivity_left[roi_key]['sem'][vis_mask]
+            all_visible_vals.extend([np.nanmin(mv - sv), np.nanmax(mv + sv)])
+            
+        if roi_key in averaged_roi_connectivity_right:
+            mv = averaged_roi_connectivity_right[roi_key]['mean'][vis_mask]
+            sv = averaged_roi_connectivity_right[roi_key]['sem'][vis_mask]
+            all_visible_vals.extend([np.nanmin(mv - sv), np.nanmax(mv + sv)])
+            
+        if all_visible_vals:
+            ymin, ymax = np.nanmin(all_visible_vals), np.nanmax(all_visible_vals)
+            padding = (ymax - ymin) * 0.15 if ymax != ymin else 0.05
+            ax.set_ylim(ymin - padding, ymax + padding)
+
+        ax.set_xlim(-0.5, 1.5)
         ax.grid(False)
         ax.legend(loc='best', fontsize=9)
-        ax.set_xlim(-0.5, 1.5)
-        # y_lim = 0.1 if 'dpli' in save_path.lower() else 0.15
-        # ax.set_ylim(-y_lim, y_lim)
     
     plt.tight_layout()
     if save_path is not None:
