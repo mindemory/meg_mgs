@@ -125,7 +125,7 @@ def main(subjID, voxRes, seedROI_str, targetLoc_str, connectivityType_str, freqB
     data, time_v, target_labels = load_raw_source_data(subjID, bidsRoot, voxRes, mask)
     fs = 1.0 / np.mean(np.diff(time_v))
     
-    band_defs = {'theta': (4, 8), 'alpha': (8, 13), 'beta': (13, 30), 'lowgamma': (30, 80)}
+    band_defs = {'theta': (4, 8), 'alpha': (8, 13), 'beta': (13, 30), 'lowgamma': (30, 55)}
     f_low, f_high = band_defs.get(freqBand, (8, 13))
     
     atlas = loadmat(os.path.join(bidsRoot, 'derivatives', 'atlas', f'rois_{voxRes}.mat'))
