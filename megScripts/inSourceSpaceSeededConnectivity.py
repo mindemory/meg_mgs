@@ -119,7 +119,23 @@ def main(subjID, voxRes, seedROI_str, targetLoc_str, connectivityType_str, freqB
     seedROIs = seedROI_str.split(',') if seedROI_str else ['left_visual']
     targetLocs = targetLoc_str.split(',') if targetLoc_str else ['left']
     metrics = connectivityType_str.split(',') if connectivityType_str else ['dpli']
+    # Pre-emptively check if all target files exist to skip expensive 1.7GB load/filter
+    all_exist = True
+    out_dir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'connectivity_{voxRes}')
+    for seed in seedROIs:
+        for loc in targetLocs:
+            for metric in metrics:
+                outF = os.path.join(out_dir, f'sub-{subjID:02d}_task-mgs_seededConnectivity_{voxRes}_{seed}_{loc}_{metric}_{freqBand}.pkl')
+                if not os.path.exists(outF):
+                    all_exist = False
+                    break
+            if not all_exist: break
+        if not all_exist: break
     
+    if all_exist:
+        print(f"\n[SKIP] All {freqBand.upper()} connectivity results already exist for Sub-{subjID:02d}. Exiting cleanly.", flush=True)
+        return
+
     # 1. Load Raw Chronological Data
     mask = load_behavioral_mask(subjID, bidsRoot)
     data, time_v, target_labels = load_raw_source_data(subjID, bidsRoot, voxRes, mask)
@@ -158,14 +174,8 @@ def main(subjID, voxRes, seedROI_str, targetLoc_str, connectivityType_str, freqB
             t_comp_loc = all_target_complex[mask_loc, :, :]
             
             for metric in metrics:
-                outDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'connectivity_{voxRes}')
-                os.makedirs(outDir, exist_ok=True)
-                outF = os.path.join(outDir, f'sub-{subjID:02d}_task-mgs_seededConnectivity_{voxRes}_{seedROI}_{loc}_{metric}_{freqBand}.pkl')
+                outF = os.path.join(out_dir, f'sub-{subjID:02d}_task-mgs_seededConnectivity_{voxRes}_{seedROI}_{loc}_{metric}_{freqBand}.pkl')
                 
-                if os.path.exists(outF):
-                    print(f"  Skipping {metric} for {loc} (Beta 13-18Hz check)... already exists.", flush=True)
-                    continue
-
                 print(f"  Computing {metric} for {loc} targets ({np.sum(mask_loc)} trials)...")
                 
                 if metric == 'dpli':
