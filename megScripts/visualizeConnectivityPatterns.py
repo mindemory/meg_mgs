@@ -186,16 +186,16 @@ def extract_roi_connectivity(all_results, roi_indices):
     print("Extracting ROI-averaged connectivity...")
     
     roi_connectivity = {
-        'left_frontal': [],
-        'right_frontal': [],
-        'left_visual': [],
-        'right_visual': [],
-        'left_parietal': [],
-        'right_parietal': []
+        'left_frontal': [], 'right_frontal': [],
+        'left_visual': [], 'right_visual': [],
+        'left_parietal': [], 'right_parietal': [],
+        'global_hem': []
     }
     
     for subject_data in all_results['data']:
-        # subject_data shape: (n_voxels, n_timepoints)
+        # Calculate global hemisphere mean (all voxels)
+        roi_connectivity['global_hem'].append(np.nanmean(subject_data, axis=0))
+        
         # Average across voxels within each ROI
         for roi_name in ['left_frontal', 'right_frontal', 'left_visual', 'right_visual', 'left_parietal', 'right_parietal']:
             if roi_name in roi_indices:
@@ -1145,90 +1145,202 @@ def plot_whole_brain_connectivity_3d(avg_connectivity_left, avg_connectivity_rig
         
         print("3D scatter plot visualization completed!")
 
+def plot_consolidated_matrix(all_data, time_vector, bands, alignment_seeds, voxRes, metric, save_path=None):
+    """
+    Plots a 4x4 grid of connectivity patterns.
+    Rows: Frequency Bands (Theta, Alpha, Beta, Lowgamma)
+    Cols: Alignment Seeds (Ipsi-Vis, Contra-Vis, Ipsi-Fr, Contra-Fr)
+    """
+    n_rows = len(bands)
+    n_cols = len(alignment_seeds)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(22, 18), sharex=True)
+    
+    title_metric = 'dPLI (Phase Index)' if metric == 'dpli' else 'ImCoh (Relative Change %)'
+    fig.suptitle(f'Hemisphere-Aligned {title_metric} Matrix ({voxRes} resolution)', 
+                 fontsize=24, fontweight='bold', y=0.96)
+    
+    # Define Target Alignments for the lines in each plot
+    # Functional targets relative to the seed hemisphere
+    target_alignment_info = [
+        ('ipsi_visual', 'Ipsi-Vis', '#1f77b4', '-'),
+        ('contra_visual', 'Contra-Vis', '#17becf', '-'),
+        ('ipsi_frontal', 'Ipsi-Fr', '#d62728', '-'),
+        ('contra_frontal', 'Contra-Fr', '#ff7f0e', '-')
+    ]
+    
+    vis_mask = (time_vector >= -0.5) & (time_vector <= 1.5)
+    
+    # Pre-calculate global y-limits for this metric across all subplots
+    all_global_vals = []
+    for band in bands:
+        if band in all_data:
+            for seed_align in alignment_seeds:
+                if seed_align in all_data[band]:
+                    d = all_data[band][seed_align]
+                    for target_key, _, _, _ in target_alignment_info:
+                        if target_key in d:
+                            mean_vals = d[target_key]['mean'][vis_mask]
+                            sem_vals = d[target_key]['sem'][vis_mask]
+                            # Account for SEM in scale
+                            all_global_vals.extend([np.nanmin(mean_vals - sem_vals), 
+                                                  np.nanmax(mean_vals + sem_vals)])
+    
+    if all_global_vals:
+        ymin_global, ymax_global = np.nanmin(all_global_vals), np.nanmax(all_global_vals)
+        padding = (ymax_global - ymin_global) * 0.15 if ymax_global != ymin_global else 0.05
+        global_ylim = (ymin_global - padding, ymax_global + padding)
+    else:
+        global_ylim = None
+
+    for r, band in enumerate(bands):
+        for c, seed_align in enumerate(alignment_seeds):
+            ax = axes[r, c]
+            
+            if band not in all_data or seed_align not in all_data[band]:
+                ax.text(0.5, 0.5, 'No Aligned Data', transform=ax.transAxes, ha='center')
+                continue
+                
+            data = all_data[band][seed_align]
+            
+            # Plot each target line
+            for target_key, target_label, color, ls in target_alignment_info:
+                if target_key in data:
+                    mean = data[target_key]['mean']
+                    sem = data[target_key]['sem']
+                    ax.plot(time_vector, mean, label=target_label, color=color, linewidth=2.5, linestyle=ls)
+                    ax.fill_between(time_vector, mean - sem, mean + sem, color=color, alpha=0.15)
+            
+            # Formatting
+            if r == 0:
+                ax.set_title(seed_align.replace('-', ' ').title(), fontsize=16, fontweight='bold')
+            if c == 0:
+                ax.set_ylabel(f'{band.upper()}\n{metric.upper()}', fontsize=14, fontweight='bold')
+            if r == n_rows - 1:
+                ax.set_xlabel('Time (s)', fontsize=12)
+                
+            if global_ylim:
+                ax.set_ylim(global_ylim)
+            
+            ax.set_xlim(-0.5, 1.5)
+            neutral_y = 0 # Both dPLI-centered and ImCoh-relative center at 0
+            ax.axhline(y=neutral_y, color='black', linestyle='-', alpha=0.3, linewidth=1) 
+            ax.axvline(x=0, color='gray', linestyle='--', alpha=0.5) # Stim on
+            ax.axvline(x=0.2, color='orange', linestyle='--', alpha=0.5) # Delay start
+            ax.axvline(x=1.7, color='green', linestyle='--', alpha=0.5) # Response
+            ax.grid(False)
+            
+            if r == 0 and c == n_cols - 1:
+                ax.legend(loc='upper right', fontsize=10, frameon=False)
+    
+    plt.tight_layout(rect=[0, 0.03, 1, 0.94])
+    
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Aligned {metric} matrix saved to: {save_path}")
+
 def main():
-    """Main function to load and visualize ROI connectivity patterns"""
+    """Main function for Hemisphere-Aligned Connectivity visualization"""
     
-    # Define parameters (Limited to sub-01 for local verification)
-    subjects = [1]
-    taskName = 'mgs'
-    voxRes = '10mm'
-    freqBand = 'lowgamma'
-    seed = 'right_visual'
-    # target = 'right'
-    metric = 'imcoh'
+    # 6-subject pilot cohort for initial verification 
+    # (Uncomment the second line for the full 21-subject Vader run)
+    subjects = [1, 2, 3, 4, 5, 6]
+    # subjects = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, 18, 19, 23, 24, 25, 29, 31, 32] 
     
-    # Set bidsRoot based on hostname
-    import socket
     taskName = 'mgs'
     voxRes = '8mm'
-    seed = 'left_visual'  # Focus on visual seed
-    freqBand = 'theta'
     
-    # Setup paths
+    bands = ['theta', 'alpha', 'beta', 'lowgamma']
+    seeds = ['left_visual', 'right_visual', 'left_frontal', 'right_frontal']
+    alignment_categories = ['ipsi-visual', 'contra-visual', 'ipsi-frontal', 'contra-frontal']
+    
+    import socket
     h = socket.gethostname()
     if h == 'zod':
         bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
+    elif h == 'vader':
+        bidsRoot = '/d/DATD/datd/MEG_MGS/MEG_BIDS'
     else:
         bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
-    
-    for metric in ['imcoh', 'dpli']:
-        print(f"\n{'='*60}\nRUNNING FOR METRIC: {metric}\n{'='*60}")
-        # Run entire visualization per metric
-        run_metric_viz(bidsRoot, subjects, taskName, voxRes, seed, metric, freqBand)
-
-def run_metric_viz(bidsRoot, subjects, taskName, voxRes, seed, metric, freqBand):
-    print(f"Subjects: {subjects}")
-    print(f"Voxel resolution: {voxRes}")
-    print(f"Seed: {seed}, Metric: {metric}")
-    print(f"BIDS root: {bidsRoot}")
-    print("="*60)
-    
-    # Load connectivity results for left targets
-    print("\n" + "="*60)
-    print("Loading LEFT target data...")
-    print("="*60)
-    all_results_left = load_connectivity_results(bidsRoot, subjects, taskName=taskName, voxRes=voxRes, 
-                                                seed=seed, target='left', metric=metric, freqBand=freqBand)
-    
-    # Load connectivity results for right targets
-    print("\n" + "="*60)
-    print("Loading RIGHT target data...")
-    print("="*60)
-    all_results_right = load_connectivity_results(bidsRoot, subjects, taskName=taskName, voxRes=voxRes, 
-                                                 seed=seed, target='right', metric=metric, freqBand=freqBand)
-    
-    if len(all_results_left['loaded_subjects']) == 0 or len(all_results_right['loaded_subjects']) == 0:
-        print("No connectivity results found!")
-        return
-    
-    # Load atlas ROIs
+        
     roi_indices = load_atlas_rois(bidsRoot, voxRes)
     
-    # Extract ROI-averaged connectivity for left targets
-    roi_connectivity_left = extract_roi_connectivity(all_results_left, roi_indices)
+    for metric in ['imcoh', 'dpli']:
+        print("\n" + "="*60)
+        print(f"GENERATING ALIGNED {metric.upper()} MATRIX")
+        print("="*60)
+        
+        aligned_data = {}
+        time_vector = None
+        
+        for band in bands:
+            aligned_data[band] = {}
+            for cat in alignment_categories:
+                aligned_data[band][cat] = {
+                    'ipsi_visual': [], 'contra_visual': [],
+                    'ipsi_frontal': [], 'contra_frontal': []
+                }
+                
+            print(f"  Processing {band.upper()}...")
+            for seed in seeds:
+                seed_hem = 'left' if 'left' in seed else 'right'
+                seed_type = 'visual' if 'visual' in seed else 'frontal'
+                
+                # Load both target hemispheres
+                res_l = load_connectivity_results(bidsRoot, subjects, taskName, voxRes, seed, 'left', metric, band)
+                res_r = load_connectivity_results(bidsRoot, subjects, taskName, voxRes, seed, 'right', metric, band)
+                
+                if not res_l['loaded_subjects'] or not res_r['loaded_subjects']:
+                    continue
+                
+                if time_vector is None:
+                    time_vector = res_l['time_vector']
+                
+                # Extract ROIs for each target hem
+                ave_l = extract_roi_connectivity(res_l, roi_indices)
+                ave_r = extract_roi_connectivity(res_r, roi_indices)
+                
+                # Map absolute hemispheres to Ipsi/Contra based on the current Seed
+                for tgt_hem, ave_dict in zip(['left', 'right'], [ave_l, ave_r]):
+                    align = 'ipsi' if seed_hem == tgt_hem else 'contra'
+                    cat_key = f"{align}-{seed_type}"
+                    
+                    # Mapping targets functionally relative to the current seed/target_hem alignment
+                    # For a given seed, an "Ipsi-Visual" target is 'left_visual' if target hemisphere is 'left'
+                    m = {
+                        'ipsi_visual': f'{tgt_hem}_visual',
+                        'contra_visual': 'right_visual' if tgt_hem == 'left' else 'left_visual',
+                        'ipsi_frontal': f'{tgt_hem}_frontal',
+                        'contra_frontal': 'right_frontal' if tgt_hem == 'left' else 'left_frontal'
+                    }
+                    
+                    for aligned_key, anatomical_key in m.items():
+                        if anatomical_key in ave_dict:
+                            aligned_data[band][cat_key][aligned_key].extend(ave_dict[anatomical_key])
+            
+            # After loading all seeds/subjects for this band, compute statistics
+            for cat in alignment_categories:
+                final_stats = {}
+                for target_align, subject_list in aligned_data[band][cat].items():
+                    if subject_list:
+                        arr = np.array(subject_list)
+                        final_stats[target_align] = {
+                            'mean': np.nanmean(arr, axis=0),
+                            'sem': np.nanstd(arr, axis=0) / np.sqrt(arr.shape[0])
+                        }
+                aligned_data[band][cat] = final_stats
+                        
+        # Generate the aligned plot for this metric
+        out_name = f'aligned_{metric}_matrix_{voxRes}.png'
+        if metric == 'imcoh':
+            out_name = f'aligned_imcoh_matrix_{voxRes}.png' # Consistent naming
+            
+        save_path = os.path.join(bidsRoot, 'derivatives', 'figures', 'connectivity', out_name)
+        plot_consolidated_matrix(aligned_data, time_vector, bands, alignment_categories, voxRes, metric, save_path=save_path)
     
-    # Extract ROI-averaged connectivity for right targets
-    roi_connectivity_right = extract_roi_connectivity(all_results_right, roi_indices)
-    
-    # Compute averages across subjects
-    averaged_roi_connectivity_left = compute_roi_averages(roi_connectivity_left)
-    averaged_roi_connectivity_right = compute_roi_averages(roi_connectivity_right)
-    
-    # Plot results (use time vector from left results, should be the same)
-    save_path = os.path.join(bidsRoot, 'derivatives', 'figures', 'connectivity', f'{seed}seeds_{metric}_{voxRes}_{freqBand}_roi_connectivity.png')
-    plot_roi_connectivity_patterns(averaged_roi_connectivity_left, averaged_roi_connectivity_right,
-                                   all_results_left['time_vector'], seed_name=seed, freqBand=freqBand, save_path=save_path)
-    
-    # 3D surface visualizations are currently deactivated to focus on timeseries.
-    # To reactivate, uncomment the block below.
-    """
-    # Whole-brain 3D visualization for multiple time windows
     print("\n" + "="*60)
-    ...
-    # [3D visualization code omitted for brevity]
-    ...
-    """
-    print("Analysis completed!")
+    print("All Matrix Analysis Completed!")
+    print("="*60)
 
 if __name__ == '__main__':
     main()
