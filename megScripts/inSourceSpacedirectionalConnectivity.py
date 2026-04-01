@@ -1,35 +1,15 @@
-import os, h5py, socket, gc
-os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
+import os, socket, pickle, shutil
 import numpy as np
-from shutil import copyfile
-import pickle
 from scipy.io import loadmat
-from scipy.signal import butter, filtfilt, hilbert
+from scipy.signal import hilbert, butter, filtfilt
 from scipy.ndimage import uniform_filter1d
-import time
-from joblib import Parallel, delayed
+import h5py
 
-def get_compute_profile():
-    h = socket.gethostname()
-    if h == 'zod': return 'mac', 4
-    elif h == 'vader': return 'vader', 48
-    else: return 'hpc', 10
-
-def butter_bandpass(lowcut, highcut, fs, order=4):
+def butter_bandpass(lowcut, highcut, fs, order=5):
     nyq = 0.5 * fs
-    # Ensure frequencies are within valid range (0 < Wn < 1)
-    # Clip to 95% of Nyquist to avoid edge artifacts
-    safe_high = min(highcut, 0.95 * nyq)
-    safe_low = max(0.5, lowcut) # Avoid DC / very low freq artifacts
-    
-    low = safe_low / nyq
+    safe_high = min(highcut, nyq * 0.95)
+    low = lowcut / nyq
     high = safe_high / nyq
-    
-    if low >= high:
-        # Fallback for very narrow/invalid bands (e.g. if lowcut > nyq)
-        low = 0.1
-        high = 0.9
-        
     b, a = butter(order, [low, high], btype='band')
     return b, a
 
@@ -37,140 +17,128 @@ def apply_bandpass(data, lowcut, highcut, fs, axis=1):
     b, a = butter_bandpass(lowcut, highcut, fs)
     return filtfilt(b, a, data, axis=axis)
 
-def extract_phase(data, fs, lowcut, highcut):
-    """Filter and extract phase via Hilbert."""
-    filtered = apply_bandpass(data, lowcut, highcut, fs)
-    return np.angle(hilbert(filtered, axis=1))
+def extract_phase(data, fs, f_low, f_high):
+    filt_data = apply_bandpass(data, f_low, f_high, fs)
+    return np.angle(hilbert(filt_data, axis=1))
 
 def load_behavioral_mask(subjID, bidsRoot):
-    subName = 'sub-%02d' % subjID
-    behav_path = os.path.join(bidsRoot, 'derivatives', subName, 'eyetracking', f'{subName}_task-mgs-iisess_forSource.mat')
-    if not os.path.exists(behav_path): return None
-    try:
-        h = socket.gethostname()
-        tempDir = '/Users/mrugank/Desktop' if h == 'zod' else '/tmp'
-        tempPath = os.path.join(tempDir, f'{subName}_behav_cfc_{int(time.time())}.mat')
-        copyfile(behav_path, tempPath)
-        with h5py.File(tempPath, 'r') as f:
-            mask = ~np.isnan(np.array(f['ii_sess_forSource']['i_sacc_err']).flatten())
-        if os.path.exists(tempPath): os.remove(tempPath)
-        return mask
-    except: return None
+    import pandas as pd
+    behavF = os.path.join(bidsRoot, 'derivatives', 'behavioral', f'sub-{subjID:02d}', f'sub-{subjID:02d}_task-mgs_behavior.tsv')
+    if not os.path.exists(behavF): return None
+    df = pd.read_csv(behavF, sep='\t')
+    return (df['i_sacc_err'] == 0).values
 
 def load_raw_source_data(subjID, bidsRoot, voxRes, behavioral_mask=None):
-    """Robust loader with atomic staging."""
-    subName = 'sub-%02d' % subjID
-    v_code = voxRes.replace('mm', '')
-    fpath = os.path.join(bidsRoot, 'derivatives', subName, 'sourceRecon', f'{subName}_task-mgs_sourceSpaceData_{v_code}.mat')
+    """Refactored to mirror compute_pac.py loading strategy.
+    Uses _sourceSpaceData_{vox}.mat and direct read with locking=False.
+    """
+    subName = f'sub-{subjID:02d}'
+    res_num = voxRes[:-2] # '8mm' -> '8'
+    rawPath = os.path.join(bidsRoot, 'derivatives', subName, 'sourceRecon', f'{subName}_task-mgs_sourceSpaceData_{res_num}.mat')
     
-    h = socket.gethostname()
-    tempDir = '/Users/mrugank/Desktop' if h == 'zod' else '/d/DATD/hyper/experiments/Mrugank/meg_mgs'
-    # Use a fixed staged name for this sub/res to allow reuse during batch
-    tempPath = os.path.join(tempDir, f'{subName}_{voxRes}_STAGED_RAW.mat')
-    tempPathPartial = tempPath + ".tmp"
-    
-    # Check if a finished copy exists
-    # If one exists but isn't the right size (e.g. stalled), redo it.
-    expected_size = os.path.getsize(fpath)
-    if os.path.exists(tempPath) and os.path.getsize(tempPath) < expected_size:
-        print(f"Staged file {tempPath} is incomplete. Re-staging...")
-        os.remove(tempPath)
+    # Standard loading logic from compute_pac.py
+    source_data = None
+    try:
+        # Try direct read with locking=False first (Vader/Greene standard)
+        source_data = h5py.File(rawPath, 'r', locking=False)
+        print(f"  [+] Direct load successful: {rawPath}", flush=True)
+    except Exception:
+        # Fallback to transient staging (Mac Mac local or network mount error)
+        tempPath = os.path.join('/Users/mrugank/Desktop' if socket.gethostname() == 'zod' else '/tmp', f'{subName}_STAGING_TEMP_{res_num}.mat')
+        print(f"  [!] Direct load failed. Performing transient stage to {tempPath}...", flush=True)
+        shutil.copyfile(rawPath, tempPath)
+        source_data = h5py.File(tempPath, 'r')
+        # On Unix, removing the file while it's open works (descriptor stays valid)
+        os.remove(tempPath) 
 
-    if not os.path.exists(tempPath):
-        print(f"Staging raw data to {tempPath} (Atomic 1.7GB, one-time)...")
-        if os.path.exists(tempPathPartial): os.remove(tempPathPartial)
-        copyfile(fpath, tempPathPartial)
-        os.rename(tempPathPartial, tempPath)
-    else:
-        print(f"Reusing fully-staged data: {tempPath}")
+    group = source_data['sourcedataCombined'] if 'sourcedataCombined' in source_data else source_data['sourcedata']
+    time_v = np.array(source_data[group['time'][0, 0]]).flatten()
+    trial_data = group['trial']
     
-    with h5py.File(tempPath, 'r', locking=False) as f:
-        group = f['sourcedataCombined'] if 'sourcedataCombined' in f else f['sourcedata']
-        time_v = np.array(f[group['time'][0, 0]]).flatten()
-        trial_data = group['trial']
+    # Handle nested trialinfo references
+    ds_ti = group['trialinfo']
+    if isinstance(ds_ti[0, 0], h5py.Reference):
+        trialinfo = np.array(source_data[ds_ti[0, 0]])
+    else:
+        trialinfo = np.array(ds_ti)
+    if trialinfo.shape[0] < trialinfo.shape[1]: trialinfo = trialinfo.T
+    target_labels = trialinfo[:, 1]
+    
+    all_trials = []
+    for i in range(trial_data.shape[0]):
+        all_trials.append(np.array(source_data[trial_data[i, 0]]))
+    data_matrix = np.stack(all_trials, axis=0) 
+    
+    source_data.close()
         
-        ds_ti = group['trialinfo']
-        if isinstance(ds_ti[0, 0], h5py.Reference):
-            trialinfo = np.array(f[ds_ti[0, 0]])
-        else:
-            trialinfo = np.array(ds_ti)
-        if trialinfo.shape[0] < trialinfo.shape[1]: trialinfo = trialinfo.T
-        target_labels = trialinfo[:, 1]
-        
-        all_trials = []
-        for i in range(trial_data.shape[0]):
-            all_trials.append(np.array(f[trial_data[i, 0]]))
-        data_matrix = np.stack(all_trials, axis=0) 
+    if behavioral_mask is not None:
+        valid = behavioral_mask[:data_matrix.shape[0]]
+        data_matrix = data_matrix[valid, :, :]
+        target_labels = target_labels[valid]
+        print(f"  Applied behavioral filter: {np.sum(valid)} trials kept.", flush=True)
         
     return data_matrix, time_v, target_labels
 
-def _process_target_batch(data_matrix, fs, freq_seed, freq_target):
-    """Extract Envelope-Phase for CFC."""
-    target_high = apply_bandpass(data_matrix, freq_target[0], freq_target[1], fs)
-    envelope = np.abs(hilbert(target_high, axis=1))
-    return extract_phase(envelope, fs, freq_seed[0], freq_seed[1])
-
-def main(subjID, voxRes, seedROI_name, loc_str, f_seed, f_env):
-    """Modular CFC Engine (Seed A to Target B)"""
+def main(subjID, voxRes):
+    """Modular CFC Engine (Complete Hierarchy)
+    Computes Directed Phase-Amplitude Coupling for all ROI permutations.
+    """
+    import warnings
+    warnings.simplefilter("ignore")
+    
     h = socket.gethostname()
-    bidsRoot = '/d/DATD/datd/MEG_MGS/MEG_BIDS' if h == 'vader' else '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
+    bidsRoot = '/d/DATD/datd/MEG_MGS/MEG_BIDS' if 'vader' in h else '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
     
     mask = load_behavioral_mask(subjID, bidsRoot)
+    print(f"[*] Sub-{subjID:02d} | Resolving Raw Dataset (The 'PAC Way')...", flush=True)
     data, time_v, target_labels = load_raw_source_data(subjID, bidsRoot, voxRes, mask)
     fs = 1.0 / np.abs(np.mean(np.diff(time_v)))
     
     atlas = loadmat(os.path.join(bidsRoot, 'derivatives', 'atlas', f'rois_{voxRes}.mat'))
-    seed_pts = np.where(atlas[f'{seedROI_name}_points'].flatten() == 1)[0]
     
-    # 1. Seed Phase (Theta)
-    seed_raw = np.mean(data[:, :, seed_pts], axis=2)
-    seed_phase = extract_phase(seed_raw, fs, f_seed[0], f_seed[1])
+    label_map = {'theta': (4, 8), 'alpha': (8, 13), 'beta': (13, 18), 'lowgamma': (30, 55)}
+    bands = ['theta', 'alpha', 'beta']
+    rois = ['left_frontal', 'right_frontal', 'left_visual', 'right_visual']
     
-    # 2. Filter Targets by location
-    targets_req = [4, 5, 6, 7, 8] if loc_str == 'left' else [1, 2, 3, 9, 10]
-    mask_loc = np.isin(target_labels, targets_req)
-    if np.sum(mask_loc) == 0: 
-        print(f"  [!] No trials for {loc_str}. Skipping.")
-        return
-        
-    data_loc = data[mask_loc, :, :]
-    seed_p_loc = seed_phase[mask_loc, :]
-    
-    # 3. Parallel extraction of target AM phases
-    batch_size = 50
-    n_sources = data.shape[2]
-    n_batches = int(np.ceil(n_sources / batch_size))
-    _, n_cores = get_compute_profile()
-    
-    print(f"Computing CFC for {seedROI_name} ({f_seed}Hz) -> {loc_str} ({f_env}Hz AM burts) | {np.sum(mask_loc)} trials")
-    t_env_phases = Parallel(n_jobs=n_cores)(
-        delayed(_process_target_batch)(data_loc[:, :, i*batch_size : min((i+1)*batch_size, n_sources)], fs, f_seed, f_env)
-        for i in range(n_batches)
-    )
-    all_t_phases = np.concatenate(t_env_phases, axis=2)
-    
-    # 4. Final dPLI
-    # (trials, times, targets)
-    phase_diff = seed_p_loc[:, :, np.newaxis] - all_t_phases
-    dpli = np.mean(np.heaviside(np.sin(phase_diff), 0.5), axis=0) - 0.5
-    
-    # Smooth
-    window_samp = int(1.25 / (1.0/fs)) if f_seed[0] < 8 else int(0.5 / (1.0/fs))
-    dpli_smooth = uniform_filter1d(dpli, size=window_samp, axis=0)
-    
-    # Save to CFC_8mm
     outDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'CFC_{voxRes}')
     os.makedirs(outDir, exist_ok=True)
-    mode_str = f"phase{int(f_seed[0])}-{int(f_seed[1])}_to_env{int(f_env[0])}-{int(f_env[1])}"
-    outF = os.path.join(outDir, f'sub-{subjID:02d}_task-mgs_dCFC_{voxRes}_{seedROI_name}_{loc_str}_dpli_{mode_str}.pkl')
     
-    with open(outF, 'wb') as f: pickle.dump(dpli_smooth.T, f)
-    print(f"  Saved: {outF}")
+    print(f"[*] Sub-{subjID:02d} | Computing Complete 108-Pair Directed Hierarchy...", flush=True)
+    total_matrix_pairs = 108
+    pair_count = 0
+    
+    for seed_ROI in rois:
+        s_pts = np.where(atlas[f'{seed_ROI}_points'].flatten() == 1)[0]
+        s_raw = np.mean(data[:, :, s_pts], axis=2)
+        for target_ROI in rois:
+            if seed_ROI == target_ROI: continue
+            t_pts = np.where(atlas[f'{target_ROI}_points'].flatten() == 1)[0]
+            t_raw = np.mean(data[:, :, t_pts], axis=2)
+            for f_s_name in bands:
+                f_seed = label_map[f_s_name]; s_phase = extract_phase(s_raw, fs, f_seed[0], f_seed[1])
+                for f_e_name in bands:
+                    f_env = label_map[f_e_name]
+                    t_high = apply_bandpass(t_raw, f_env[0], f_env[1], fs)
+                    envelope = np.abs(hilbert(t_high, axis=1))
+                    t_phase = extract_phase(envelope, fs, f_seed[0], f_seed[1]) 
+                    mode_str = f"{f_s_name}_to_{f_e_name}"
+                    for t_loc in ['left', 'right']:
+                        req = [4, 5, 6, 7, 8] if t_loc == 'left' else [1, 2, 3, 9, 10]
+                        mask_loc = np.isin(target_labels, req)
+                        if np.sum(mask_loc) == 0: continue
+                        s_p = s_phase[mask_loc, :]; t_p = t_phase[mask_loc, :]
+                        dpli = np.mean(np.heaviside(np.sin(s_p - t_p), 0.5), axis=0) - 0.5 
+                        window_samp = int(1.25 / (1.0/fs)) if f_seed[0] < 8 else int(0.5 / (1.0/fs))
+                        dpli_sm = uniform_filter1d(dpli, size=window_samp, axis=0)
+                        outF = os.path.join(outDir, f'sub-{subjID:02d}_task-mgs_dCFC_{voxRes}_{seed_ROI}_to_{target_ROI}_{t_loc}_targets_dpli_{mode_str}.pkl')
+                        with open(outF, 'wb') as f: pickle.dump(dpli_sm, f) 
+                    pair_count += 1
+                    if pair_count % 36 == 0:
+                        print(f"  [{pair_count}/{total_matrix_pairs}] Progressing Hierarchy...", flush=True)
+
+    print(f"[+] Sub-{subjID:02d} | Successfully complete.", flush=True)
 
 if __name__ == "__main__":
     import sys
     sID = int(sys.argv[1]); res = sys.argv[2]
-    sROI = sys.argv[3]; tLoc = sys.argv[4]
-    fS = (float(sys.argv[5]), float(sys.argv[6]))
-    fE = (float(sys.argv[7]), float(sys.argv[8]))
-    main(sID, res, sROI, tLoc, fS, fE)
+    main(sID, res)

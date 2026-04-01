@@ -7,6 +7,8 @@ Loads coherence and imaginary coherence data, computes averages across subjects,
 import os
 import pickle
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from scipy.io import loadmat
 from mpl_toolkits.mplot3d import Axes3D
@@ -1242,10 +1244,9 @@ def plot_consolidated_matrix(all_data, time_vector, bands, alignment_seeds, voxR
 def main():
     """Main function for Hemisphere-Aligned Connectivity visualization"""
     
-    # 6-subject pilot cohort for initial verification 
-    # (Uncomment the second line for the full 21-subject Vader run)
-    subjects = [1, 2, 3, 4, 5, 6]
-    # subjects = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, 18, 19, 23, 24, 25, 29, 31, 32] 
+    # 5-subject pilot cohort for initial verification 
+    # subjects = [1, 2, 3, 4, 5, 6]
+    subjects = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, 18, 19, 23, 24, 25, 29, 31, 32] 
     
     taskName = 'mgs'
     voxRes = '8mm'
@@ -1264,8 +1265,7 @@ def main():
         bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
         
     roi_indices = load_atlas_rois(bidsRoot, voxRes)
-    
-    for metric in ['imcoh', 'dpli']:
+    for metric in ['dpli']:
         print("\n" + "="*60)
         print(f"GENERATING ALIGNED {metric.upper()} MATRIX")
         print("="*60)
@@ -1290,11 +1290,14 @@ def main():
                 res_l = load_connectivity_results(bidsRoot, subjects, taskName, voxRes, seed, 'left', metric, band)
                 res_r = load_connectivity_results(bidsRoot, subjects, taskName, voxRes, seed, 'right', metric, band)
                 
-                if not res_l['loaded_subjects'] or not res_r['loaded_subjects']:
+                if not res_l['loaded_subjects'] and not res_r['loaded_subjects']:
                     continue
                 
                 if time_vector is None:
-                    time_vector = res_l['time_vector']
+                    if res_l['time_vector'] is not None:
+                        time_vector = res_l['time_vector']
+                    elif res_r['time_vector'] is not None:
+                        time_vector = res_r['time_vector']
                 
                 # Extract ROIs for each target hem
                 ave_l = extract_roi_connectivity(res_l, roi_indices)
@@ -1306,7 +1309,6 @@ def main():
                     cat_key = f"{align}-{seed_type}"
                     
                     # Mapping targets functionally relative to the current seed/target_hem alignment
-                    # For a given seed, an "Ipsi-Visual" target is 'left_visual' if target hemisphere is 'left'
                     m = {
                         'ipsi_visual': f'{tgt_hem}_visual',
                         'contra_visual': 'right_visual' if tgt_hem == 'left' else 'left_visual',
@@ -1331,12 +1333,13 @@ def main():
                 aligned_data[band][cat] = final_stats
                         
         # Generate the aligned plot for this metric
-        out_name = f'aligned_{metric}_matrix_{voxRes}.png'
-        if metric == 'imcoh':
-            out_name = f'aligned_imcoh_matrix_{voxRes}.png' # Consistent naming
-            
-        save_path = os.path.join(bidsRoot, 'derivatives', 'figures', 'connectivity', out_name)
-        plot_consolidated_matrix(aligned_data, time_vector, bands, alignment_categories, voxRes, metric, save_path=save_path)
+        if time_vector is not None:
+            out_name = f'aligned_{metric}_matrix_{voxRes}.png'
+            save_path = os.path.join(bidsRoot, 'derivatives', 'figures', 'connectivity', out_name)
+            plot_consolidated_matrix(aligned_data, time_vector, bands, alignment_categories, voxRes, metric, save_path=save_path)
+            print(f"Matrix saved to: {save_path}")
+        else:
+            print(f"No {metric} data loaded. Matrix not generated.")
     
     print("\n" + "="*60)
     print("All Matrix Analysis Completed!")
@@ -1344,3 +1347,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+()
