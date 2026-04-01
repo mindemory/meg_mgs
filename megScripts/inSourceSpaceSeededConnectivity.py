@@ -17,8 +17,19 @@ def get_compute_profile():
 
 def butter_bandpass(lowcut, highcut, fs, order=4):
     nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
+    # Ensure frequencies are within valid range (0 < Wn < 1)
+    # Clip to 95% of Nyquist to avoid edge artifacts
+    safe_high = min(highcut, 0.95 * nyq)
+    safe_low = max(0.5, lowcut) # Avoid DC / very low freq artifacts
+    
+    low = safe_low / nyq
+    high = safe_high / nyq
+    
+    if low >= high:
+        # Fallback for very narrow/invalid bands (e.g. if lowcut > nyq)
+        low = 0.1
+        high = 0.9
+        
     b, a = butter(order, [low, high], btype='band')
     return b, a
 
