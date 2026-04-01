@@ -1147,6 +1147,57 @@ def plot_whole_brain_connectivity_3d(avg_connectivity_left, avg_connectivity_rig
         
         print("3D scatter plot visualization completed!")
 
+def plot_ipsi_contra_contrast(all_data, time_vector, bands, voxRes, metric, save_path=None):
+    """
+    MASTER FIGURE 2: Direct subtraction of Ipsi minus Contra.
+    Highlights the "Gating" effect.
+    """
+    n_rows = 2 # Frontal-Seed and Visual-Seed rows
+    n_cols = len(bands)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 10), sharex=True, sharey=True)
+    
+    label_map = {b: b.upper().replace('BETA', 'Lower-beta') for b in bands}
+    fig.suptitle(f'MASTER FIGURE 2: Lateralized Gating (Ipsi minus Contra {metric.upper()})', 
+                 fontsize=20, fontweight='bold', y=0.98)
+
+    for r, seed_type in enumerate(['frontal', 'visual']):
+        for c, band in enumerate(bands):
+            ax = axes[r, c]
+            
+            # Categories to contrast
+            ipsi_cat = f'ipsi-{seed_type}'
+            contra_cat = f'contra-{seed_type}'
+            
+            if band in all_data and ipsi_cat in all_data[band] and contra_cat in all_data[band]:
+                # We want to contrast Ipsi-Target vs Contra-Target within the Ipsi-Seed alignment
+                # OR we contrast Ipsi-Seed-Alignment vs Contra-Seed-Alignment
+                # Let's focus on: (Ipsi-Seed -> Ipsi-Target) minus (Contra-Seed -> Contra-Target)
+                d_i = all_data[band][ipsi_cat]
+                d_c = all_data[band][contra_cat]
+                
+                # Use Ipsi-Visual target as representative for Visual targets, etc.
+                tgt = 'ipsi_visual' if seed_type == 'frontal' else 'ipsi_frontal'
+                
+                if tgt in d_i and tgt in d_c:
+                    diff = d_i[tgt]['mean'] - d_c[tgt]['mean']
+                    # Pooled SEM (highly simplified)
+                    sem = np.sqrt(d_i[tgt]['sem']**2 + d_c[tgt]['sem']**2)
+                    
+                    ax.plot(time_vector, diff, color='purple', linewidth=3, label='Ipsi-Contra')
+                    ax.fill_between(time_vector, diff-sem, diff+sem, color='purple', alpha=0.2)
+            
+            ax.axhline(0, color='black', linewidth=1, alpha=0.5)
+            ax.axvline(0, color='red', alpha=0.3, linestyle='--')
+            ax.set_xlim(-0.5, 1.5)
+            
+            if r == 0: ax.set_title(label_map[band], fontsize=14)
+            if c == 0: ax.set_ylabel(f"{seed_type.capitalize()} Seed\nDiff dPLI", fontsize=12)
+            
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"[*] MASTER FIGURE 2 SAVED: {save_path}")
+
 def plot_consolidated_matrix(all_data, time_vector, bands, alignment_seeds, voxRes, metric, save_path=None):
     """
     Plots a 4x4 grid of connectivity patterns.
@@ -1252,6 +1303,7 @@ def main():
     voxRes = '8mm'
     
     bands = ['theta', 'alpha', 'beta', 'lowgamma']
+    label_map_display = {'theta': 'Theta', 'alpha': 'Alpha', 'beta': 'Lower-beta', 'lowgamma': 'Low-Gamma'}
     seeds = ['left_visual', 'right_visual', 'left_frontal', 'right_frontal']
     alignment_categories = ['ipsi-visual', 'contra-visual', 'ipsi-frontal', 'contra-frontal']
     
@@ -1338,6 +1390,10 @@ def main():
             save_path = os.path.join(bidsRoot, 'derivatives', 'figures', 'connectivity', out_name)
             plot_consolidated_matrix(aligned_data, time_vector, bands, alignment_categories, voxRes, metric, save_path=save_path)
             print(f"Matrix saved to: {save_path}")
+            
+            # Generate Master Figure 2: Gating Contrast
+            master2_path = os.path.join(bidsRoot, 'derivatives', 'figures', 'connectivity', f'MASTER_FIGURE_2_Gating_Contrast_{voxRes}.png')
+            plot_ipsi_contra_contrast(aligned_data, time_vector, bands, voxRes, metric, save_path=master2_path)
         else:
             print(f"No {metric} data loaded. Matrix not generated.")
     
