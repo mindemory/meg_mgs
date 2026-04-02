@@ -11,350 +11,183 @@ import sys
 def get_compute_profile():
     h = socket.gethostname()
     if h == 'zod':
-        return 'mac', 4          # Local Mac M1
+        return 'mac', 4, '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
     elif h == 'vader':
-        return 'vader', 48       # Vader local cluster (50 cores)
+        return 'vader', 48, '/d/DATD/datd/MEG_MGS/MEG_BIDS'
     else:
-        return 'hpc', 10         # Greene HPC or other
-
-def is_local():
-    """True on zod (Mac) or vader — both have direct DATD access."""
-    return socket.gethostname() in ('zod', 'vader')
+        return 'hpc', 10, '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
 
 # Define Reference Phase Frequency Bands
 FREQUENCY_BANDS = {
     'theta': (4.0, 8.0),
     'alpha': (8.0, 12.0),
-    'beta': (18.0, 25.0)
+    'beta': (13.0, 18.0)
 }
 
 # Email config for completion notification
 NOTIFY_EMAIL = 'mrugank.dake@nyu.edu'
 
-
-def send_completion_email(subjID, voxRes, figures_dir, success=True, error_msg=None):
-    """Send a simple email notification when the script finishes."""
+def send_completion_email(subjID, voxRes, status_msg, success=True, error_msg=None):
     try:
         hostname = socket.gethostname()
-        if success:
-            subject = f'[PAC] sub-{subjID:02d} {voxRes} DONE on {hostname}'
-            body = (f'Phase-Power Coupling analysis complete!\n\n'
-                    f'Subject: {subjID:02d}\nResolution: {voxRes}\n'
-                    f'Host: {hostname}\n'
-                    f'Figures saved to: {figures_dir}')
-        else:
-            subject = f'[PAC] sub-{subjID:02d} {voxRes} FAILED on {hostname}'
-            body = f'Script failed with error:\n{error_msg}'
-
+        subject = f'[PAC-Cross] sub-{subjID:02d} {voxRes} {"DONE" if success else "FAILED"} on {hostname}'
+        body = f'Cross-Regional PAC analysis complete!\nSubject: {subjID:02d}\nHost: {hostname}\nStatus: {status_msg}'
+        if error_msg: body += f'\n\nError:\n{error_msg}'
         msg = f'Subject: {subject}\n\n{body}'
         with smtplib.SMTP('localhost') as s:
             s.sendmail(NOTIFY_EMAIL, NOTIFY_EMAIL, msg)
-        print(f'  Notification email sent to {NOTIFY_EMAIL}')
-    except Exception as e:
-        print(f'  (Email notification skipped: {e})')
+    except: pass
 
-
-def load_and_prepare_data(subjID, bidsRoot, taskName, voxRes):
+def load_and_prepare_functional_rois(subjID, bidsRoot, voxRes):
     subName = 'sub-%02d' % subjID
-    print(f'Loading source space data for {subName}')
-
+    pid = os.getpid()
     derivativesRoot = os.path.join(bidsRoot, 'derivatives', subName)
     sourceReconRoot = os.path.join(derivativesRoot, 'sourceRecon')
     surface_resolution = int(voxRes[:-2])
-    source_data_fpath = os.path.join(sourceReconRoot, f'{subName}_task-{taskName}_sourceSpaceData_{surface_resolution}.mat')
+    source_data_fpath = os.path.join(sourceReconRoot, f'{subName}_task-mgs_sourceSpaceData_{surface_resolution}.mat')
+    
+    temp_dir = '/tmp' if socket.gethostname() != 'zod' else '/Users/mrugank/Desktop'
+    source_data_temp_path = os.path.join(temp_dir, f'{subName}_{pid}_source.mat')
+    copyfile(source_data_fpath, source_data_temp_path)
+    
+    with h5py.File(source_data_temp_path, 'r') as f:
+        sourcedata_group = f['sourcedataCombined']
+        time_vector = np.array(f[sourcedata_group['time'][0, 0]]).flatten()
+        dt = np.mean(np.diff(time_vector))
+        trialinfo = np.array(sourcedata_group['trialinfo']).T
+        target_labels = trialinfo[:, 1]
+        trial_data = sourcedata_group['trial']
+        all_trials = []
+        for i in range(trial_data.shape[0]):
+            all_trials.append(np.array(f[trial_data[i, 0]]))
+        data_matrix = np.stack(all_trials, axis=0) # (trials, times, sources)
 
-    if socket.gethostname() == 'zod':
-        # Mac: copy to Desktop to avoid network mount issues
-        source_data_temp_path = os.path.join('/Users/mrugank/Desktop', f'{subName}_task-{taskName}_sourceSpaceData_raw_{surface_resolution}.mat')
-        copyfile(source_data_fpath, source_data_temp_path)
-        source_data = h5py.File(source_data_temp_path, 'r')
-        os.remove(source_data_temp_path)
-    elif socket.gethostname() == 'vader':
-        # Vader: NFS mount has locking issues - try locking=False first, else copy to /tmp
-        try:
-            source_data = h5py.File(source_data_fpath, 'r', locking=False)
-        except Exception:
-            source_data_temp_path = os.path.join('/tmp', f'{subName}_task-{taskName}_sourceSpaceData_raw_{surface_resolution}.mat')
-            copyfile(source_data_fpath, source_data_temp_path)
-            source_data = h5py.File(source_data_temp_path, 'r')
-            os.remove(source_data_temp_path)
-    else:
-        # HPC: read directly
-        source_data = h5py.File(source_data_fpath, 'r')
+    if os.path.exists(source_data_temp_path): os.remove(source_data_temp_path)
 
-    sourcedata_group = source_data['sourcedataCombined']
+    # Behavior for valid trials
+    behav_path = os.path.join(bidsRoot, 'derivatives', subName, 'eyetracking', f'{subName}_task-mgs-iisess_forSource.mat')
+    behav_temp = os.path.join(temp_dir, f'{subName}_{pid}_behav.mat')
+    copyfile(behav_path, behav_temp)
+    with h5py.File(behav_temp, 'r') as f:
+        valid_trials = ~np.isnan(np.array(f['ii_sess_forSource']['i_sacc_err']).flatten())
+    if os.path.exists(behav_temp): os.remove(behav_temp)
 
-    time_data = sourcedata_group['time']
-    time_vector = np.array(source_data[time_data[0, 0]]).flatten()
-    dt = np.mean(np.diff(time_vector))
-
-    trialinfo = np.array(sourcedata_group['trialinfo']).T
-    target_labels = trialinfo[:, 1]
-
-    trial_data = sourcedata_group['trial']
-    all_trials = []
-    for trial_idx in range(trial_data.shape[0]):
-        trial_ref = trial_data[trial_idx, 0]
-        all_trials.append(np.array(source_data[trial_ref]))
-
-    data_matrix = np.stack(all_trials, axis=0)  # (trials, times, sources)
-
-    print("Filtering valid trials using behavioral data...")
-    behav_data_path = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'eyetracking',
-                                   f'sub-{subjID:02d}_task-{taskName}-iisess_forSource.mat')
-
-    if socket.gethostname() == 'zod':
-        # Mac: copy to Desktop to avoid network mount issues
-        behav_data_temp_path = os.path.join('/Users/mrugank/Desktop', f'sub-{subjID:02d}_task-{taskName}-iisess_forSource.mat')
-        copyfile(behav_data_path, behav_data_temp_path)
-        behav_data = h5py.File(behav_data_temp_path, 'r')
-        os.remove(behav_data_temp_path)
-    elif socket.gethostname() == 'vader':
-        # Vader: NFS mount has locking issues - try locking=False first, else copy to /tmp
-        try:
-            behav_data = h5py.File(behav_data_path, 'r', locking=False)
-        except Exception:
-            behav_data_temp_path = os.path.join('/tmp', f'sub-{subjID:02d}_task-{taskName}-iisess_forSource.mat')
-            copyfile(behav_data_path, behav_data_temp_path)
-            behav_data = h5py.File(behav_data_temp_path, 'r')
-            os.remove(behav_data_temp_path)
-    else:
-        # HPC: read directly
-        behav_data = h5py.File(behav_data_path, 'r')
-
-    ii_sess_forSource = behav_data['ii_sess_forSource']
-    i_sacc_err = np.array(ii_sess_forSource['i_sacc_err']).flatten()
-
-    valid_trials = ~np.isnan(i_sacc_err)
-    data_matrix = data_matrix[valid_trials, :, :]
+    data_matrix = data_matrix[valid_trials]
     target_labels = target_labels[valid_trials]
+    left_tgt = np.isin(target_labels, [4, 5, 6, 7, 8])
+    right_tgt = np.isin(target_labels, [1, 2, 3, 9, 10])
 
-    print("Extracting Wang Atlas ROIs (Left/Right Visual & Frontal)...")
-    atlas_fpath = os.path.join(bidsRoot, 'derivatives', 'atlas', f'rois_{voxRes}.mat')
-    atlas_data = loadmat(atlas_fpath)
+    # Atlas extraction
+    atlas_data = loadmat(os.path.join(bidsRoot, 'derivatives', 'atlas', f'rois_{voxRes}.mat'))
+    l_vis = np.where(atlas_data['left_visual_points'].flatten() == 1)[0]
+    r_vis = np.where(atlas_data['right_visual_points'].flatten() == 1)[0]
+    l_fro = np.where(atlas_data['left_frontal_points'].flatten() == 1)[0]
+    r_fro = np.where(atlas_data['right_frontal_points'].flatten() == 1)[0]
 
-    l_vis = np.where(np.array(atlas_data['left_visual_points']).flatten() == 1)[0]
-    r_vis = np.where(np.array(atlas_data['right_visual_points']).flatten() == 1)[0]
-    l_front = np.where(np.array(atlas_data['left_frontal_points']).flatten() == 1)[0]
-    r_front = np.where(np.array(atlas_data['right_frontal_points']).flatten() == 1)[0]
+    # Means (Trials, Times)
+    V_L = data_matrix[:, :, l_vis].mean(axis=2)
+    V_R = data_matrix[:, :, r_vis].mean(axis=2)
+    F_L = data_matrix[:, :, l_fro].mean(axis=2)
+    F_R = data_matrix[:, :, r_fro].mean(axis=2)
 
-    left_visual_data = data_matrix[:, :, l_vis]
-    right_visual_data = data_matrix[:, :, r_vis]
-    left_frontal_data = data_matrix[:, :, l_front]
-    right_frontal_data = data_matrix[:, :, r_front]
-
-    left_tgt_mask = np.isin(target_labels, [4, 5, 6, 7, 8])
-    right_tgt_mask = np.isin(target_labels, [1, 2, 3, 9, 10])
-
-    roi_dict = {
-        'Visual': {'left_roi': left_visual_data, 'right_roi': right_visual_data},
-        'Frontal': {'left_roi': left_frontal_data, 'right_roi': right_frontal_data}
+    # Remap to functional streams
+    n_trials, n_times = V_L.shape
+    func_rois = {
+        'Ipsi-Vis': np.zeros((n_trials, n_times)),
+        'Contra-Vis': np.zeros((n_trials, n_times)),
+        'Ipsi-Fro': np.zeros((n_trials, n_times)),
+        'Contra-Fro': np.zeros((n_trials, n_times))
     }
+    for i in range(n_trials):
+        if left_tgt[i]:
+            func_rois['Ipsi-Vis'][i], func_rois['Contra-Vis'][i] = V_L[i], V_R[i]
+            func_rois['Ipsi-Fro'][i], func_rois['Contra-Fro'][i] = F_L[i], F_R[i]
+        else:
+            func_rois['Ipsi-Vis'][i], func_rois['Contra-Vis'][i] = V_R[i], V_L[i]
+            func_rois['Ipsi-Fro'][i], func_rois['Contra-Fro'][i] = F_R[i], F_L[i]
+            
+    return func_rois, dt, time_vector
 
-    del data_matrix
-    source_data.close()
-    behav_data.close()
-    gc.collect()
-
-    return roi_dict, left_tgt_mask, right_tgt_mask, dt, time_vector
-
-
-def find_roi_troughs(roi_data, dt, f_min, f_max, time_vector, t_start, t_end):
-    """Finds troughs within the specified time window after bandpassing the ROI-average signal."""
-    n_trials, _, _ = roi_data.shape
-    regional_signal = roi_data.mean(axis=2)  # (trials, times)
-
-    nyq = 1 / (2 * dt)
-    b, a = signal.butter(4, [f_min / nyq, f_max / nyq], btype='band')
-    filtered_signal = signal.filtfilt(b, a, regional_signal, axis=1)
-
+def get_padded_tfr_cross(phase_data, amp_data, dt, f_phase, f_amp_freqs, time_vector, t_start, t_end, n_cycles=7):
+    sfreq = 1/dt
+    nyq = sfreq/2
+    b, a = signal.butter(4, [f_phase[0]/nyq, f_phase[1]/nyq], btype='band')
+    filt_p = signal.filtfilt(b, a, phase_data, axis=1)
+    
     t_indices = np.where((time_vector >= t_start) & (time_vector <= t_end))[0]
-    if len(t_indices) == 0:
-        return []
-
-    all_troughs = []
-    for tr_idx in range(n_trials):
-        target_span = -filtered_signal[tr_idx, t_indices[0]:t_indices[-1] + 1]
-        peaks, _ = signal.find_peaks(target_span)
+    all_epochs = []
+    cushion = 0.75
+    for tr in range(phase_data.shape[0]):
+        tgt_span = -filt_p[tr, t_indices[0]:t_indices[-1]+1]
+        peaks, _ = signal.find_peaks(tgt_span, distance=int(sfreq/f_phase[1]))
         for p in peaks:
-            global_idx = p + t_indices[0]
-            all_troughs.append((tr_idx, global_idx))
-
-    return all_troughs
-
-
-def extract_epochs(roi_data, troughs, dt, epoch_window=(-1.0, 1.0)):
-    """Extracts 2-second epochs centered around each trough. Shape: (epochs, channels, times)"""
-    sfreq = 1 / dt
-    offset_samples = int(epoch_window[1] * sfreq)
-    n_times = 2 * offset_samples + 1
-
-    epochs = []
-    for tr_idx, t_idx in troughs:
-        start_idx = t_idx - offset_samples
-        end_idx = t_idx + offset_samples + 1
-        if start_idx >= 0 and end_idx <= roi_data.shape[1]:
-            epoch = roi_data[tr_idx, start_idx:end_idx, :].T  # (sources, times)
-            epochs.append(epoch)
-
-    if len(epochs) == 0:
-        return np.zeros((0, roi_data.shape[2], n_times))
-
-    return np.stack(epochs, axis=0)
-
-
-def _compute_single_epoch_tfr(epoch, sfreq, freqs, dyn_cycles):
-    """Helper for joblib: computes TFR for a single epoch (1, sources, times)."""
-    return tfr_array_morlet(epoch[np.newaxis], sfreq, freqs, n_cycles=dyn_cycles, output='power', zero_mean=False, n_jobs=1)[0]
-
-
-def get_condition_tfr(roi_data, tgt_mask, dt, freqs, f_min, f_max, time_vector, t_start, t_end, w=7):
-    """Compute trough-locked TFR for a given condition."""
-    condition_data = roi_data[tgt_mask]
-
-    troughs = find_roi_troughs(condition_data, dt, f_min, f_max, time_vector, t_start, t_end)
-    if len(troughs) == 0:
-        return None
-
-    epochs = extract_epochs(condition_data, troughs, dt, epoch_window=(-1.0, 1.0))
-    if epochs.shape[0] == 0:
-        return None
-
-    sfreq = 1 / dt
-    dyn_cycles = np.clip(freqs / 2.0, 3, w)
-
-    compute_env, n_cores = get_compute_profile()
-
-    if compute_env == 'hpc':
-        # Greene HPC: single MNE call across all epochs (ample RAM)
-        tfr_power = tfr_array_morlet(epochs, sfreq, freqs, n_cycles=dyn_cycles, output='power', n_jobs=n_cores)
-        mean_tfr = tfr_power.mean(axis=0)
-    else:
-        # Mac or Vader: joblib dispatches one epoch per worker (RAM-safe)
-        print(f'    Computing TFR for {epochs.shape[0]} epochs on {n_cores} cores ({compute_env})...')
-        results = Parallel(n_jobs=n_cores)(
-            delayed(_compute_single_epoch_tfr)(epochs[i], sfreq, freqs, dyn_cycles)
-            for i in range(epochs.shape[0])
-        )
-        mean_tfr = np.mean(np.stack(results, axis=0), axis=0)
-
-    # Average across sources
-    regional_tfr = mean_tfr.mean(axis=0)  # (freqs, times)
-
-    # Fold-change normalization relative to mean across time
-    baseline = regional_tfr.mean(axis=1, keepdims=True)
-    normalized_tfr = (regional_tfr - baseline) / (baseline + 1e-10)
-
-    return normalized_tfr
-
-
-
-
-def compute_and_save_lateralized_region(region_name, roi_data_dict, left_tgt_mask, right_tgt_mask,
-                                        dt, freqs, subjID, time_vector, bidsRoot, voxRes):
-    """Compute trough-locked TFR for all bands and save dictionary to disk.
+            g_idx = p + t_indices[0]
+            s_idx = g_idx - int(cushion*sfreq)
+            e_idx = g_idx + int(cushion*sfreq) + 1
+            if s_idx >= 0 and e_idx <= phase_data.shape[1]:
+                all_epochs.append(amp_data[tr, s_idx:e_idx])
+                
+    if not all_epochs: return None
     
-    Returns:
-        None. Saves a pickle file internally.
-    """
-    print(f"\nProcessing Event-Related lateralized region: {region_name}")
-
-    left_roi  = roi_data_dict['left_roi']
-    right_roi = roi_data_dict['right_roi']
-
-    intervals = [
-        ('Stimulus\n[-0.5s to 0.5s]', -0.5, 0.5),
-        ('Delay\n[0.5s to 1.5s]',    0.5, 1.5),
-    ]
-    bands_list = list(FREQUENCY_BANDS.items())
-    gamma_mask = (freqs >= 30) & (freqs <= 50)
-
-    # ── One compute pass — store results per band ─────────────────────────────
-    # band_data[band_name] = (f_min, f_max, col_data)
-    # col_data: list of 4 matrices [Stim-Ipsi, Stim-Contra, Delay-Ipsi, Delay-Contra]
-    band_data = {}
-
-    for band_name, (f_min, f_max) in bands_list:
-        print(f"  Phase: {band_name.capitalize()} ({f_min}-{f_max} Hz)")
-
-        tfr_cache = {}
-        for interval_name, t_start, t_end in intervals:
-            key = interval_name.split('\n')[0]
-            tfr_cache[key] = {
-                'LL': get_condition_tfr(left_roi,  left_tgt_mask,  dt, freqs, f_min, f_max, time_vector, t_start, t_end),
-                'RR': get_condition_tfr(right_roi, right_tgt_mask, dt, freqs, f_min, f_max, time_vector, t_start, t_end),
-                'LR': get_condition_tfr(left_roi,  right_tgt_mask, dt, freqs, f_min, f_max, time_vector, t_start, t_end),
-                'RL': get_condition_tfr(right_roi, left_tgt_mask,  dt, freqs, f_min, f_max, time_vector, t_start, t_end),
-            }
-
-        col_data = []
-        for interval_name, _, _ in intervals:
-            key = interval_name.split('\n')[0]
-            c = tfr_cache[key]
-            if any(v is None for v in c.values()):
-                col_data.extend([None, None])
-            else:
-                col_data.extend([
-                    (c['LL'] + c['RR']) / 2.0,   # Ipsi
-                    (c['LR'] + c['RL']) / 2.0,   # Contra
-                ])
-
-        band_data[band_name] = (f_min, f_max, col_data)
-
-    # ── Save results to disk ─────────────────────────────────────────────────
-    pac_cache = {
-        'freqs': freqs,
-        'dt': dt,
-        'region_name': region_name,
-        'band_data': band_data
-    }
-
-    output_dir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', 'pac_data')
-    os.makedirs(output_dir, exist_ok=True)
+    epochs = np.stack(all_epochs)[:, np.newaxis, :]
+    tfr = tfr_array_morlet(epochs, sfreq, f_amp_freqs, n_cycles=n_cycles, output='power', n_jobs=1)
+    tfr_avg = np.mean(tfr, axis=0)[0] 
+    crop_s = int((cushion - 0.25) * sfreq)
+    crop_e = int((cushion + 0.25) * sfreq)
+    tfr_cropped = tfr_avg[:, crop_s:crop_e]
     
-    out_file = os.path.join(output_dir, f'sub-{subjID:02d}_task-mgs_PAC_{region_name}_{voxRes}.pkl')
-    with open(out_file, 'wb') as f:
-        pickle.dump(pac_cache, f)
-        
-    print(f"  Saved PAC cache: {out_file}")
+    baseline = np.mean(tfr_cropped, axis=1, keepdims=True)
+    return (tfr_cropped - baseline) / (baseline + 1e-10)
 
-def main(subjID, voxRes='10mm'):
-    h = socket.gethostname()
-    if h == 'zod':
-        bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
-    elif h == 'vader':
-        bidsRoot = '/d/DATD/datd/MEG_MGS/MEG_BIDS'
-    else:
-        bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
+def main(subjID, voxRes='8mm'):
+    profile, n_cores, bidsRoot = get_compute_profile()
+    
+    def _compute_single_pair(func_rois, intervals, dt, amp_freqs, time_vector, band_name, f_low, p_name, a_target_name):
+        pair_res = {}
+        for epoch, t_start, t_end in intervals:
+            res = get_padded_tfr_cross(func_rois[p_name], func_rois[a_target_name], dt, f_low, 
+                                       amp_freqs, time_vector, t_start, t_end)
+            pair_res[epoch] = res
+        return band_name, p_name, a_target_name, pair_res
 
     try:
-        roi_dict, left_tgt_mask, right_tgt_mask, dt, time_vector = load_and_prepare_data(
-            subjID, bidsRoot, 'mgs', voxRes)
+        func_rois, dt, time_vector = load_and_prepare_functional_rois(subjID, bidsRoot, voxRes)
+        intervals = [('Baseline', -0.5, 0.0), ('Stimulus', 0.0, 0.2), ('Delay', 0.5, 1.5)]
+        amp_freqs = np.arange(21, 57, 2)
+        roi_names = list(func_rois.keys())
+        
+        # Parallelize across Bands and Interaction Pairs
+        tasks = []
+        for band_name, f_low in FREQUENCY_BANDS.items():
+            for p_name in roi_names:
+                for a_name in roi_names:
+                    tasks.append((band_name, f_low, p_name, a_name))
 
-        freqs = np.arange(4, 51, 2)
+        print(f"[*] Processing 48 PAC Tasks (3 bands x 16 pairs) in parallel (n_jobs={n_cores})...")
+        results_list = Parallel(n_jobs=n_cores)(
+            delayed(_compute_single_pair)(func_rois, intervals, dt, amp_freqs, time_vector, b, f, p, a) 
+            for b, f, p, a in tasks
+        )
 
-        compute_and_save_lateralized_region('Visual', roi_dict['Visual'], left_tgt_mask, right_tgt_mask,
-                                            dt, freqs, subjID, time_vector, bidsRoot, voxRes)
-        compute_and_save_lateralized_region('Frontal', roi_dict['Frontal'], left_tgt_mask, right_tgt_mask,
-                                            dt, freqs, subjID, time_vector, bidsRoot, voxRes)
+        # Reconstruct result dictionary
+        results = {band: {epoch: {} for epoch, _, _ in intervals} for band in FREQUENCY_BANDS}
+        for b_name, p_name, a_name, pair_res in results_list:
+            pair_key = f"{p_name}_to_{a_name}"
+            for epoch, res in pair_res.items():
+                results[b_name][epoch][pair_key] = res
 
-        print("\nDone! PAC computation complete.")
-        send_completion_email(subjID, voxRes, 'Cached sequentially to .pkl', success=True)
-
+        output_dir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', 'pac_data')
+        os.makedirs(output_dir, exist_ok=True)
+        out_file = os.path.join(output_dir, f'sub-{subjID:02d}_CrossRegional_PAC_{voxRes}.pkl')
+        with open(out_file, 'wb') as f:
+            pickle.dump({'data': results, 'amp_freqs': amp_freqs, 'subjID': subjID, 'voxRes': voxRes}, f)
+        print(f"  Saved PAC results: {out_file}")
+        send_completion_email(subjID, voxRes, 'All-to-all cross-regional suite complete', success=True)
     except Exception as e:
         import traceback
-        err = traceback.format_exc()
-        print(f"\nScript failed:\n{err}")
-        send_completion_email(subjID, voxRes, 'FAILED', success=False, error_msg=err)
+        send_completion_email(subjID, voxRes, 'FAILED', success=False, error_msg=traceback.format_exc())
         raise
 
-
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print("Usage: python compute_pac.py <subjID> [voxRes]")
-        sys.exit(1)
-
-    subjID = int(sys.argv[1])
-    voxRes = sys.argv[2] if len(sys.argv) > 2 else '10mm'
-
-    main(subjID, voxRes)
+    if len(sys.argv) < 2: sys.exit(1)
+    main(int(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else '8mm')
