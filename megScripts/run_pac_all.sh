@@ -11,7 +11,7 @@
 set -euo pipefail
 
 VOX_RES="${1:-8mm}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR=$( \cd "$(dirname "$0")" > /dev/null && pwd )
 BIDS_ROOT="$(python3 -c "import socket; h=socket.gethostname(); \
   print('/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS' if h=='zod' \
   else '/d/DATD/datd/MEG_MGS/MEG_BIDS' if h=='vader' \
