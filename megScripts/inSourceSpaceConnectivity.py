@@ -23,11 +23,11 @@ def load_source_space_data(subjID, bidsRoot, taskName, voxRes):
         freqSpaceTempPath = os.path.join('/Users/mrugank/Desktop', f'{subName}_task-{taskName}_complexbeta_allTargets_{voxRes[:-2]}.mat')
         from shutil import copyfile
         copyfile(freqSpace_fpath, freqSpaceTempPath)
-        freqSpace_data = h5py.File(freqSpaceTempPath, 'r')
+        freqSpace_data = h5py.File(freqSpaceTempPath, 'r', locking=False)
         os.remove(freqSpaceTempPath)
     else:
         # Vader and Greene use direct file access
-        freqSpace_data = h5py.File(freqSpace_fpath, 'r')
+        freqSpace_data = h5py.File(freqSpace_fpath, 'r', locking=False)
     
     # Get sourceDataByTarget
     source_data = np.array(freqSpace_data['sourceDataByTarget'])

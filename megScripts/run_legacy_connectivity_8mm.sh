@@ -9,6 +9,12 @@
 subjects=(1 2 3 4 5 6 7 9 10 12 13 15 17 18 19 23 24 25 29 31 32)
 VOXRES="8mm"
 
+# Metrics  : Coherence, ImCoh, dPLI (Internal Parallel)
+# Script   : inSourceSpaceConnectivity.py
+# Band     : Beta (18-30 Hz)
+
+export HDF5_USE_FILE_LOCKING=FALSE
+
 echo "========================================================"
 echo " Starting Sequential 8mm Connectivity Re-run (BETA)"
 echo " Metrics  : Coherence, ImCoh, dPLI (Internal Parallel)"
