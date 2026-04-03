@@ -18,7 +18,7 @@ def load_source_space_data(subjID, bidsRoot, taskName, voxRes):
     freqSpaceRoot = os.path.join(sourceReconRoot, 'freqSpace')
     freqSpace_fpath = os.path.join(freqSpaceRoot, f'{subName}_task-{taskName}_complexbeta_allTargets_{voxRes[:-2]}.mat')
     
-    # Load data with temporary copy approach
+    # Load data with temporary copy approach (Zod/Mac only)
     if socket.gethostname() == 'zod':
         freqSpaceTempPath = os.path.join('/Users/mrugank/Desktop', f'{subName}_task-{taskName}_complexbeta_allTargets_{voxRes[:-2]}.mat')
         from shutil import copyfile
@@ -26,6 +26,7 @@ def load_source_space_data(subjID, bidsRoot, taskName, voxRes):
         freqSpace_data = h5py.File(freqSpaceTempPath, 'r')
         os.remove(freqSpaceTempPath)
     else:
+        # Vader and Greene use direct file access
         freqSpace_data = h5py.File(freqSpace_fpath, 'r')
     
     # Get sourceDataByTarget
@@ -150,8 +151,11 @@ def main(subjID, voxRes):
     if voxRes is None:
         voxRes = '10mm'
 
-    if socket.gethostname() in ['zod', 'vader']:
+    hostname = socket.gethostname()
+    if hostname == 'zod':
         bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
+    elif hostname == 'vader':
+        bidsRoot = '/d/DATD/datd/MEG_MGS/MEG_BIDS'
     else:
         bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
     taskName = 'mgs'

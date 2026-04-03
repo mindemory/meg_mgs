@@ -19,7 +19,15 @@ echo "========================================================"
 
 for sub in "${subjects[@]}"; do
     SUB_NAME=$(printf "sub-%02d" $sub)
-    OUT_DIR="/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/${SUB_NAME}/sourceRecon/connectivity"
+    
+    # Determine base path based on hostname
+    if [[ $(hostname) == "zod" ]]; then
+        BIDS_BASE="/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS"
+    else
+        BIDS_BASE="/d/DATD/datd/MEG_MGS/MEG_BIDS"
+    fi
+    
+    OUT_DIR="${BIDS_BASE}/derivatives/${SUB_NAME}/sourceRecon/connectivity"
     OUT_FILE="${OUT_DIR}/${SUB_NAME}_task-mgs_connectivity_${VOXRES}.pkl"
     
     if [ -f "$OUT_FILE" ]; then
