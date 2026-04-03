@@ -171,7 +171,18 @@ def main(subjID, voxRes):
     
     outputFile = os.path.join(outputDir, f'sub-{subjID:02d}_task-{taskName}_connectivity_{voxRes}.pkl')
 
-    if not os.path.exists(outputFile):
+    # Status check: Determine if legacy 4-metric results need upgrading to 5-metric (wPLI)
+    needs_recompute = not os.path.exists(outputFile)
+    if not needs_recompute:
+        try:
+            with open(outputFile, 'rb') as f:
+                # Optimized check: try to find the 5th dictionary (wPLI)
+                for _ in range(5): pickle.load(f)
+        except (EOFError, pickle.UnpicklingError):
+            print(f"Upgrading legacy 8mm results for sub-{subjID:02d} (Adding wPLI)...")
+            needs_recompute = True
+
+    if needs_recompute:
 
         data_matrix, target_labels, time_vector = load_source_space_data(subjID, bidsRoot, taskName, voxRes)
 
@@ -301,7 +312,7 @@ def main(subjID, voxRes):
             'left_V2lF_dpli': left_V2lF_pli,
             'left_V2rF_dpli': left_V2rF_pli,
             'right_lV2lF_dpli': right_lV2lF_pli,
-            'right_lV2rF_dpli': right_lV2rF_pli,
+            'right_lV2rF_dpli': right_rV2lF_pli,
             'right_rV2lF_dpli': right_rV2lF_pli,
             'right_rV2rF_dpli': right_rV2rF_pli,
             'right_V2lF_dpli': right_V2lF_pli,
