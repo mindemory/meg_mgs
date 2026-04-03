@@ -1,6 +1,6 @@
 import os, h5py, socket, gc
 import numpy as np
-from shutil import copyfile
+from joblib import Parallel, delayed
 import pickle
 from scipy.io import loadmat
 import time
@@ -21,6 +21,7 @@ def load_source_space_data(subjID, bidsRoot, taskName, voxRes):
     # Load data with temporary copy approach
     if socket.gethostname() == 'zod':
         freqSpaceTempPath = os.path.join('/Users/mrugank/Desktop', f'{subName}_task-{taskName}_complexbeta_allTargets_{voxRes[:-2]}.mat')
+        from shutil import copyfile
         copyfile(freqSpace_fpath, freqSpaceTempPath)
         freqSpace_data = h5py.File(freqSpaceTempPath, 'r')
         os.remove(freqSpaceTempPath)
@@ -72,94 +73,76 @@ def load_source_space_data(subjID, bidsRoot, taskName, voxRes):
     
     return data_matrix, target_labels, time_vector
 
-def compute_connectivity_measures(seed_indices, target_indices, data_matrix, time_vector):
-    """
-    Compute multiple connectivity measures between seed sources and target sources for each time point with 100ms window
-    Returns: coherence, imaginary coherence, PLV, and PLI time series
-    """
+def _compute_metrics_at_t(t_idx, data_matrix, seed_indices, target_indices, window_samples, n_timepoints):
+    """Parallel worker for a single time point calculation"""
     
+    # Define time window around current time point
+    start_idx = max(0, t_idx - window_samples)
+    end_idx = min(n_timepoints, t_idx + window_samples + 1)
+    
+    # Extract data for this time window
+    time_window_data = data_matrix[:, start_idx:end_idx, :]
+    
+    # Get seed and target data for this time window
+    seed_data = time_window_data[:, :, seed_indices].transpose(2, 0, 1)  # (n_seeds, n_trials, window_timepoints)
+    target_data = time_window_data[:, :, target_indices]  # (n_trials, window_timepoints, n_targets)
+    
+    # --- Coherence & ImCoh Logic ---
+    # Compute cross-spectral density for all seed-target pairs
+    # Shape: (n_seeds, window_timepoints, n_targets)
+    cross_spectrum = np.mean(seed_data[:, :, :, np.newaxis] * np.conj(target_data[np.newaxis, :, :, :]), axis=1)
+    
+    # Compute power spectra
+    seed_power = np.mean(seed_data * np.conj(seed_data), axis=1)  # (n_seeds, window_timepoints)
+    target_power = np.mean(target_data * np.conj(target_data), axis=0)  # (window_timepoints, n_targets)
+    
+    # Compute coherence magnitude (Integrated across window)
+    denom = seed_power[:, :, np.newaxis] * target_power[np.newaxis, :, :] + 1e-10
+    coherence_mag = np.abs(cross_spectrum)**2 / denom
+    coherence_val = np.mean(coherence_mag) 
+    
+    # Imaginary coherence calculation
+    normalized_cross_spectrum = cross_spectrum / np.sqrt(denom)
+    imcoherence_val = np.mean(np.abs(np.imag(normalized_cross_spectrum))) 
+    
+    # --- dPLI Logic ---
+    # Borrowed from inSourceSpaceSeededConnectivity: Prob(phase lead) - 0.5
+    # Calculate phase difference: (n_seeds, n_trials, window_timepoints, n_targets)
+    phase_diff_complex = seed_data[:, :, :, np.newaxis] * np.conj(target_data[np.newaxis, :, :, :])
+    # Directed Phase Lag Index: mean(heaviside(imag(phase_diff))) - 0.5
+    dpli_val = np.mean(np.heaviside(np.imag(phase_diff_complex), 0.5)) - 0.5
+    
+    return coherence_val, imcoherence_val, dpli_val
+
+def compute_connectivity_measures(seed_indices, target_indices, data_matrix, time_vector):
+    """Computes integrated connectivity measures for specified ROIs using parallel time-points"""
     
     n_trials, n_timepoints, n_sources = data_matrix.shape
     n_seeds = len(seed_indices)
     n_targets = len(target_indices)
     
-    print(f"Computing connectivity measures for {n_seeds} seed sources and {n_targets} target sources...")
-    print(f"Data shape: {data_matrix.shape}")
-    print(f"Computing for each time point with ±100ms window across entire trial")
-    
-    # Initialize connectivity time series: (n_timepoints,)
-    coherence_timeseries = np.empty(n_timepoints)
-    imcoherence_timeseries = np.empty(n_timepoints)
-    plv_timeseries = np.empty(n_timepoints)
-    pli_timeseries = np.empty(n_timepoints)
+    print(f"Computing [ImCoh + dPLI] for {n_seeds} seeds and {n_targets} targets...")
     
     # Compute sampling frequency
     sfreq = 1 / np.mean(np.diff(time_vector.flatten()))
-    window_samples = int(0.1 * sfreq)  # 100ms window in samples
+    window_samples = int(0.1 * sfreq)  # ±100ms window
     
-    print(f"Sampling frequency: {sfreq:.1f} Hz")
-    print(f"Window samples: {window_samples}")
+    # Parallel processing across time points
+    # Using 24 jobs to balance speed and memory on Vader (251GB total)
+    results = Parallel(n_jobs=24, backend='loky')(
+        delayed(_compute_metrics_at_t)(t_idx, data_matrix, seed_indices, target_indices, window_samples, n_timepoints)
+        for t_idx in range(n_timepoints)
+    )
     
-    # Process each time point
-    for t_idx in range(n_timepoints):
-        if t_idx % 10 == 0:  # Progress update
-            print(f"Processing time point {t_idx+1}/{n_timepoints}")
-        
-        # Define time window around current time point
-        start_idx = max(0, t_idx - window_samples)
-        end_idx = min(n_timepoints, t_idx + window_samples + 1)
-        
-        # Extract data for this time window
-        time_window_data = data_matrix[:, start_idx:end_idx, :]
-        # window_n_timepoints = time_window_data.shape[1]
-        
-        # Get seed and target data for this time window
-        seed_data = time_window_data[:, :, seed_indices].transpose(2, 0, 1)  # (n_seeds, n_trials, window_timepoints)
-        target_data = time_window_data[:, :, target_indices]  # (n_trials, window_timepoints, n_targets)
-        
-        # Compute cross-spectral density for all seed-target pairs
-        cross_spectrum = np.mean(seed_data[:, :, :, np.newaxis] * np.conj(target_data[np.newaxis, :, :, :]), axis=1)
-        # Shape: (n_seeds, window_timepoints, n_targets)
-        
-        # Compute power spectra
-        seed_power = np.mean(seed_data * np.conj(seed_data), axis=1)  # (n_seeds, window_timepoints)
-        target_power = np.mean(target_data * np.conj(target_data), axis=0)  # (window_timepoints, n_targets)
-        
-        # Compute coherence magnitude for all pairs
-        coherence_mag = np.abs(cross_spectrum)**2 / (seed_power[:, :, np.newaxis] * target_power[np.newaxis, :, :] + 1e-10)
-        
-        # Average coherence across time window and all seed-target pairs
-        coherence_timeseries[t_idx] = np.mean(coherence_mag)  # Average across all seeds, targets, and time window
-        
-        # Imaginary coherence calculation
-        normalized_cross_spectrum = cross_spectrum / np.sqrt(seed_power[:, :, np.newaxis] * target_power[np.newaxis, :, :] + 1e-10)
-        imcoherence_timeseries[t_idx] = np.mean(np.abs(np.imag(normalized_cross_spectrum)))  # Average across all seeds, targets, and time window
-        
-        # Phase Locking Value (PLV) calculation
-        # Extract phases from complex data
-        # seed_phases = np.angle(seed_data)  # (n_seeds, n_trials, window_timepoints)
-        # target_phases = np.angle(target_data)  # (n_trials, window_timepoints, n_targets)
-        
-        # Compute phase differences for all seed-target pairs
-        # phase_diff = seed_phases[:, :, :, np.newaxis] - target_phases[np.newaxis, :, :, :]  # (n_seeds, n_trials, window_timepoints, n_targets)
-        
-        # Compute PLV as |mean(exp(i*phase_diff))|
-        # plv_complex = np.mean(np.exp(1j * phase_diff), axis=1)  # Average across trials: (n_seeds, window_timepoints, n_targets)
-        # plv_mag = np.abs(plv_complex)  # (n_seeds, window_timepoints, n_targets)
-        
-        # # Average PLV across time window and all seed-target pairs
-        # plv_timeseries[t_idx] = np.mean(plv_mag)
-        
-        # # Phase Lag Index (PLI) calculation
-        # # PLI = |mean(sign(imag(exp(i*phase_diff))))|
-        # pli_sign = np.sign(np.imag(np.exp(1j * phase_diff)))  # (n_seeds, n_trials, window_timepoints, n_targets)
-        # pli_mean = np.mean(pli_sign, axis=1)  # Average across trials: (n_seeds, window_timepoints, n_targets)
-        # pli_abs = np.abs(pli_mean)  # (n_seeds, window_timepoints, n_targets)
-        
-        # # Average PLI across time window and all seed-target pairs
-        # pli_timeseries[t_idx] = np.mean(pli_abs)
+    # Unpack results
+    coherence_timeseries = np.array([r[0] for r in results])
+    imcoherence_timeseries = np.array([r[1] for r in results])
+    dpli_timeseries = np.array([r[2] for r in results])
     
-    return coherence_timeseries, imcoherence_timeseries, plv_timeseries, pli_timeseries
+    # PLV is not yet requested for integration but logic is now easy to add
+    plv_timeseries = np.zeros(n_timepoints) 
+    
+    return coherence_timeseries, imcoherence_timeseries, plv_timeseries, dpli_timeseries
 
 def main(subjID, voxRes):
     """Main function for source space connectivity analysis"""
@@ -304,32 +287,33 @@ def main(subjID, voxRes):
             'all_V2lF_plv': all_V2lF_plv,
             'all_V2rF_plv': all_V2rF_plv,
         }
-        results_pli = {
-            'left_lV2lF_pli': left_lV2lF_pli,
-            'left_lV2rF_pli': left_lV2rF_pli,
-            'left_rV2lF_pli': left_rV2lF_pli,
-            'left_rV2rF_pli': left_rV2rF_pli,
-            'left_V2lF_pli': left_V2lF_pli,
-            'left_V2rF_pli': left_V2rF_pli,
-            'right_lV2lF_pli': right_lV2lF_pli,
-            'right_lV2rF_pli': right_lV2rF_pli,
-            'right_rV2lF_pli': right_rV2lF_pli,
-            'right_rV2rF_pli': right_rV2rF_pli,
-            'right_V2lF_pli': right_V2lF_pli,
-            'right_V2rF_pli': right_V2rF_pli,
-            'all_lV2lF_pli': all_lV2lF_pli,
-            'all_lV2rF_pli': all_lV2rF_pli,
-            'all_rV2lF_pli': all_rV2lF_pli,
-            'all_rV2rF_pli': all_rV2rF_pli,
-            'all_V2lF_pli': all_V2lF_pli,
-            'all_V2rF_pli': all_V2rF_pli,
+        results_dpli = {
+            'left_lV2lF_dpli': left_lV2lF_pli,
+            'left_lV2rF_dpli': left_lV2rF_pli,
+            'left_rV2lF_dpli': left_rV2lF_pli,
+            'left_rV2rF_dpli': left_rV2rF_pli,
+            'left_V2lF_dpli': left_V2lF_pli,
+            'left_V2rF_dpli': left_V2rF_pli,
+            'right_lV2lF_dpli': right_lV2lF_pli,
+            'right_lV2rF_dpli': right_lV2rF_pli,
+            'right_rV2lF_dpli': right_rV2lF_pli,
+            'right_rV2rF_dpli': right_rV2rF_pli,
+            'right_V2lF_dpli': right_V2lF_pli,
+            'right_V2rF_dpli': right_V2rF_pli,
+            'all_lV2lF_dpli': all_lV2lF_pli,
+            'all_lV2rF_dpli': all_lV2rF_pli,
+            'all_rV2lF_dpli': all_rV2lF_pli,
+            'all_rV2rF_dpli': all_rV2rF_pli,
+            'all_V2lF_dpli': all_V2lF_pli,
+            'all_V2rF_dpli': all_V2rF_pli,
         }
         
+        # Save the results (Monolithic legacy format)
         with open(outputFile, 'wb') as f:
             pickle.dump(results_coh, f)
             pickle.dump(results_imcoh, f)
             pickle.dump(results_plv, f)
-            pickle.dump(results_pli, f)
+            pickle.dump(results_dpli, f) # results_pli is now results_dpli
         print(f"Results saved to {outputFile}")
 
     
