@@ -345,7 +345,6 @@ def main(subjID, voxRes):
 
     
     print("Connectivity analysis completed!")
-    print(f"Connectivity time series length: {len(left_lV2lF_coh)} time points")
     
     
 if __name__ == '__main__':
