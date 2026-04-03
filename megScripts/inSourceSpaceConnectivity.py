@@ -134,8 +134,8 @@ def compute_connectivity_measures(seed_indices, target_indices, data_matrix, tim
     window_samples = int(0.1 * sfreq)  # ±100ms window
     
     # Parallel processing across time points
-    # Using 24 jobs to balance speed and memory on Vader (251GB total)
-    results = Parallel(n_jobs=24, backend='loky')(
+    # Using 45 jobs to maximize performance on Vader (48 cores)
+    results = Parallel(n_jobs=45, backend='loky')(
         delayed(_compute_metrics_at_t)(t_idx, data_matrix, seed_indices, target_indices, window_samples, n_timepoints)
         for t_idx in range(n_timepoints)
     )
