@@ -167,7 +167,7 @@ def main(subjID, voxRes):
     if voxRes is None:
         voxRes = '10mm'
 
-    if socket.gethostname() == 'zod':
+    if socket.gethostname() in ['zod', 'vader']:
         bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
     else:
         bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'

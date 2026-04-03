@@ -132,9 +132,10 @@ def main(subjID, voxRes, seedROI_str, targetLoc_str, connectivityType_str, freqB
             if not all_exist: break
         if not all_exist: break
     
-    if all_exist:
-        print(f"\n[SKIP] All {freqBand.upper()} connectivity results already exist for Sub-{subjID:02d}. Exiting cleanly.", flush=True)
-        return
+    # FORCE RE-RUN: Skipping check to ensure new integrated window logic is applied
+    # if all_exist:
+    #     print(f"\n[SKIP] All {freqBand.upper()} connectivity results already exist for Sub-{subjID:02d}. Exiting cleanly.", flush=True)
+    #     return
 
     # 1. Load Raw Chronological Data
     mask = load_behavioral_mask(subjID, bidsRoot)
@@ -176,25 +177,30 @@ def main(subjID, voxRes, seedROI_str, targetLoc_str, connectivityType_str, freqB
             for metric in metrics:
                 outF = os.path.join(out_dir, f'sub-{subjID:02d}_task-mgs_seededConnectivity_{voxRes}_{seedROI}_{loc}_{metric}_{freqBand}.pkl')
                 
-                print(f"  Computing {metric} for {loc} targets ({np.sum(mask_loc)} trials)...")
+                print(f"  Computing {metric} (Integrated) for {loc} targets ({np.sum(mask_loc)} trials)...")
+                
+                # 1. Point-wise trial-averaged quantities
+                cross_spec = np.mean(s_comp_loc[:, :, np.newaxis] * np.conj(t_comp_loc), axis=0) # (times, sources)
+                seed_pow = np.mean(np.abs(s_comp_loc)**2, axis=0) # (times,)
+                targ_pow = np.mean(np.abs(t_comp_loc)**2, axis=0) # (times, sources)
+                
+                # 2. Legacy-style sliding window integration (±100ms)
+                # This performs the averaging BEFORE division for maximal stability
+                window_samples = int(0.1 * fs) * 2 + 1 
                 
                 if metric == 'dpli':
-                    phase_diff = s_comp_loc[:, :, np.newaxis] * np.conj(t_comp_loc)
-                    conn = np.mean(np.heaviside(np.imag(phase_diff), 0.5), axis=0) # (times, sources)
+                    # For dPLI, we integrate the phase-lead probability across trials and time
+                    pt_dpli = np.mean(np.heaviside(np.imag(s_comp_loc[:, :, np.newaxis] * np.conj(t_comp_loc)), 0.5), axis=0)
+                    conn = uniform_filter1d(pt_dpli, size=window_samples, axis=0)
                 else:
-                    # ImCoh logic
-                    cross_spec = np.mean(s_comp_loc[:, :, np.newaxis] * np.conj(t_comp_loc), axis=0)
-                    seed_pow = np.mean(np.abs(s_comp_loc)**2, axis=0)
-                    targ_pow = np.mean(np.abs(t_comp_loc)**2, axis=0)
-                    conn = np.abs(np.imag(cross_spec)) / np.sqrt(seed_pow[:, np.newaxis] * targ_pow + 1e-10)
+                    # For ImCoh, we integrate Cross-Spec and Power before dividing
+                    cs_sm = uniform_filter1d(cross_spec, size=window_samples, axis=0)
+                    sp_sm = uniform_filter1d(seed_pow, size=window_samples, axis=0)
+                    tp_sm = uniform_filter1d(targ_pow, size=window_samples, axis=0)
+                    conn = np.abs(np.imag(cs_sm)) / np.sqrt(sp_sm[:, np.newaxis] * tp_sm + 1e-10)
                 
-                # Smooth
-                window_s = 1.25 if f_low < 8 else 0.5
-                window_samp = int(window_s / (1.0/fs))
-                conn_smooth = uniform_filter1d(conn, size=window_samp, axis=0)
-                
-                # Save as (sources, times)
-                with open(outF, 'wb') as f: pickle.dump(conn_smooth.T, f)
+                # Save as (sources, times) to match visualization expectations
+                with open(outF, 'wb') as f: pickle.dump(conn.T, f)
 
 if __name__ == "__main__":
     import sys

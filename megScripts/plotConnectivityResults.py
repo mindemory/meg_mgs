@@ -44,9 +44,14 @@ def load_connectivity_results(bidsRoot, subjects, taskName='mgs', voxRes='10mm')
     for subjID in subjects:
         print(f"Loading subject {subjID:02d}...")
         
-        # Construct file path
-        outputDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', 'connectivity')
-        outputFile = os.path.join(outputDir, f'sub-{subjID:02d}_task-{taskName}_connectivity_{voxRes}.pkl')
+        # Construct file path variants
+        outputDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'connectivity_{voxRes}')
+        f_seeded = f'sub-{subjID:02d}_task-{taskName}_seededConnectivity_{voxRes}.pkl'
+        f_legacy = f'sub-{subjID:02d}_task-{taskName}_connectivity_{voxRes}.pkl'
+        
+        outputFile = os.path.join(outputDir, f_seeded)
+        if not os.path.exists(outputFile):
+            outputFile = os.path.join(outputDir, f_legacy)
         
         if os.path.exists(outputFile):
             try:
@@ -359,7 +364,7 @@ def main():
     if socket.gethostname() == 'zod':
         bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
     else:
-        bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
+        bidsRoot = '/d/DATD/datd/MEG_MGS/MEG_BIDS'
     
     print("="*60)
     print("CONNECTIVITY RESULTS ANALYSIS")
@@ -368,6 +373,7 @@ def main():
     print(f"Task: {taskName}")
     print(f"Voxel resolution: {voxRes}")
     print(f"BIDS root: {bidsRoot}")
+    print(f"Checking Path Exists (sub-01 test): {os.path.exists(os.path.join(bidsRoot, 'derivatives', 'sub-01', 'sourceRecon', 'connectivity_10mm', 'sub-01_task-mgs_seededConnectivity_10mm.pkl'))}")
     print("="*60)
     
     # Load results
