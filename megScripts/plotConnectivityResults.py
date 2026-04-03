@@ -37,6 +37,8 @@ def load_connectivity_results(bidsRoot, subjects, taskName='mgs', voxRes='10mm')
         'subjects': subjects,
         'coh_results': {},
         'imcoh_results': {},
+        'dpli_results': {},
+        'wpli_results': {},
         'time_vector': None,
         'loaded_subjects': []
     }
@@ -45,22 +47,36 @@ def load_connectivity_results(bidsRoot, subjects, taskName='mgs', voxRes='10mm')
         print(f"Loading subject {subjID:02d}...")
         
         # Construct file path variants
-        outputDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'connectivity_{voxRes}')
-        f_seeded = f'sub-{subjID:02d}_task-{taskName}_seededConnectivity_{voxRes}.pkl'
-        f_legacy = f'sub-{subjID:02d}_task-{taskName}_connectivity_{voxRes}.pkl'
+        dir_variants = [
+            os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'connectivity_{voxRes}'),
+            os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', 'connectivity')
+        ]
         
-        outputFile = os.path.join(outputDir, f_seeded)
-        if not os.path.exists(outputFile):
-            outputFile = os.path.join(outputDir, f_legacy)
+        outputFile = None
+        for outDir in dir_variants:
+            f_legacy = f'sub-{subjID:02d}_task-{taskName}_connectivity_{voxRes}.pkl'
+            f_seeded = f'sub-{subjID:02d}_task-{taskName}_seededConnectivity_{voxRes}.pkl'
+            
+            p1 = os.path.join(outDir, f_legacy)
+            p2 = os.path.join(outDir, f_seeded)
+            
+            if os.path.exists(p1):
+                outputFile = p1; break
+            if os.path.exists(p2):
+                outputFile = p2; break
         
-        if os.path.exists(outputFile):
+        if outputFile:
             try:
                 with open(outputFile, 'rb') as f:
-                    # Load the four dictionaries in order
+                    # Load the dictionaries
                     results_coh = pickle.load(f)
                     results_imcoh = pickle.load(f)
-                    results_plv = pickle.load(f)  # Not used but need to read past it
-                    results_pli = pickle.load(f)   # Not used but need to read past it
+                    results_plv = pickle.load(f)
+                    results_dpli = pickle.load(f)
+                    try:
+                        results_wpli = pickle.load(f)
+                    except EOFError:
+                        results_wpli = None # Legacy 4-dict file
                 
                 # Store time vector (should be the same for all subjects)
                 if all_results['time_vector'] is None:
@@ -105,6 +121,34 @@ def load_connectivity_results(bidsRoot, subjects, taskName='mgs', voxRes='10mm')
                     
                     all_results['imcoh_results'][key].append(corrected_value)
                 
+                # Store and baseline-subtract dPLI results
+                for key, value in results_dpli.items():
+                    if key not in all_results['dpli_results']:
+                        all_results['dpli_results'][key] = []
+                    
+                    if len(baseline_indices) > 0:
+                        baseline_mean = np.nanmean(value[baseline_indices])
+                        corrected_value = value - baseline_mean
+                    else:
+                        corrected_value = value
+                        
+                    all_results['dpli_results'][key].append(corrected_value)
+                
+                # Store and baseline-subtract wPLI results (if available)
+                if results_wpli:
+                    for key, value in results_wpli.items():
+                        if key not in all_results['wpli_results']:
+                            all_results['wpli_results'][key] = []
+                        
+                        if len(baseline_indices) > 0:
+                            # Use division correction for magnitude synchronization (wPLI)
+                            baseline_mean = np.nanmean(value[baseline_indices])
+                            corrected_value = value / (baseline_mean + 1e-10) - 1
+                        else:
+                            corrected_value = value
+                        
+                        all_results['wpli_results'][key].append(corrected_value)
+                
                 all_results['loaded_subjects'].append(subjID)
                 print(f"  Successfully loaded and baseline-corrected subject {subjID:02d}")
                 
@@ -137,6 +181,8 @@ def compute_averages(all_results):
         'coh_stds': {},
         'imcoh_means': {},
         'imcoh_stds': {},
+        'dpli_means': {},
+        'dpli_stds': {},
         'time_vector': all_results['time_vector'],
         'n_subjects': len(all_results['loaded_subjects'])
     }
@@ -156,6 +202,13 @@ def compute_averages(all_results):
             stacked_data = np.stack(subject_data, axis=0)  # Shape: (n_subjects, n_timepoints)
             averaged_results['imcoh_means'][key] = np.mean(stacked_data, axis=0)
             averaged_results['imcoh_stds'][key] = np.nanstd(stacked_data, axis=0) / np.sqrt(len(subject_data))  # SEM
+    
+    # Compute averages for dPLI
+    for key, subject_data in all_results['dpli_results'].items():
+        if len(subject_data) > 0:
+            stacked_data = np.stack(subject_data, axis=0)
+            averaged_results['dpli_means'][key] = np.mean(stacked_data, axis=0)
+            averaged_results['dpli_stds'][key] = np.nanstd(stacked_data, axis=0) / np.sqrt(len(subject_data))
     
     return averaged_results
 
@@ -227,27 +280,6 @@ def plot_connectivity_results(averaged_results, save_path=None):
             ax.plot(time_vector, contrast, color='red', linewidth=2.5)
             ax.fill_between(time_vector, contrast - contrast_sem, contrast + contrast_sem, 
                            color='red', alpha=0.2)
-        
-        # Imaginary coherence contrast
-        # imcoh_left_key = f'{left_key}_imcoh'
-        # imcoh_right_key = f'{right_key}_imcoh'
-        
-        # if imcoh_left_key in averaged_results['imcoh_means'] and imcoh_right_key in averaged_results['imcoh_means']:
-        #     left_vals = averaged_results['imcoh_means'][imcoh_left_key]
-        #     right_vals = averaged_results['imcoh_means'][imcoh_right_key]
-        #     left_sem = averaged_results['imcoh_stds'][imcoh_left_key]
-        #     right_sem = averaged_results['imcoh_stds'][imcoh_right_key]
-            
-        #     # Compute contrast: (left - right) / (left + right)
-        #     contrast = (left_vals - right_vals) / (left_vals + right_vals + 1e-10)
-            
-        #     # Compute SEM for contrast using error propagation
-        #     contrast_sem = np.sqrt((2*right_vals/(left_vals + right_vals + 1e-10)**2 * left_sem)**2 + 
-        #                           (-2*left_vals/(left_vals + right_vals + 1e-10)**2 * right_sem)**2)
-            
-        #     ax.plot(time_vector, contrast, color='red', linewidth=2.5, label='Imaginary Coherence')
-        #     # ax.fill_between(time_vector, contrast - contrast_sem, contrast + contrast_sem, 
-        #     #                color='red', alpha=0.2)
         
         # Add reference lines and formatting
         ax.axhline(y=0, color='black', linestyle='--', alpha=0.7, linewidth=1)
@@ -342,13 +374,139 @@ def plot_simple_connectivity(averaged_results, bidsRoot, voxRes):
     
     plt.tight_layout()
     
-    # Save as SVG
+    # Save as both SVG and PNG
     output_dir = os.path.join(bidsRoot, 'derivatives', 'figures', 'Fs04')
     os.makedirs(output_dir, exist_ok=True)
-    save_path = os.path.join(output_dir, f'connectivity_simple_{voxRes}.svg')
-    fig.savefig(save_path, format='svg', bbox_inches='tight')
-    print(f"Figure saved as SVG to {save_path}")
     
+    save_path_svg = os.path.join(output_dir, f'connectivity_simple_{voxRes}.svg')
+    save_path_png = os.path.join(output_dir, f'connectivity_simple_{voxRes}.png')
+    
+    fig.savefig(save_path_svg, format='svg', bbox_inches='tight')
+    fig.savefig(save_path_png, format='png', dpi=300, bbox_inches='tight')
+    
+    print(f"Figures saved to {output_dir} (SVG/PNG)")
+    
+    plt.show()
+
+def plot_dpli_connectivity(averaged_results, bidsRoot, voxRes):
+    """Plot directed Phase Lag Index results"""
+    print("Creating dPLI directionality plots...")
+    time_vector = averaged_results['time_vector']
+    
+    connectivity_pairs = {
+        'Left Visual → Left Frontal': ('left_lV2lF_dpli', 'right_lV2lF_dpli'),
+        'Left Visual → Right Frontal': ('left_lV2rF_dpli', 'right_rV2rF_dpli'), 
+        'Right Visual → Left Frontal': ('left_rV2lF_dpli', 'right_rV2lF_dpli'),
+        'Right Visual → Right Frontal': ('left_rV2rF_dpli', 'right_rV2rF_dpli'),
+        'Visual → Left Frontal': ('left_V2lF_dpli', 'right_V2lF_dpli'),
+        'Visual → Right Frontal': ('left_V2rF_dpli', 'right_V2rF_dpli')
+    }
+    
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    fig.suptitle(f'Directed Phase Lag Index: Left vs Right Targets (n={averaged_results["n_subjects"]} subjects)', fontsize=16)
+    axes_flat = axes.flatten()
+    
+    for i, (pair_name, (left_key, right_key)) in enumerate(connectivity_pairs.items()):
+        ax = axes_flat[i]
+        
+        # Plot left targets (Blue)
+        if left_key in averaged_results['dpli_means']:
+            l_mean, l_sem = averaged_results['dpli_means'][left_key], averaged_results['dpli_stds'][left_key]
+            ax.plot(time_vector, l_mean, color='blue', linewidth=2.5, label='Left Targets')
+            ax.fill_between(time_vector, l_mean - l_sem, l_mean + l_sem, color='blue', alpha=0.2)
+        
+        # Plot right targets (Red)
+        if right_key in averaged_results['dpli_means']:
+            r_mean, r_sem = averaged_results['dpli_means'][right_key], averaged_results['dpli_stds'][right_key]
+            ax.plot(time_vector, r_mean, color='red', linewidth=2.5, label='Right Targets')
+            ax.fill_between(time_vector, r_mean - r_sem, r_mean + r_sem, color='red', alpha=0.2)
+        
+        ax.axhline(y=0, color='black', linestyle='-', alpha=0.7, linewidth=1)
+        ax.axvline(x=0, color='red', linestyle='--', alpha=0.7) # Cue
+        ax.axvline(x=0.2, color='orange', linestyle='--', alpha=0.7) # Delay
+        ax.axvline(x=1.7, color='green', linestyle='--', alpha=0.7) # Response
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel('$\Delta$dPLI (Baseline Subtracted)')
+        ax.set_title(f'{pair_name}')
+        ax.set_xlim(-0.5, 1.7)
+        ax.legend()
+    
+    plt.tight_layout()
+    output_dir = os.path.join(bidsRoot, 'derivatives', 'figures', 'Fs04')
+    os.makedirs(output_dir, exist_ok=True)
+    
+    save_path_svg = os.path.join(output_dir, f'connectivity_dpli_{voxRes}.svg')
+    save_path_png = os.path.join(output_dir, f'connectivity_dpli_{voxRes}.png')
+    
+    fig.savefig(save_path_svg, format='svg', bbox_inches='tight')
+    fig.savefig(save_path_png, format='png', dpi=300, bbox_inches='tight')
+    
+    print(f"dPLI Figures saved to {output_dir} (SVG/PNG)")
+    plt.show()
+
+def plot_wpli_connectivity(all_results, voxRes, bidsRoot):
+    """Plots Grand Average wPLI results"""
+    if not all_results['wpli_results']:
+        print("No wPLI results found to plot.")
+        return
+        
+    print("Creating wPLI magnitude plots...")
+    averaged_results = {
+        'wpli_means': {},
+        'wpli_sems': {}
+    }
+    
+    for key, values in all_results['wpli_results'].items():
+        data_stack = np.vstack(values)
+        averaged_results['wpli_means'][key] = np.nanmean(data_stack, axis=0)
+        averaged_results['wpli_sems'][key] = np.nanstd(data_stack, axis=0) / np.sqrt(len(values))
+    
+    time_vector = np.linspace(-0.6, 1.9, 2048)
+    
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharex=True, sharey=True)
+    fig.suptitle(f'8mm Beta Connectivity: Grand Average wPLI (n={len(all_results["loaded_subjects"])})')
+    
+    pairs = [
+        ('all_lV2lF_wpli', 'all_lV2rF_wpli', 'all_V2lF_wpli'),
+        ('all_rV2lF_wpli', 'all_rV2rF_wpli', 'all_V2rF_wpli')
+    ]
+    
+    titles = [
+        ['Left Vis -> Left Frontal', 'Left Vis -> Right Frontal', 'Combined Vis -> Left Frontal'],
+        ['Right Vis -> Left Frontal', 'Right Vis -> Right Frontal', 'Combined Vis -> Right Frontal']
+    ]
+    
+    for row in range(2):
+        for col in range(3):
+            key = pairs[row][col]
+            ax = axes[row, col]
+            
+            mean = averaged_results['wpli_means'][key]
+            sem = averaged_results['wpli_sems'][key]
+            
+            ax.plot(time_vector, mean, color='purple', linewidth=2)
+            ax.fill_between(time_vector, mean - sem, mean + sem, color='purple', alpha=0.2)
+            
+            ax.axvline(x=0, color='red', linestyle='--', alpha=0.7)
+            ax.axvline(x=0.2, color='orange', linestyle='--', alpha=0.7)
+            ax.axvline(x=1.7, color='green', linestyle='--', alpha=0.7)
+            
+            ax.set_title(titles[row][col])
+            ax.set_xlim(-0.5, 1.8)
+            if col == 0: ax.set_ylabel('$\Delta$wPLI (Ratio Change)')
+            if row == 1: ax.set_xlabel('Time (s)')
+
+    plt.tight_layout()
+    output_dir = os.path.join(bidsRoot, 'derivatives', 'figures', 'Fs04')
+    os.makedirs(output_dir, exist_ok=True)
+    
+    save_path_svg = os.path.join(output_dir, f'connectivity_wpli_{voxRes}.svg')
+    save_path_png = os.path.join(output_dir, f'connectivity_wpli_{voxRes}.png')
+    
+    fig.savefig(save_path_svg, format='svg', bbox_inches='tight')
+    fig.savefig(save_path_png, format='png', dpi=300, bbox_inches='tight')
+    
+    print(f"wPLI Figures saved to {output_dir} (SVG/PNG)")
     plt.show()
 
 def main():
@@ -357,14 +515,21 @@ def main():
     # Define parameters
     subjects = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, 18, 19, 23, 24, 25, 29, 31, 32]
     taskName = 'mgs'
-    voxRes = '10mm'
+    voxRes = '8mm'
     
-    # Set bidsRoot based on hostname
+    # Set bidsRoot based on hostname/filesystem
     import socket
-    if socket.gethostname() == 'zod':
+    hostname = socket.gethostname()
+    if hostname == 'zod':
         bidsRoot = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS'
-    else:
+    elif hostname == 'vader':
         bidsRoot = '/d/DATD/datd/MEG_MGS/MEG_BIDS'
+    else:
+        # Check if direct /d/DATD works first
+        if os.path.exists('/d/DATD/datd/MEG_MGS/MEG_BIDS'):
+            bidsRoot = '/d/DATD/datd/MEG_MGS/MEG_BIDS'
+        else:
+            bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
     
     print("="*60)
     print("CONNECTIVITY RESULTS ANALYSIS")
@@ -394,8 +559,9 @@ def main():
     # plot_save_path = os.path.join(output_dir, f'connectivity_results_{voxRes}.png')
     
     # Create both types of plots
-    # plot_connectivity_results(averaged_results, save_path=plot_save_path)
     plot_simple_connectivity(averaged_results, bidsRoot, voxRes)
+    if 'dpli_means' in averaged_results and len(averaged_results['dpli_means']) > 0:
+        plot_dpli_connectivity(averaged_results, bidsRoot, voxRes)
     
     print("Analysis completed!")
 

@@ -104,16 +104,21 @@ def _compute_metrics_at_t(t_idx, data_matrix, seed_indices, target_indices, wind
     
     # Imaginary coherence calculation
     normalized_cross_spectrum = cross_spectrum / np.sqrt(denom)
-    imcoherence_val = np.mean(np.abs(np.imag(normalized_cross_spectrum))) 
+    imcoherence_val = np.mean(np.abs(np.imag(normalized_cross_spectrum)), axis=(1, 2))
     
     # --- dPLI Logic ---
     # Borrowed from inSourceSpaceSeededConnectivity: Prob(phase lead) - 0.5
-    # Calculate phase difference: (n_seeds, n_trials, window_timepoints, n_targets)
+    # (n_seeds, n_trials, window_timepoints, n_targets)
     phase_diff_complex = seed_data[:, :, :, np.newaxis] * np.conj(target_data[np.newaxis, :, :, :])
+    
     # Directed Phase Lag Index: mean(heaviside(imag(phase_diff))) - 0.5
     dpli_val = np.mean(np.heaviside(np.imag(phase_diff_complex), 0.5)) - 0.5
     
-    return coherence_val, imcoherence_val, dpli_val
+    # Weighted Phase Lag Index: |mean(imag)| / mean(|imag|) across trials and window
+    imag_pd = np.imag(phase_diff_complex)
+    wpli_val = np.abs(np.mean(imag_pd, axis=(1, 2))) / (np.mean(np.abs(imag_pd), axis=(1, 2)) + 1e-10)
+    
+    return coherence_val, imcoherence_val, dpli_val, wpli_val
 
 def compute_connectivity_measures(seed_indices, target_indices, data_matrix, time_vector):
     """Computes integrated connectivity measures for specified ROIs using parallel time-points"""
@@ -122,7 +127,7 @@ def compute_connectivity_measures(seed_indices, target_indices, data_matrix, tim
     n_seeds = len(seed_indices)
     n_targets = len(target_indices)
     
-    print(f"Computing [ImCoh + dPLI] for {n_seeds} seeds and {n_targets} targets...")
+    print(f"Computing [ImCoh + dPLI + wPLI] for {n_seeds} seeds and {n_targets} targets...")
     
     # Compute sampling frequency
     sfreq = 1 / np.mean(np.diff(time_vector.flatten()))
@@ -139,11 +144,10 @@ def compute_connectivity_measures(seed_indices, target_indices, data_matrix, tim
     coherence_timeseries = np.array([r[0] for r in results])
     imcoherence_timeseries = np.array([r[1] for r in results])
     dpli_timeseries = np.array([r[2] for r in results])
+    wpli_timeseries = np.array([r[3] for r in results])
     
-    # PLV is not yet requested for integration but logic is now easy to add
-    plv_timeseries = np.zeros(n_timepoints) 
-    
-    return coherence_timeseries, imcoherence_timeseries, plv_timeseries, dpli_timeseries
+    # Return with wPLI included
+    return coherence_timeseries, imcoherence_timeseries, dpli_timeseries, wpli_timeseries
 
 def main(subjID, voxRes):
     """Main function for source space connectivity analysis"""
@@ -160,9 +164,11 @@ def main(subjID, voxRes):
         bidsRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
     taskName = 'mgs'
 
-    outputDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', 'connectivity')
+    # Define output directory and file
+    outputDir = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'sourceRecon', f'connectivity_{voxRes}')
     if not os.path.exists(outputDir):
         os.makedirs(outputDir)
+    
     outputFile = os.path.join(outputDir, f'sub-{subjID:02d}_task-{taskName}_connectivity_{voxRes}.pkl')
 
     if not os.path.exists(outputFile):
@@ -178,15 +184,11 @@ def main(subjID, voxRes):
         visual_points = np.array(atlas_data['visual_points']).flatten()
         left_visual_points = np.array(atlas_data['left_visual_points']).flatten()
         right_visual_points = np.array(atlas_data['right_visual_points']).flatten()
-        # left_parietal_points = np.array(atlas_data['left_parietal_points']).flatten()
-        # right_parietal_points = np.array(atlas_data['right_parietal_points']).flatten()
         left_frontal_points = np.array(atlas_data['left_frontal_points']).flatten()
         right_frontal_points = np.array(atlas_data['right_frontal_points']).flatten()
         visual_indices = np.where(visual_points == 1)[0]
         left_visual_indices = np.where(left_visual_points == 1)[0]
         right_visual_indices = np.where(right_visual_points == 1)[0]
-        # left_parietal_indices = np.where(left_parietal_points == 1)[0]
-        # right_parietal_indices = np.where(right_parietal_points == 1)[0]
         left_frontal_indices = np.where(left_frontal_points == 1)[0]
         right_frontal_indices = np.where(right_frontal_points == 1)[0]
 
@@ -203,29 +205,29 @@ def main(subjID, voxRes):
         # Compute connectivity measures for left targets
         start_time = time.time()
         print("Computing connectivity measures for left targets...")
-        left_lV2lF_coh, left_lV2lF_imcoh, left_lV2lF_plv, left_lV2lF_pli = compute_connectivity_measures(left_visual_indices, left_frontal_indices, left_data, time_vector)
-        left_lV2rF_coh, left_lV2rF_imcoh, left_lV2rF_plv, left_lV2rF_pli = compute_connectivity_measures(left_visual_indices, right_frontal_indices, left_data, time_vector)
-        left_rV2lF_coh, left_rV2lF_imcoh, left_rV2lF_plv, left_rV2lF_pli = compute_connectivity_measures(right_visual_indices, left_frontal_indices, left_data, time_vector)
-        left_rV2rF_coh, left_rV2rF_imcoh, left_rV2rF_plv, left_rV2rF_pli = compute_connectivity_measures(right_visual_indices, right_frontal_indices, left_data, time_vector)
-        left_V2lF_coh, left_V2lF_imcoh, left_V2lF_plv, left_V2lF_pli = compute_connectivity_measures(visual_indices, left_frontal_indices, left_data, time_vector)
-        left_V2rF_coh, left_V2rF_imcoh, left_V2rF_plv, left_V2rF_pli = compute_connectivity_measures(visual_indices, right_frontal_indices, left_data, time_vector)
+        left_lV2lF_coh, left_lV2lF_imcoh, left_lV2lF_pli, left_lV2lF_wpli = compute_connectivity_measures(left_visual_indices, left_frontal_indices, left_data, time_vector)
+        left_lV2rF_coh, left_lV2rF_imcoh, left_lV2rF_pli, left_lV2rF_wpli = compute_connectivity_measures(left_visual_indices, right_frontal_indices, left_data, time_vector)
+        left_rV2lF_coh, left_rV2lF_imcoh, left_rV2lF_pli, left_rV2lF_wpli = compute_connectivity_measures(right_visual_indices, left_frontal_indices, left_data, time_vector)
+        left_rV2rF_coh, left_rV2rF_imcoh, left_rV2rF_pli, left_rV2rF_wpli = compute_connectivity_measures(right_visual_indices, right_frontal_indices, left_data, time_vector)
+        left_V2lF_coh, left_V2lF_imcoh, left_V2lF_pli, left_V2lF_wpli = compute_connectivity_measures(visual_indices, left_frontal_indices, left_data, time_vector)
+        left_V2rF_coh, left_V2rF_imcoh, left_V2rF_pli, left_V2rF_wpli = compute_connectivity_measures(visual_indices, right_frontal_indices, left_data, time_vector)
 
         # Compute connectivity measures for right targets
         print("Computing connectivity measures for right targets...")
-        right_lV2lF_coh, right_lV2lF_imcoh, right_lV2lF_plv, right_lV2lF_pli = compute_connectivity_measures(left_visual_indices, left_frontal_indices, right_data, time_vector)
-        right_lV2rF_coh, right_lV2rF_imcoh, right_lV2rF_plv, right_lV2rF_pli = compute_connectivity_measures(left_visual_indices, right_frontal_indices, right_data, time_vector)
-        right_rV2lF_coh, right_rV2lF_imcoh, right_rV2lF_plv, right_rV2lF_pli = compute_connectivity_measures(right_visual_indices, left_frontal_indices, right_data, time_vector)
-        right_rV2rF_coh, right_rV2rF_imcoh, right_rV2rF_plv, right_rV2rF_pli = compute_connectivity_measures(right_visual_indices, right_frontal_indices, right_data, time_vector)
-        right_V2lF_coh, right_V2lF_imcoh, right_V2lF_plv, right_V2lF_pli = compute_connectivity_measures(visual_indices, left_frontal_indices, right_data, time_vector)
-        right_V2rF_coh, right_V2rF_imcoh, right_V2rF_plv, right_V2rF_pli = compute_connectivity_measures(visual_indices, right_frontal_indices, right_data, time_vector)
+        right_lV2lF_coh, right_lV2lF_imcoh, right_lV2lF_pli, right_lV2lF_wpli = compute_connectivity_measures(left_visual_indices, left_frontal_indices, right_data, time_vector)
+        right_lV2rF_coh, right_lV2rF_imcoh, right_lV2rF_pli, right_lV2rF_wpli = compute_connectivity_measures(left_visual_indices, right_frontal_indices, right_data, time_vector)
+        right_rV2lF_coh, right_rV2lF_imcoh, right_rV2lF_pli, right_rV2lF_wpli = compute_connectivity_measures(right_visual_indices, left_frontal_indices, right_data, time_vector)
+        right_rV2rF_coh, right_rV2rF_imcoh, right_rV2rF_pli, right_rV2rF_wpli = compute_connectivity_measures(right_visual_indices, right_frontal_indices, right_data, time_vector)
+        right_V2lF_coh, right_V2lF_imcoh, right_V2lF_pli, right_V2lF_wpli = compute_connectivity_measures(visual_indices, left_frontal_indices, right_data, time_vector)
+        right_V2rF_coh, right_V2rF_imcoh, right_V2rF_pli, right_V2rF_wpli = compute_connectivity_measures(visual_indices, right_frontal_indices, right_data, time_vector)
 
         print("Computing connectivity measures for all targets...")
-        all_lV2lF_coh, all_lV2lF_imcoh, all_lV2lF_plv, all_lV2lF_pli = compute_connectivity_measures(left_visual_indices, left_frontal_indices, data_matrix, time_vector)
-        all_lV2rF_coh, all_lV2rF_imcoh, all_lV2rF_plv, all_lV2rF_pli = compute_connectivity_measures(left_visual_indices, right_frontal_indices, data_matrix, time_vector)
-        all_rV2lF_coh, all_rV2lF_imcoh, all_rV2lF_plv, all_rV2lF_pli = compute_connectivity_measures(right_visual_indices, left_frontal_indices, data_matrix, time_vector)
-        all_rV2rF_coh, all_rV2rF_imcoh, all_rV2rF_plv, all_rV2rF_pli = compute_connectivity_measures(right_visual_indices, right_frontal_indices, data_matrix, time_vector)
-        all_V2lF_coh, all_V2lF_imcoh, all_V2lF_plv, all_V2lF_pli = compute_connectivity_measures(visual_indices, left_frontal_indices, data_matrix, time_vector)
-        all_V2rF_coh, all_V2rF_imcoh, all_V2rF_plv, all_V2rF_pli = compute_connectivity_measures(visual_indices, right_frontal_indices, data_matrix, time_vector)
+        all_lV2lF_coh, all_lV2lF_imcoh, all_lV2lF_pli, all_lV2lF_wpli = compute_connectivity_measures(left_visual_indices, left_frontal_indices, data_matrix, time_vector)
+        all_lV2rF_coh, all_lV2rF_imcoh, all_lV2rF_pli, all_lV2rF_wpli = compute_connectivity_measures(left_visual_indices, right_frontal_indices, data_matrix, time_vector)
+        all_rV2lF_coh, all_rV2lF_imcoh, all_rV2lF_pli, all_rV2lF_wpli = compute_connectivity_measures(right_visual_indices, left_frontal_indices, data_matrix, time_vector)
+        all_rV2rF_coh, all_rV2rF_imcoh, all_rV2rF_pli, all_rV2rF_wpli = compute_connectivity_measures(right_visual_indices, right_frontal_indices, data_matrix, time_vector)
+        all_V2lF_coh, all_V2lF_imcoh, all_V2lF_pli, all_V2lF_wpli = compute_connectivity_measures(visual_indices, left_frontal_indices, data_matrix, time_vector)
+        all_V2rF_coh, all_V2rF_imcoh, all_V2rF_pli, all_V2rF_wpli = compute_connectivity_measures(visual_indices, right_frontal_indices, data_matrix, time_vector)
         
         end_time = time.time()
         print(f"Time taken: {end_time - start_time} seconds")
@@ -272,24 +274,24 @@ def main(subjID, voxRes):
             'all_V2rF_imcoh': all_V2rF_imcoh,
         }
         results_plv = {
-            'left_lV2lF_plv': left_lV2lF_plv,
-            'left_lV2rF_plv': left_lV2rF_plv,
-            'left_rV2lF_plv': left_rV2lF_plv,
-            'left_rV2rF_plv': left_rV2rF_plv,
-            'left_V2lF_plv': left_V2lF_plv,
-            'left_V2rF_plv': left_V2rF_plv,
-            'right_lV2lF_plv': right_lV2lF_plv,
-            'right_lV2rF_plv': right_lV2rF_plv,
-            'right_rV2lF_plv': right_rV2lF_plv,
-            'right_rV2rF_plv': right_rV2rF_plv,
-            'right_V2lF_plv': right_V2lF_plv,
-            'right_V2rF_plv': right_V2rF_plv,
-            'all_lV2lF_plv': all_lV2lF_plv,
-            'all_lV2rF_plv': all_lV2rF_plv,
-            'all_rV2lF_plv': all_rV2lF_plv,
-            'all_rV2rF_plv': all_rV2rF_plv,
-            'all_V2lF_plv': all_V2lF_plv,
-            'all_V2rF_plv': all_V2rF_plv,
+            'left_lV2lF_plv': np.zeros_like(left_lV2lF_coh),
+            'left_lV2rF_plv': np.zeros_like(left_lV2rF_coh),
+            'left_rV2lF_plv': np.zeros_like(left_rV2lF_coh),
+            'left_rV2rF_plv': np.zeros_like(left_rV2rF_coh),
+            'left_V2lF_plv': np.zeros_like(left_V2lF_coh),
+            'left_V2rF_plv': np.zeros_like(left_V2rF_coh),
+            'right_lV2lF_plv': np.zeros_like(right_lV2lF_coh),
+            'right_lV2rF_plv': np.zeros_like(right_lV2rF_coh),
+            'right_rV2lF_plv': np.zeros_like(right_rV2lF_coh),
+            'right_rV2rF_plv': np.zeros_like(right_rV2rF_coh),
+            'right_V2lF_plv': np.zeros_like(right_V2lF_coh),
+            'right_V2rF_plv': np.zeros_like(right_V2rF_coh),
+            'all_lV2lF_plv': np.zeros_like(all_lV2lF_coh),
+            'all_lV2rF_plv': np.zeros_like(all_lV2rF_coh),
+            'all_rV2lF_plv': np.zeros_like(all_rV2lF_coh),
+            'all_rV2rF_plv': np.zeros_like(all_rV2rF_coh),
+            'all_V2lF_plv': np.zeros_like(all_V2lF_coh),
+            'all_V2rF_plv': np.zeros_like(all_V2rF_coh),
         }
         results_dpli = {
             'left_lV2lF_dpli': left_lV2lF_pli,
@@ -311,13 +313,34 @@ def main(subjID, voxRes):
             'all_V2lF_dpli': all_V2lF_pli,
             'all_V2rF_dpli': all_V2rF_pli,
         }
+        results_wpli = {
+            'left_lV2lF_wpli': left_lV2lF_wpli,
+            'left_lV2rF_wpli': left_lV2rF_wpli,
+            'left_rV2lF_wpli': left_rV2lF_wpli,
+            'left_rV2rF_wpli': left_rV2rF_wpli,
+            'left_V2lF_wpli': left_V2lF_wpli,
+            'left_V2rF_wpli': left_V2rF_wpli,
+            'right_lV2lF_wpli': right_lV2lF_wpli,
+            'right_lV2rF_wpli': right_lV2rF_wpli,
+            'right_rV2lF_wpli': right_rV2lF_wpli,
+            'right_rV2rF_wpli': right_rV2rF_wpli,
+            'right_V2lF_wpli': right_V2lF_wpli,
+            'right_V2rF_wpli': right_V2rF_wpli,
+            'all_lV2lF_wpli': all_lV2lF_wpli,
+            'all_lV2rF_wpli': all_lV2rF_wpli,
+            'all_rV2lF_wpli': all_rV2lF_wpli,
+            'all_rV2rF_wpli': all_rV2rF_wpli,
+            'all_V2lF_wpli': all_V2lF_wpli,
+            'all_V2rF_wpli': all_V2rF_wpli,
+        }
         
         # Save the results (Monolithic legacy format)
         with open(outputFile, 'wb') as f:
             pickle.dump(results_coh, f)
             pickle.dump(results_imcoh, f)
             pickle.dump(results_plv, f)
-            pickle.dump(results_dpli, f) # results_pli is now results_dpli
+            pickle.dump(results_dpli, f)
+            pickle.dump(results_wpli, f)
         print(f"Results saved to {outputFile}")
 
     
