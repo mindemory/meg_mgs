@@ -220,7 +220,7 @@ title('Visual Areas Matched Conditions: Left(Vis)-Left(Trial) + Right(Vis)-Right
 xlabel('Frequency (Hz)', 'FontSize', 12);
 ylabel('Power (fT^2/Hz)', 'FontSize', 12);
 grid on;
-xlim([5, 50]);
+xlim([5, 40]);
 legend('Location', 'best');
 
 sgtitle(sprintf('Visual Power Spectra Analysis - %dmm Resolution (Fixation vs Delay)', volRes), 'FontSize', 16);
@@ -240,7 +240,7 @@ title('Frontal Areas Matched Conditions: Left(Frontal)-Left(Trial) + Right(Front
 xlabel('Frequency (Hz)', 'FontSize', 12);
 ylabel('Power (fT^2/Hz)', 'FontSize', 12);
 grid on;
-xlim([5, 50]);
+xlim([5, 40]);
 legend('Location', 'best');
 
 sgtitle(sprintf('Frontal Power Spectra Analysis - %dmm Resolution (Fixation vs Delay)', volRes), 'FontSize', 16);

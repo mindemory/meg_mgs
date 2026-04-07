@@ -103,13 +103,14 @@ if_db = baseline_corr(pow_to_dB(if_all));
 cf_db = baseline_corr(pow_to_dB(cf_all));
 
 % 2. Average across 4th dimension (Subjects)
-avg_tfr = @(d) setfield(ref_TFR, 'powspctrm', squeeze(mean(d, 4, 'omitnan')));
+avg_tfr = @(d) struct('powspctrm', mean(d, 4, 'omitnan'), 'label', {{'ROI_avg'}}, ...
+                    'time', ref_time, 'freq', ref_freq, 'dimord', 'chan_freq_time');
 IV_TFR = avg_tfr(iv_db); CV_TFR = avg_tfr(cv_db);
 IF_TFR = avg_tfr(if_db); CF_TFR = avg_tfr(cf_db);
 
 %% Visualization
 fprintf('Generating Master Figure...\n');
-fig = figure('Position', [100, 100, 1600, 1000], 'Visible', 'on');
+fig = figure('Position', [100, 100, 1600, 1000], 'Visible', 'on', 'Renderer', 'painters');
 cfg_plot = []; cfg_plot.figure = 'gcf'; cfg_plot.baseline = 'no'; cfg_plot.colorbar = 'yes';
 cfg_plot.colormap = '*RdBu'; cfg_plot.xlim = [-0.5 1.7]; cfg_plot.ylim = [5 40];
 cfg_plot.zlim = [-0.4 0.4]; cfg_plot.interactive = 'no';
@@ -123,6 +124,7 @@ sgtitle(sprintf('Functional TFR Split (Ipsi/Contra) - Grand Average (N=%d, %dmm)
 
 saveas(fig, fullfile(figures_base_dir, sprintf('tfr_IpsiContra_Split_%dmm.png', volRes)));
 saveas(fig, fullfile(figures_base_dir, sprintf('tfr_IpsiContra_Split_%dmm.fig', volRes)));
+saveas(fig, fullfile(figures_base_dir, sprintf('tfr_IpsiContra_Split_%dmm.svg', volRes)));
 
 fprintf('=== Processing Complete. Figures saved in %s ===\n', figures_base_dir);
 
