@@ -73,7 +73,7 @@ def get_single_subj_pac(subjID, voxRes):
     
     sfreq = 1/dt
     nyq = sfreq/2
-    f_beta, f_gamma = (13.0, 18.0), (31.0, 55.0) 
+    f_beta, f_gamma = (4.0, 8.0), (13.0, 30.0) 
     b_b, a_b = signal.butter(4, [f_beta[0]/nyq, f_beta[1]/nyq], btype='band')
     b_g, a_g = signal.butter(4, [f_gamma[0]/nyq, f_gamma[1]/nyq], btype='band')
     
@@ -184,6 +184,7 @@ def debug_pac_grand_average(subj_list, voxRes='8mm'):
             ax_g.plot(p_ax, s['g_mean'], color='crimson', linewidth=2.5, marker='.')
             ax_g.fill_between(p_ax, s['g_mean']-s['g_sem'], s['g_mean']+s['g_sem'], color='crimson', alpha=0.2)
             ax_g.axvline(0, color='black', alpha=0.2, linestyle='--')
+            ax_g.axhline(0, color='black', alpha=0.3, linestyle='--')
             ax_g.set_ylim(g_lim)
             ax_g.set_title(f'{roi}\n({win})', fontsize=14, fontweight='bold')
             if col in [0, 2]: ax_g.set_ylabel('% Change', fontsize=12)
@@ -194,7 +195,7 @@ def debug_pac_grand_average(subj_list, voxRes='8mm'):
             ax_b.fill_between(p_ax, s['b_mean']-s['b_sem'], s['b_mean']+s['b_sem'], color='royalblue', alpha=0.2)
             ax_b.axvline(0, color='black', alpha=0.2, linestyle='--')
             ax_b.set_ylim(b_lim)
-            if col in [0, 2]: ax_b.set_ylabel('Beta', fontsize=12)
+            if col in [0, 2]: ax_b.set_ylabel('Theta', fontsize=12)
             ax_b.set_xticks([-2*np.pi, -np.pi, 0, np.pi, 2*np.pi], [r'$-2\pi$', r'$-\pi$', '0', r'$\pi$', r'$2\pi$'])
             for ax in [ax_g, ax_b]: ax.grid(False)
 
