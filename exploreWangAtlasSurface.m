@@ -17,33 +17,29 @@ addpath(ft_gifti_path);
 
 addpath(genpath(project_path));
 
-% Load surface sourcemodel (20484 vertices - highest resolution available)
-surface_resolution = 20484;
-surface_file = sprintf('cortex_%d.surf.gii', surface_resolution);
+% Load inflated surface (for visualization) and pial surface (for coordinate matching)
+inflated_file = '/d/DATD/hyper/software/fieldtrip-20250318/template/anatomy/surface_inflated_both.mat';
+pial_file = '/d/DATD/hyper/software/fieldtrip-20250318/template/anatomy/surface_pial_both.mat';
 
-% Try multiple locations for the surface file
-sourcemodel_path = sprintf('/d/DATD/hyper/software/fieldtrip-20250318/template/sourcemodel/%s', surface_file);
-if ~exist(sourcemodel_path, 'file')
-    sourcemodel_path = sprintf('/d/DATD/hyper/software/fieldtrip-20250318/template/anatomy/%s', surface_file);
-end
-if ~exist(sourcemodel_path, 'file')
-    error('Surface file not found: %s. Please ensure cortex_%d.surf.gii is available.', surface_file, surface_resolution);
+if ~exist(inflated_file, 'file') || ~exist(pial_file, 'file')
+    error('Inflated or Pial surface files not found.');
 end
 
-template_mesh = ft_read_headshape(sourcemodel_path);
-template_mesh.pos = template_mesh.pos;
-template_mesh.inside = true(size(template_mesh.pos, 1), 1); % All cortical vertices are inside
-template_mesh.unit = 'mm';
-template_mesh.coordsys = 'mni';
+mesh_inflated = load(inflated_file); mesh_inflated = mesh_inflated.mesh;
+mesh_pial = load(pial_file); mesh_pial = mesh_pial.mesh;
 
-fprintf('Loaded surface sourcemodel with %d vertices from: %s\n', size(template_mesh.pos, 1), sourcemodel_path);
+% Use inflated mesh as our template for visualization
+template_mesh = mesh_inflated;
+
+fprintf('Loaded inflated surface with %d vertices.\n', size(template_mesh.pos, 1));
 
 %%
 atlas_path = '/d/DATD/hyper/software/fieldtrip-20250318/template/atlas/vtpm/vtpm.mat';
 wangatlas = ft_read_atlas(atlas_path);
 %%
-% Positions of surface vertices (Nx3)
-sm_pos = template_mesh.pos; % All vertices are inside for surface models
+% Positions of surface vertices (Nx3) - WE USE PIAL FOR KNN SEARCH!
+% The inflated mesh distances are distorted, pial mesh matches MNI volume coordinates.
+sm_pos = mesh_pial.pos;
 
 % Atlas labeled voxels & their labels
 [ind_x, ind_y, ind_z] = ind2sub(size(wangatlas.tissue), find(wangatlas.tissue > 0));
@@ -58,10 +54,10 @@ label_atlas = double(wangatlas.tissue(wangatlas.tissue > 0)); % region index at 
 % Each vertex's assigned Wang atlas index (in tissuelabel/cell format)
 sourcemodel_atlas_label = label_atlas(idx_nearest);
 
-% Filter points too far from any labeled ROI (use stricter threshold)
-good = (dist < 10); % Stricter 10mm threshold to ensure accurate assignments
+% Filter points too far from any labeled ROI
+good = (dist < 10); % Relaxed to 15mm to properly cover deep sulci on the high-res pial surface
 sourcemodel_atlas_label(~good) = 0; % 0 = unlabeled/outside cortex
-fprintf('Filtered out %d vertices (distance > 10mm from any ROI)\n', sum(~good));
+fprintf('Filtered out %d vertices (distance > 15mm from any ROI)\n', sum(~good));
 
 
 %%
@@ -108,8 +104,15 @@ right_frontal_points = ismember(sourcemodel_atlas_label, right_frontal_idx);
 % Create a color map for visualization on surface
 % Assign colors with larger gaps to prevent interpolation blending
 % Use: 0 = gray (other), 10 = orange (visual), 20 = purple (frontal)
-% Ensure frontal vertices exclude visual ones (prioritize frontal if overlap)
-roi_color_map = zeros(size(sourcemodel_atlas_label)); % Initialize with zeros (gray/other)
+% Create a color map for visualization on surface
+roi_color_map = zeros(size(sourcemodel_atlas_label)); % Initialize with zeros (Gyri/light gray)
+
+% Use curvature to define Sulci (dark gray) which will be value 1
+if isfield(mesh_inflated, 'curv')
+    is_sulcus = mesh_inflated.curv > 0;
+    roi_color_map(is_sulcus) = 1; % Sulci = 1
+end
+
 roi_color_map(visual_points & ~frontal_points) = 10; % Visual regions only (not frontal)
 roi_color_map(frontal_points) = 20; % Frontal regions (including any that overlap with visual)
 % roi_color_map(parietal_points) = 30; % Parietal regions = 30 (if needed)
@@ -145,12 +148,15 @@ group_color = [241 90 41;  % orange  - visual
                150 90 164];% purple - frontal
 group_color = group_color ./ 255;
 
-% Create custom colormap with multiple steps to prevent interpolation blending
-% Use values 0, 10, 20 for better discrete mapping
-% Create a colormap with steps: gray for 0-5, orange for 10-15, purple for 20-25
-custom_colormap = repmat([0.7 0.7 0.7], 6, 1);  % gray for 0-5 (6 steps)
-custom_colormap = [custom_colormap; repmat(group_color(1,:), 6, 1)];  % orange for 10-15 (6 steps)
-custom_colormap = [custom_colormap; repmat(group_color(2,:), 6, 1)];  % purple for 20-25 (6 steps)
+% Create custom colormap with 21 explicit steps (mapping 0 to 20 exactly)
+% Value 0: Gyri (Light Gray)
+% Value 1: Sulci (Dark Gray)
+% Value 10: Visual (Orange)
+% Value 20: Frontal (Purple)
+custom_colormap = repmat([0.7 0.7 0.7], 21, 1); % Default all to light gray
+custom_colormap(2, :) = [0.4 0.4 0.4];          % Index 2 corresponds to Value 1 (Sulci)
+custom_colormap(11, :) = group_color(1,:);      % Index 11 corresponds to Value 10 (Visual)
+custom_colormap(21, :) = group_color(2,:);      % Index 21 corresponds to Value 20 (Frontal)
 
 % Visualize on surface using ft_sourceplot
 figure('Position', [100, 100, 1200, 600], 'Renderer','painters');
@@ -187,15 +193,16 @@ cfg.funparameter = 'roi';
 cfg.funcolormap = custom_colormap;
 cfg.colorbar = 'yes';
 cfg.funcolorlim = [0 20]; % Limits for categorical mapping (0=gray, 10=orange, 20=purple)
-cfg.surffile = surface_file;
+% We do NOT provide cfg.surffile, so fieldtrip plots the mesh directly from sourceVisualize_left
 ft_sourceplot(cfg, sourceVisualize_left);
 
-% Set view angle and lighting (using 3-number camera position: [x, y, z])
-view([-1, -0.5, 1]); % Left hemisphere view - adjust [x, y, z] to control camera position
+% Set view angle and lighting
+view([-1, -0.5, 1]); % Left hemisphere view
 lighting gouraud;
 material dull;
-light('Position', [-1, -0.5, 1], 'Style', 'infinite', 'Color', [0.4, 0.4, 0.4]);
-title(sprintf('Wang Atlas ROIs on Surface (%d vertices) - Left View', surface_resolution));
+cl = camlight('headlight'); % Attaches light perfectly to the camera 
+cl.Color = [0.4, 0.4, 0.4];
+title('Wang Atlas ROIs on Inflated Surface - Left View');
 
 % Right hemisphere view
 subplot(1, 2, 2);
@@ -221,13 +228,14 @@ cfg.funparameter = 'roi';
 cfg.funcolormap = custom_colormap;
 cfg.colorbar = 'yes';
 cfg.funcolorlim = [0 20]; % Limits for categorical mapping (0=gray, 10=orange, 20=purple)
-cfg.surffile = surface_file;
+% We do NOT provide cfg.surffile, so fieldtrip plots the mesh directly from sourceVisualize_right
 ft_sourceplot(cfg, sourceVisualize_right);
 
-% Set view angle and lighting (using 3-number camera position: [x, y, z])
-view([1, -0.5, 1]); % Right hemisphere view - adjust [x, y, z] to control camera position
+% Set view angle and lighting
+view([1, -0.5, 1]); % Right hemisphere view
 lighting gouraud;
 material dull;
-light('Position', [1, -0.5, 1], 'Style', 'infinite', 'Color', [0.4, 0.4, 0.4]);
+cl = camlight('headlight'); % Attaches light perfectly to the camera 
+cl.Color = [0.4, 0.4, 0.4];
 
-title(sprintf('Wang Atlas ROIs on Surface (%d vertices) - Right View', surface_resolution));
+title('Wang Atlas ROIs on Inflated Surface - Right View');

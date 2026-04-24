@@ -156,19 +156,31 @@ def plot_functional_bars(results, bidsRoot, voxRes, metrics=['imcoh', 'wpli']):
                 
                 # Stats calculation
                 if len(v1) > 1:
-                    # diff is v2 - v1 to match original plotting (crimson - royalblue)
                     diffs = v2 - v1
-                    t_stat, p = ttest_rel(v2, v1)
+                    t_stat_para, p_para = ttest_rel(v2, v1)
                     cohen_d = np.nanmean(diffs) / np.nanstd(diffs, ddof=1)
                     
-                    label = '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else 'ns'
+                    # Permutation test (exact, non-parametric, robust alternative)
+                    # For paired data, this randomly flips the sign of (v2 - v1) 10,000 times
+                    obs_mean = np.mean(diffs)
+                    n_perms = 9999
+                    signs = np.random.choice([-1, 1], size=(n_perms, len(diffs)))
+                    null_dist = np.mean(signs * diffs, axis=1)
+                    
+                    # 2-sided permutation p-value
+                    p_perm = (np.sum(np.abs(null_dist) >= np.abs(obs_mean)) + 1) / (n_perms + 1)
+                    
+                    # Use permutation p-value for plot asterisks
+                    p = p_perm
+                    label = '***' if p <= 0.001 else '**' if p <= 0.01 else '*' if p <= 0.05 else 'ns'
                     
                     stat_summary.append({
                         'Metric': metric, 'Facet': f"{seed_type}_Interaction", 'Window': w_name,
-                        'Contrast': f"{c2_name} vs {c1_name}", 
+                        'Contrast': f"{c2_name} vs {c1_name}",
                         'c2_name': c2_name, 'c2_mean': np.mean(v2), 'c2_sem': np.std(v2, ddof=1)/np.sqrt(len(v2)),
                         'c1_name': c1_name, 'c1_mean': np.mean(v1), 'c1_sem': np.std(v1, ddof=1)/np.sqrt(len(v1)),
-                        't_stat': t_stat, 'p_val': p, 'Cohen_d': cohen_d
+                        'mean_diff': np.mean(diffs), 'Cohen_d': cohen_d,
+                        't_stat': t_stat_para, 'p_val_para': p_para, 'p_val_perm': p_perm
                     })
                     
                     y_max = max(np.mean(v1) + (np.std(v1, ddof=1) / np.sqrt(len(v1))), 
@@ -178,8 +190,8 @@ def plot_functional_bars(results, bidsRoot, voxRes, metrics=['imcoh', 'wpli']):
                     
                     text_y = y_max + 0.015 if y_max >= 0 else y_min - 0.02
                     ax.text(w_idx, text_y, label, ha='center', va='bottom' if y_max >= 0 else 'top', 
-                            fontsize=12, fontweight='bold' if p < 0.05 else 'normal',
-                            color='black' if p < 0.05 else '0.4')
+                            fontsize=12, fontweight='bold' if p <= 0.05 else 'normal',
+                            color='black' if p <= 0.05 else '0.4')
                 
                 c1_means.append(np.mean(v1))
                 c1_sems.append(np.std(v1, ddof=1)/np.sqrt(len(v1)))
@@ -192,16 +204,16 @@ def plot_functional_bars(results, bidsRoot, voxRes, metrics=['imcoh', 'wpli']):
             
             ax.set_xticks(x_pos)
             ax.set_xticklabels(window_names)
+            ax.set_ylim(-0.1, 0.15)
             ax.set_title(f"{seed_type} Seed | Interaction Component")
             ax.set_ylabel(f"Relative {metric.upper()} Change")
             ax.legend(loc='lower left' if metric == 'wpli' else 'upper right', frameon=False)
             
-            ax.grid(axis='y', linestyle='--', alpha=0.3, zorder=0)
+            ax.grid(False)
 
         if metric == 'imcoh':
-            ylim = axes[0].get_ylim()
-            max_abs = max(abs(ylim[0]), abs(ylim[1]))
-            axes[0].set_ylim(-max_abs, max_abs)
+            # Removed forced ylim logic since we set it globally now to -0.1, 0.15
+            pass
 
         plt.suptitle(f'Functional Hierarchy Bars ({metric.upper()}, n={len(results["loaded_subjects"])})', y=0.98, fontsize=14)
         sns.despine(fig)
