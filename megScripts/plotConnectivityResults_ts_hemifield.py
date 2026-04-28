@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Script to generate functional connectivity time-series plots for interaction effects.
-Uses a 2x1 grid (Visual Interaction, Frontal Interaction).
-Includes Cluster-Based Permutation testing (Alpha=0.1 entry, 10000 perms) for temporal significance.
-Aesthetically aligned with the interaction bar plots (no grid, custom ylim).
+Script to visualize frontal connectivity collapsed across visual hemifield.
+Two subplots:
+  1. Contra-Frontal connections: average of (ipsi_cross + contra_cross) across subjects
+  2. Ipsi-Frontal connections:   average of (ipsi_within + contra_within) across subjects
+
+Significance: pointwise 1-sample t-test against zero, uncorrected (p < 0.05).
 """
 
 import os
@@ -12,7 +14,6 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import pandas as pd
 
 def load_functional_ts_results(bidsRoot, subjects, taskName='mgs', voxRes='8mm'):
     """
@@ -69,7 +70,6 @@ def load_functional_ts_results(bidsRoot, subjects, taskName='mgs', voxRes='8mm')
                                 return val
                         return None
 
-                    # Mapping matches plotConnectivityResults_bar_interaction.py
                     iw = [get_subj_trace('left', 'lV2lF'), get_subj_trace('right', 'rV2rF')]
                     if all(d is not None for d in iw): all_data['raw_metrics'][m_name]['ipsi_within'].append(np.mean(iw, axis=0))
                     
@@ -89,93 +89,104 @@ def load_functional_ts_results(bidsRoot, subjects, taskName='mgs', voxRes='8mm')
     print(f"Successfully loaded {len(all_data['loaded_subjects'])} subjects")
     return all_data
 
-def plot_interaction_ts(results, bidsRoot, voxRes, metrics=['imcoh']):
+def plot_hemifield_ts(results, bidsRoot, voxRes, metrics=['imcoh']):
     """
-    Generate 2x1 grid of interaction time-series plots with cluster-permutation.
+    Generate 2x1 grid collapsing across visual hemifield:
+      Row 1: Contra-Frontal (avg of ipsi_cross + contra_cross)
+      Row 2: Ipsi-Frontal   (avg of ipsi_within + contra_within)
+    Significance: pointwise 1-sample sign-flipping permutation test vs 0, uncorrected.
     """
     time_vector = results['time_vector']
     n_subs = len(results['loaded_subjects'])
-    y_min, y_max = -0.1, 0.15
-    
+    y_min, y_max = -0.1, 0.1
+
     for metric in metrics:
         metric_data = results['raw_metrics'][metric]
         if not any(metric_data.values()): continue
-            
-        print(f"Generating 2x1 time-series plots + cluster-stats for {metric}...")
-        
+
+        print(f"Generating 2x1 hemifield time-series plots for {metric}...")
+
+        # Build per-subject collapsed traces
+        # Contra-Frontal: both visual seeds connecting to the contra-lateral frontal
+        #   ipsi_cross   = ipsi visual  → contra frontal
+        #   contra_within= contra visual → contra frontal
+        contra_frontal = []
+        for i in range(n_subs):
+            traces = []
+            if i < len(metric_data['ipsi_cross']):    traces.append(metric_data['ipsi_cross'][i])
+            if i < len(metric_data['contra_within']):  traces.append(metric_data['contra_within'][i])
+            if traces: contra_frontal.append(np.mean(traces, axis=0))
+
+        # Ipsi-Frontal: both visual seeds connecting to the ipsi-lateral frontal
+        #   ipsi_within  = ipsi visual  → ipsi frontal
+        #   contra_cross = contra visual → ipsi frontal
+        ipsi_frontal = []
+        for i in range(n_subs):
+            traces = []
+            if i < len(metric_data['ipsi_within']):   traces.append(metric_data['ipsi_within'][i])
+            if i < len(metric_data['contra_cross']):   traces.append(metric_data['contra_cross'][i])
+            if traces: ipsi_frontal.append(np.mean(traces, axis=0))
+
+        contra_frontal = np.stack(contra_frontal)  # (N, T)
+        ipsi_frontal   = np.stack(ipsi_frontal)    # (N, T)
+
         fig, axes = plt.subplots(2, 1, figsize=(10, 10), sharey=True)
-        
+
         plot_configs = [
-            (0, 'Visual', 'contra_cross', 'ipsi_cross', 
-             'Contra Vis ↔ Ipsi-Front', 'Ipsi Vis ↔ Cross-Front', 'royalblue', 'crimson'),
-            (1, 'Frontal', 'contra_within', 'ipsi_within', 
-             'Contra Vis ↔ Cross-Front', 'Ipsi Vis ↔ Ipsi-Front', 'royalblue', 'crimson')
+            (0, 'Contra-Frontal (both visual seeds → contra frontal)', contra_frontal, 'royalblue'),
+            (1, 'Ipsi-Frontal (both visual seeds → ipsi frontal)',     ipsi_frontal,   'crimson'),
         ]
-        
-        for ax_idx, seed_type, c1_key, c2_key, c1_name, c2_name, c1_color, c2_color in plot_configs:
+
+        for ax_idx, title, subj_traces, color in plot_configs:
             ax = axes[ax_idx]
-            
-            # Extract Subject-Wise Traces
-            v1 = np.stack(metric_data[c1_key])
-            v2 = np.stack(metric_data[c2_key])
-            
-            # Means and SEM
-            m1, sem1 = np.mean(v1, axis=0), np.std(v1, axis=0, ddof=1) / np.sqrt(n_subs)
-            m2, sem2 = np.mean(v2, axis=0), np.std(v2, axis=0, ddof=1) / np.sqrt(n_subs)
+            n = subj_traces.shape[0]
 
-            def pointwise_perm_mask(traces, n_perms=1000):
-                """Vectorized sign-flipping permutation test vs 0, raw uncorrected p < 0.05."""
-                N = traces.shape[0]
-                obs_mean = np.mean(traces, axis=0)
-                signs = np.random.choice([-1, 1], size=(n_perms, N)).astype(np.float32)
-                null_means = (signs @ traces.astype(np.float32)) / N
-                p_vals = (np.sum(np.abs(null_means) >= np.abs(obs_mean), axis=0) + 1) / (n_perms + 1)
-                return p_vals < 0.05
+            # Mean and SEM
+            m   = np.mean(subj_traces, axis=0)
+            sem = np.std(subj_traces, axis=0, ddof=1) / np.sqrt(n)
 
-            print(f"  Running pointwise permutation test [{metric}]: {seed_type}...")
-            sig1 = pointwise_perm_mask(v1)
-            sig2 = pointwise_perm_mask(v2)
+            # Vectorized sign-flipping permutation test vs 0 at each timepoint (1000 perms)
+            N = subj_traces.shape[0]
+            obs_mean = np.mean(subj_traces, axis=0)
+            signs = np.random.choice([-1, 1], size=(1000, N)).astype(np.float32)
+            null_means = (signs @ subj_traces.astype(np.float32)) / N  # (1000, T)
+            p_vals = (np.sum(np.abs(null_means) >= np.abs(obs_mean), axis=0) + 1) / 1001
+            sig_mask = p_vals < 0.05  # raw uncorrected
 
-            # Plot Traces
-            ax.plot(time_vector, m1, color=c1_color, lw=2, label=c1_name)
-            ax.fill_between(time_vector, m1-sem1, m1+sem1, color=c1_color, alpha=0.15)
-
-            ax.plot(time_vector, m2, color=c2_color, lw=2, label=c2_name)
-            ax.fill_between(time_vector, m2-sem2, m2+sem2, color=c2_color, alpha=0.15)
+            # Plot trace + SEM band
+            ax.plot(time_vector, m, color=color, lw=2, label=f'Mean ± SEM (n={n})')
+            ax.fill_between(time_vector, m - sem, m + sem, color=color, alpha=0.15)
 
             # Draw significance bars just below x-axis as colored strips
             bar_bottom = y_min + 0.002
             bar_height = (y_max - y_min) * 0.025
-            if np.any(sig1):
+            if np.any(sig_mask):
                 ax.fill_between(time_vector, bar_bottom, bar_bottom + bar_height,
-                                where=sig1, color=c1_color, alpha=0.8, zorder=3)
-            if np.any(sig2):
-                ax.fill_between(time_vector, bar_bottom + bar_height, bar_bottom + 2*bar_height,
-                                where=sig2, color=c2_color, alpha=0.8, zorder=3)
-            
-            # Standard Decorations
+                                where=sig_mask, color=color, alpha=0.8, zorder=3,
+                                label='p < 0.05 (permutation, uncorrected)')
+
+            # Decorations
             ax.axhline(0, color='black', lw=1, alpha=0.3, ls='--')
-            ax.axvline(0, color='red', ls='--', alpha=0.6, label='Cue')
+            ax.axvline(0,   color='red',    ls='--', alpha=0.6, label='Cue')
             ax.axvline(0.2, color='orange', ls='--', alpha=0.6, label='Delay')
-            ax.axvline(1.7, color='green', ls='--', alpha=0.6, label='Response')
-            
+            ax.axvline(1.7, color='green',  ls='--', alpha=0.6, label='Response')
             ax.set_xlim(-0.5, 1.8)
             ax.set_ylim(y_min, y_max)
             ax.set_ylabel(f"Relative {metric.upper()} Change")
-            ax.set_title(f"{seed_type} Seed | Interaction Time-Series")
+            ax.set_title(title)
             ax.legend(loc='upper right', frameon=False, fontsize=9)
             ax.grid(False)
-            
-        plt.xlabel("Time (s)")
-        plt.suptitle(f'Functional Hierarchy Time-Series ({metric.upper()}, n={n_subs})', y=0.98, fontsize=14)
-        
-        # Save
+
+        axes[-1].set_xlabel("Time (s)")
+        plt.suptitle(f'Frontal Connectivity Collapsed Across Visual Hemifield ({metric.upper()}, n={n_subs})',
+                     y=0.98, fontsize=13)
+
         out_dir = os.path.join(bidsRoot, 'derivatives', 'figures', 'Fs04')
         os.makedirs(out_dir, exist_ok=True)
-        plt.savefig(os.path.join(out_dir, f'connectivity_ts_interaction_{metric}_{voxRes}.png'), dpi=300, bbox_inches='tight')
-        plt.savefig(os.path.join(out_dir, f'connectivity_ts_interaction_{metric}_{voxRes}.svg'), format='svg', bbox_inches='tight')
+        plt.savefig(os.path.join(out_dir, f'connectivity_ts_hemifield_{metric}_{voxRes}.png'), dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(out_dir, f'connectivity_ts_hemifield_{metric}_{voxRes}.svg'), format='svg', bbox_inches='tight')
         plt.close()
-        print(f"Time-series plots saved to {out_dir}")
+        print(f"Saved hemifield time-series to {out_dir}")
 
 def main():
     subjects = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, 18, 19, 23, 24, 25, 29, 31, 32]
@@ -185,7 +196,7 @@ def main():
     
     results = load_functional_ts_results(bidsRoot, subjects, taskName, voxRes)
     if results['loaded_subjects']:
-        plot_interaction_ts(results, bidsRoot, voxRes)
+        plot_hemifield_ts(results, bidsRoot, voxRes)
     print("Done!")
 
 if __name__ == '__main__':
