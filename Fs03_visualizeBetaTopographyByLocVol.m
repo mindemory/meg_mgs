@@ -85,6 +85,9 @@ fprintf('Data base path: %s\n', data_base_path);
 addpath(fieldtrip_path);
 ft_defaults;
 
+% Add brewermap from FieldTrip external folder to path
+addpath(fullfile(fieldtrip_path, 'external', 'brewermap'));
+
 % Add project path
 addpath(project_path);
 

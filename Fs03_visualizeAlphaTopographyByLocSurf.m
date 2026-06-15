@@ -1,5 +1,5 @@
-function Fs03_visualizeBetaTopographyByLocSurf(subjID, surface_resolution)
-% Fs03_visualizeBetaTopographyByLocSurf - Visualize beta power topography by target location (Surface)
+function Fs03_visualizeAlphaTopographyByLocSurf(subjID, surface_resolution)
+% Fs03_visualizeAlphaTopographyByLocSurf - Visualize alpha power topography by target location (Surface)
 %
 % This script loads source space data and computes relative power by:
 % 1. Computing average over all trials first (baseline)
@@ -19,11 +19,11 @@ function Fs03_visualizeBetaTopographyByLocSurf(subjID, surface_resolution)
 %   - Source space data files with sourcedataCombined structure
 %
 % Example:
-%   Fs03_visualizeBetaTopographyByLocSurf(1, 5124)  % Individual subject
-%   Fs03_visualizeBetaTopographyByLocSurf('all', 5124)  % Group average
+%   Fs03_visualizeAlphaTopographyByLocSurf(1, 5124)  % Individual subject
+%   Fs03_visualizeAlphaTopographyByLocSurf('all', 5124)  % Group average
 %
 % Author: Mrugank Dake
-% Date: 2025-01-20
+% Date: 2026-05-22
 
 % Set default surface resolution if not provided
 if nargin < 2
@@ -38,7 +38,7 @@ rehash;
 
 
 %% Path Setup - Auto-detect HPC vs Local
-fprintf('=== MEG Beta Power Topography Visualization (Surface) ===\n');
+fprintf('=== MEG Alpha Power Topography Visualization (Surface) ===\n');
 
 % Auto-detect environment and set paths
 if exist('/scratch/mdd9787', 'dir')
@@ -91,8 +91,8 @@ ft_defaults;
 % Resolve physical path using MATLAB's resolved ft_defaults path to avoid symlink issues
 resolved_fieldtrip_path = fileparts(which('ft_defaults'));
 addpath(fullfile(resolved_fieldtrip_path, 'external', 'brewermap'));
-% addpath(fullfile(resolved_fieldtrip_path, 'external', 'gifti'));
-% rehash;
+addpath(fullfile(resolved_fieldtrip_path, 'external', 'gifti'));
+rehash;
 
 % Add project path
 addpath(project_path);
@@ -120,7 +120,6 @@ if strcmp(subjID, 'all')
     
     % Define subjects array
     subjects = [1 2 3 4 5 6 7 9 10 12 13 15 17 18 19 23 24 25 29 31 32];
-    % subjects = [1 2];
     
     % Define 6 locations by grouping targets
     location_groups = {1, [2,3], [4,5], 6, [7,8], [9,10]};
@@ -130,12 +129,12 @@ if strcmp(subjID, 'all')
     all_power_data = [];
     
     for s = subjects
-        % Load complex beta data
-        subj_data_path = fullfile(data_base_path, sprintf('sub-%02d', s), 'sourceRecon', ...
-            sprintf('sub-%02d_task-mgs_complexBeta_allTargets_%d.mat', s, surface_resolution));
+        % Load complex alpha data from freqSpace
+        subj_data_path = fullfile(data_base_path, sprintf('sub-%02d', s), 'sourceRecon', 'freqSpace', ...
+            sprintf('sub-%02d_task-mgs_complexalpha_allTargets_%d.mat', s, surface_resolution));
         
         if exist(subj_data_path, 'file')
-            fprintf('  Loading subject %02d complex beta data...\n', s);
+            fprintf('  Loading subject %02d complex alpha data...\n', s);
             loaded_data = load(subj_data_path, 'sourceDataByTarget');
             sourceDataByTarget = loaded_data.sourceDataByTarget;
             
@@ -212,16 +211,10 @@ if strcmp(subjID, 'all')
     % Create group visualization
     fprintf('Creating group visualization...\n');
     
-    % Calculate symmetric color limits around 0.0 (baseline)
-    all_power_values = group_power_data(:);
-    all_power_values = all_power_values(~isnan(all_power_values)); % Remove NaN values
-    % data_mean = mean(all_power_values);
-    phigh = quantile(all_power_values, 0.99);
-    plow = quantile(all_power_values, 0.01);
-    max_deviation = max(abs(phigh - 0), abs(plow - 0));
-    color_min = -0.04; %0.0 - max_deviation;
-    color_max = 0.04; %0.0 + max_deviation;
-    fprintf('  Color range for group (symmetric around 0.0): %.3f to %.3f (deviation: %.3f)\n', color_min, color_max, max_deviation);
+    % Set color limits to [-0.04, 0.04] for group average as requested
+    color_min = -0.04;
+    color_max = 0.04;
+    fprintf('  Color range for group: %.3f to %.3f (override)\n', color_min, color_max);
     
     % Load template surface - check multiple locations
     surface_file = sprintf('cortex_%d.surf.gii', surface_resolution);
@@ -341,7 +334,7 @@ if strcmp(subjID, 'all')
     end
     
     % Overall title
-    sgtitle(sprintf('Group Average: Beta Relative Power - Left vs Right Hemisphere (6 Locations, %d vertices)', surface_resolution));
+    sgtitle(sprintf('Group Average: Alpha Relative Power - Left vs Right Hemisphere (6 Locations, %d vertices)', surface_resolution));
     
     % Add overall colorbar
     c = colorbar('Position', [0.92, 0.15, 0.02, 0.7]);
@@ -349,23 +342,21 @@ if strcmp(subjID, 'all')
     caxis([color_min, color_max]);
     
     % Save combined figure
-    fig_name = sprintf('group_betaPower_surf_combined_%d', surface_resolution);
+    fig_name = sprintf('group_alphaPower_surf_combined_%d', surface_resolution);
     saveas(gcf, fullfile(figures_dir, [fig_name, '.fig']));
     saveas(gcf, fullfile(figures_dir, [fig_name, '.png']));
     fprintf('Saved: %s\n', fig_name);
-    
-    % close all;
     
 else
     % Load data for individual subject
     fprintf('Loading data for subject %02d...\n', subjID);
     
-    % Load complex beta data
-    subj_data_path = fullfile(data_base_path, sprintf('sub-%02d', subjID), 'sourceRecon', ...
-        sprintf('sub-%02d_task-mgs_complexBeta_allTargets_%d.mat', subjID, surface_resolution));
+    % Load complex alpha data from freqSpace
+    subj_data_path = fullfile(data_base_path, sprintf('sub-%02d', subjID), 'sourceRecon', 'freqSpace', ...
+        sprintf('sub-%02d_task-mgs_complexalpha_allTargets_%d.mat', subjID, surface_resolution));
     
     if ~exist(subj_data_path, 'file')
-        error('Complex beta data not found at: %s', subj_data_path);
+        error('Complex alpha data not found at: %s', subj_data_path);
     end
     
     loaded_data = load(subj_data_path, 'sourceDataByTarget');
@@ -376,7 +367,7 @@ else
     n_targets = length(sourceDataByTarget);
     n_trialsAll = sum(arrayfun(@(x) length(sourceDataByTarget{x}.trial), 1:10));
     
-    fprintf('Loaded complex beta data with %d sources and %d targets\n', n_sources, n_targets);
+    fprintf('Loaded complex alpha data with %d sources and %d targets\n', n_sources, n_targets);
     
     % Define 6 locations by grouping targets
     location_groups = {1, [2,3], [4,5], 6, [7,8], [9,10]};
@@ -567,7 +558,7 @@ else
     end
     
     % Overall title
-    sgtitle(sprintf('Subject %02d: Beta Relative Power - Left vs Right Hemisphere (6 Locations, %d vertices)', subjID, surface_resolution));
+    sgtitle(sprintf('Subject %02d: Alpha Relative Power - Left vs Right Hemisphere (6 Locations, %d vertices)', subjID, surface_resolution));
     
     % Add overall colorbar
     c = colorbar('Position', [0.92, 0.15, 0.02, 0.7]);
@@ -575,11 +566,10 @@ else
     caxis([color_min, color_max]);
     
     % Save combined figure
-    fig_name = sprintf('sub-%02d_betaPower_surf_combined_%d', subjID, surface_resolution);
+    fig_name = sprintf('sub-%02d_alphaPower_surf_combined_%d', subjID, surface_resolution);
     saveas(gcf, fullfile(figures_dir, [fig_name, '.fig']));
     saveas(gcf, fullfile(figures_dir, [fig_name, '.png']));
     fprintf('Saved: %s\n', fig_name);
-    
     
     close all;
 end

@@ -89,14 +89,8 @@ def load_source_space_data(subjID, bidsRoot, taskName, voxRes, freq_band='beta')
     surface_resolution = int(voxRes[:-2])
     source_data_fpath = os.path.join(sourceReconRoot, f'{subName}_task-{taskName}_sourceSpaceData_{surface_resolution}.mat')
     
-    # Load data with temporary copy approach
-    if socket.gethostname() == 'zod':
-        source_data_temp_path = os.path.join('/Users/mrugank/Desktop', f'{subName}_task-{taskName}_sourceSpaceData_{surface_resolution}.mat')
-        copyfile(source_data_fpath, source_data_temp_path)
-        source_data = h5py.File(source_data_temp_path, 'r')
-        os.remove(source_data_temp_path)
-    else:
-        source_data = h5py.File(source_data_fpath, 'r')
+    # Load data
+    source_data = h5py.File(source_data_fpath, 'r', locking=False)
     
     # Load sourcedataCombined structure
     sourcedata_group = source_data['sourcedataCombined']
@@ -198,14 +192,8 @@ def load_source_space_data(subjID, bidsRoot, taskName, voxRes, freq_band='beta')
 
 def plot_source_model_3d_power(volumetric_fpath, data_matrix, time_vector, time_window=(0.8, 1.5)):
     """Create 3D scatter plot of source model vertices colored by power in time window"""
-    # Load volumetric data with temporary copy approach
-    volumetricTempPath = os.path.join('/Users/mrugank/Desktop', 'volumetric_temp.mat')
-    if socket.gethostname() == 'zod':
-        copyfile(volumetric_fpath, volumetricTempPath)
-        volumetric_data = h5py.File(volumetricTempPath, 'r')
-        os.remove(volumetricTempPath)
-    else:
-        volumetric_data = h5py.File(volumetric_fpath, 'r')
+    # Load volumetric data
+    volumetric_data = h5py.File(volumetric_fpath, 'r', locking=False)
     sourcemodel = volumetric_data['sourcemodel']
     
     # Get positions and inside vertices
@@ -409,13 +397,7 @@ def main(subjID, voxRes, freq_band='beta'):
         behav_data_path = os.path.join(bidsRoot, 'derivatives', f'sub-{subjID:02d}', 'eyetracking', f'sub-{subjID:02d}_task-{taskName}-iisess_forSource.mat')
         
         # Use h5py for MATLAB v7.3 files
-        if socket.gethostname() == 'zod':
-            behav_data_temp_path = os.path.join('/Users/mrugank/Desktop', f'sub-{subjID:02d}_task-{taskName}-iisess_forSource.mat')
-            copyfile(behav_data_path, behav_data_temp_path)
-            behav_data = h5py.File(behav_data_temp_path, 'r')
-            os.remove(behav_data_temp_path)
-        else:
-            behav_data = h5py.File(behav_data_path, 'r')
+        behav_data = h5py.File(behav_data_path, 'r', locking=False)
             
         ii_sess_forSource = behav_data['ii_sess_forSource']
             

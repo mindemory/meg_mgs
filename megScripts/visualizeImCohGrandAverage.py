@@ -13,9 +13,9 @@ def get_bids_root():
 def main():
     bidsRoot = get_bids_root()
     voxRes = '8mm'
-    freqBand = 'beta'
+    freqBand = 'alpha'
     subjects = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, 18, 19, 23, 24, 25, 29, 31, 32]
-    outDir = os.path.join(bidsRoot, 'derivatives', 'figures', 'connectivity_grand_average')
+    outDir = os.path.join(bidsRoot, 'derivatives', 'figures', 'Fs04')
     os.makedirs(outDir, exist_ok=True)
 
     # 1. Load ROIs
@@ -126,11 +126,13 @@ def main():
 
     fig.suptitle(f'Relative Imaginary Coherence ({freqBand.upper()}): Left vs Right Targets (n={valid_subs} subjects)', fontsize=20, y=0.98)
     
-    outF = os.path.join(outDir, f'ImCoh_GrandAverage_{freqBand}_{voxRes}.png')
-    plt.savefig(outF, dpi=300, bbox_inches='tight')
+    outF_png = os.path.join(outDir, f'{freqBand}_connectivity_ts_master_imcoh_{voxRes}.png')
+    outF_svg = os.path.join(outDir, f'{freqBand}_connectivity_ts_master_imcoh_{voxRes}.svg')
+    plt.savefig(outF_png, dpi=300, bbox_inches='tight')
+    plt.savefig(outF_svg, bbox_inches='tight')
     plt.close()
     
-    print(f"[*] Grand Average figure saved: {outF}")
+    print(f"[*] Grand Average figure saved: {outF_png} and {outF_svg}")
 
 if __name__ == "__main__":
     main()
