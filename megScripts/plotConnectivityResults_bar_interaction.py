@@ -68,9 +68,7 @@ def load_functional_bar_results(bidsRoot, subjects, taskName='mgs', voxRes='8mm'
                             if k in data_dict:
                                 val = data_dict[k]
                                 if val.ndim > 1: val = np.mean(val.reshape(val.shape[0], -1), axis=1)
-                                if len(b_idxs) > 0:
-                                    b_mean = np.nanmean(val[b_idxs])
-                                    return (val / (b_mean + 1e-10) - 1) if corr_type == 'ratio' else (val - b_mean)
+                                # Return raw values for CLI calculation
                                 return val
                         return None
 
@@ -104,7 +102,7 @@ def plot_functional_bars(results, bidsRoot, voxRes, metrics=['imcoh', 'wpli']):
     Uses simplified standard matplotlib instead of seaborn objects
     to ensure the SVGs are simple arrays of paths instead of nested groups.
     """
-    windows = {'Pre-delay': (-0.5, 0.0), 'Stimulus': (0.1, 0.3), 'Delay': (0.6, 1.5)}
+    windows = {'Stimulus': (0.1, 0.3), 'Delay': (0.6, 1.5)}
     window_names = list(windows.keys())
     t_vec = results['time_vector']
     
@@ -112,103 +110,116 @@ def plot_functional_bars(results, bidsRoot, voxRes, metrics=['imcoh', 'wpli']):
         metric_data = results['raw_metrics'][metric]
         if not any(metric_data.values()): continue
             
-        print(f"Generating 2x1 interaction bar plots + stats for {metric}...")
+        print(f"Generating 2x2 interaction master bar plots + stats for {metric}...")
+        plt.close('all')
         
-        fig, axes = plt.subplots(2, 1, figsize=(6, 8), sharey=True)
-        if not isinstance(axes, np.ndarray): axes = [axes]
+        # 2x2 grid: Top row = Z-scored Bars, Bottom row = Contrast (CLI)
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10), constrained_layout=False)
         
+        # Data categories (Raw values)
+        raw_cw = np.array(metric_data['contra_within'])
+        raw_ic = np.array(metric_data['ipsi_cross'])
+        raw_cc = np.array(metric_data['contra_cross'])
+        raw_iw = np.array(metric_data['ipsi_within'])
+
+        # Calculate CLI from RAW values (matching ts_hemifield)
+        cli_contra = (raw_cw - raw_ic) / (raw_cw + raw_ic + 1e-12)
+        cli_ipsi   = (raw_cc - raw_iw) / (raw_cc + raw_iw + 1e-12)
+
+        # Z-scoring function (for the bars)
+        def zscore_all(traces, b_idxs):
+            z = np.zeros_like(traces)
+            for i in range(len(traces)):
+                b_data = traces[i, b_idxs]
+                bm, bs = np.nanmean(b_data), np.nanstd(b_data)
+                z[i] = (traces[i] - bm) / (bs + 1e-10)
+            return z
+
+        # Baseline indices for z-scoring
+        b_mask = (t_vec >= -0.6) & (t_vec <= 0.0)
+        b_idxs = np.where(b_mask)[0]
+        
+        z_cw = zscore_all(raw_cw, b_idxs)
+        z_ic = zscore_all(raw_ic, b_idxs)
+        z_cc = zscore_all(raw_cc, b_idxs)
+        z_iw = zscore_all(raw_iw, b_idxs)
+
         plot_configs = [
-            # ax_idx, seed_type, c1_key, c2_key, c1_name, c2_name, c1_color, c2_color
-            (0, 'Visual', 'contra_cross', 'ipsi_cross', 
-             'Contra Vis ↔ Ipsi-Front', 'Ipsi Vis ↔ Cross-Front', 'royalblue', 'crimson'),
-            (1, 'Frontal', 'contra_within', 'ipsi_within', 
-             'Contra Vis ↔ Cross-Front', 'Ipsi Vis ↔ Ipsi-Front', 'royalblue', 'crimson')
+            # ax_row, ax_col, data_pair (c1, c2), title, colors, ylabel, is_paired_top, labels
+            (0, 0, (z_cw, z_ic), "Contralateral Frontal Target", ["#e6550d", "#fec44f"], "Baseline Z-score", True, ['Contra Visual', 'Ipsi Visual']),
+            (0, 1, (z_cc, z_iw), "Ipsilateral Frontal Target",   ["#1b9e77", "#0571b0"], "Baseline Z-score", True, ['Contra Visual', 'Ipsi Visual']),
+            (1, 0, (z_ic, z_cc), "Cross-Hemisphere Connections", ["#fec44f", "#1b9e77"], "Baseline Z-score", True, ['Ipsi-Vis to Contra-Front', 'Contra-Vis to Ipsi-Front']),
+            (1, 1, (z_cw, z_iw), "Within-Hemisphere Connections", ["#e6550d", "#0571b0"], "Baseline Z-score", True, ['Contra-Vis to Contra-Front', 'Ipsi-Vis to Ipsi-Front'])
         ]
          
         stat_summary = []
         
-        for ax_idx, seed_type, c1_key, c2_key, c1_name, c2_name, c1_color, c2_color in plot_configs:
-            ax = axes[ax_idx]
-            
+        def get_p_label(p):
+            return '***' if p <= 0.001 else '**' if p <= 0.01 else '*' if p <= 0.06 else 'ns'
+
+        def run_permutation_vs_zero(data, n_perms=9999):
+            obs_mean = np.mean(data)
+            # Flip signs of the data to create null distribution
+            signs = np.random.choice([-1, 1], size=(n_perms, len(data)))
+            null_dist = np.mean(signs * data, axis=1)
+            p = (np.sum(np.abs(null_dist) >= np.abs(obs_mean)) + 1) / (n_perms + 1)
+            return p
+
+        for r, c, d_pair, title, colors, ylabel, is_paired, bar_labels in plot_configs:
+            ax = axes[r, c]
             x_pos = np.arange(len(window_names))
             width = 0.35
             
-            c1_means = []
-            c1_sems = []
-            c2_means = []
-            c2_sems = []
+            means1, sems1 = [], []
+            means2, sems2 = [], []
             
             for w_idx, w_name in enumerate(window_names):
                 start, end = windows[w_name]
                 mask = (t_vec >= start) & (t_vec <= end)
                 
-                v1 = []
-                v2 = []
-                for sj_idx in range(len(results['loaded_subjects'])):
-                    if len(metric_data[c1_key]) > sj_idx and len(metric_data[c2_key]) > sj_idx:
-                        trace1 = metric_data[c1_key][sj_idx]
-                        trace2 = metric_data[c2_key][sj_idx]
-                        v1.append(np.nanmean(trace1[mask]))
-                        v2.append(np.nanmean(trace2[mask]))
+                v1 = np.nanmean(d_pair[0][:, mask], axis=1)
+                v2 = np.nanmean(d_pair[1][:, mask], axis=1)
                 
-                v1 = np.array(v1)
-                v2 = np.array(v2)
+                # Individual bar stats
+                p1 = run_permutation_vs_zero(v1)
+                p2 = run_permutation_vs_zero(v2)
                 
-                # Stats calculation
-                if len(v1) > 1:
-                    diffs = v2 - v1
-                    t_stat_para, p_para = ttest_rel(v2, v1)
-                    cohen_d = np.nanmean(diffs) / np.nanstd(diffs, ddof=1)
-                    
-                    # Permutation test (exact, non-parametric, robust alternative)
-                    # For paired data, this randomly flips the sign of (v2 - v1) 10,000 times
-                    obs_mean = np.mean(diffs)
-                    n_perms = 9999
-                    signs = np.random.choice([-1, 1], size=(n_perms, len(diffs)))
-                    null_dist = np.mean(signs * diffs, axis=1)
-                    
-                    # 2-sided permutation p-value
-                    p_perm = (np.sum(np.abs(null_dist) >= np.abs(obs_mean)) + 1) / (n_perms + 1)
-                    
-                    # Use permutation p-value for plot asterisks
-                    p = p_perm
-                    label = '***' if p <= 0.001 else '**' if p <= 0.01 else '*' if p <= 0.05 else 'ns'
-                    
-                    stat_summary.append({
-                        'Metric': metric, 'Facet': f"{seed_type}_Interaction", 'Window': w_name,
-                        'Contrast': f"{c2_name} vs {c1_name}",
-                        'c2_name': c2_name, 'c2_mean': np.mean(v2), 'c2_sem': np.std(v2, ddof=1)/np.sqrt(len(v2)),
-                        'c1_name': c1_name, 'c1_mean': np.mean(v1), 'c1_sem': np.std(v1, ddof=1)/np.sqrt(len(v1)),
-                        'mean_diff': np.mean(diffs), 'Cohen_d': cohen_d,
-                        't_stat': t_stat_para, 'p_val_para': p_para, 'p_val_perm': p_perm
-                    })
-                    
-                    y_max = max(np.mean(v1) + (np.std(v1, ddof=1) / np.sqrt(len(v1))), 
-                              np.mean(v2) + (np.std(v2, ddof=1) / np.sqrt(len(v2))))
-                    y_min = min(np.mean(v1) - (np.std(v1, ddof=1) / np.sqrt(len(v1))), 
-                              np.mean(v2) - (np.std(v2, ddof=1) / np.sqrt(len(v2))))
-                    
-                    text_y = y_max + 0.015 if y_max >= 0 else y_min - 0.02
-                    ax.text(w_idx, text_y, label, ha='center', va='bottom' if y_max >= 0 else 'top', 
-                            fontsize=12, fontweight='bold' if p <= 0.05 else 'normal',
-                            color='black' if p <= 0.05 else '0.4')
+                m1, s1, sem1 = np.mean(v1), np.std(v1, ddof=1), np.std(v1, ddof=1)/np.sqrt(len(v1))
+                m2, s2, sem2 = np.mean(v2), np.std(v2, ddof=1), np.std(v2, ddof=1)/np.sqrt(len(v2))
+                d1 = m1 / (s1 + 1e-10)
+                d2 = m2 / (s2 + 1e-10)
                 
-                c1_means.append(np.mean(v1))
-                c1_sems.append(np.std(v1, ddof=1)/np.sqrt(len(v1)))
-                c2_means.append(np.mean(v2))
-                c2_sems.append(np.std(v2, ddof=1)/np.sqrt(len(v2)))
-            
-            # Bars
-            ax.bar(x_pos - width/2, c1_means, width, yerr=c1_sems, label=c1_name, color=c1_color, alpha=0.7, capsize=5, zorder=2)
-            ax.bar(x_pos + width/2, c2_means, width, yerr=c2_sems, label=c2_name, color=c2_color, alpha=0.7, capsize=5, zorder=2)
-            
+                # Paired contrast stats
+                diffs = v2 - v1
+                p_paired_perm = (np.sum(np.abs(np.mean(np.random.choice([-1, 1], size=(9999, len(diffs))) * diffs, axis=1)) >= np.abs(np.mean(diffs))) + 1) / 10000
+                d_paired = np.mean(diffs) / (np.std(diffs, ddof=1) + 1e-10)
+                
+                means1.append(m1); sems1.append(sem1)
+                means2.append(m2); sems2.append(sem2)
+                
+                # Labels
+                y1 = m1 + sem1; y2 = m2 + sem2
+                ax.text(w_idx - width/2, y1 + 0.05, get_p_label(p1), ha='center', fontsize=8, color='black' if p1 <= 0.06 else 'gray')
+                ax.text(w_idx + width/2, y2 + 0.05, get_p_label(p2), ha='center', fontsize=8, color='black' if p2 <= 0.06 else 'gray')
+                y_max = max(y1, y2)
+                ax.text(w_idx, y_max + 0.25, f"({get_p_label(p_paired_perm)})", ha='center', fontsize=9, color='blue' if p_paired_perm <= 0.06 else '0.5')
+                
+                stat_summary.append({
+                    'Metric': metric, 'Plot': title, 'Window': w_name, 
+                    'Mean1': m1, 'SEM1': sem1, 'd1': d1, 'p1_perm': p1,
+                    'Mean2': m2, 'SEM2': sem2, 'd2': d2, 'p2_perm': p2,
+                    'd_paired': d_paired, 'p_paired_perm': p_paired_perm
+                })
+
+            ax.bar(x_pos - width/2, means1, width, yerr=sems1, color=colors[0], alpha=0.8, capsize=5, label=bar_labels[0])
+            ax.bar(x_pos + width/2, means2, width, yerr=sems2, color=colors[1], alpha=0.8, capsize=5, label=bar_labels[1])
+            ax.axhline(0, color='black', lw=1, linestyle='--')
+            ax.legend(loc='upper right', frameon=False, fontsize=8)
+            ax.set_ylim(-1.5, 1.5)            
             ax.set_xticks(x_pos)
             ax.set_xticklabels(window_names)
-            ax.set_ylim(-0.1, 0.15)
-            ax.set_title(f"{seed_type} Seed | Interaction Component")
-            ax.set_ylabel(f"Relative {metric.upper()} Change")
-            ax.legend(loc='lower left' if metric == 'wpli' else 'upper right', frameon=False)
-            
+            ax.set_title(title, fontweight='bold')
+            ax.set_ylabel(ylabel)
             ax.grid(False)
 
         if metric == 'imcoh':
@@ -217,7 +228,7 @@ def plot_functional_bars(results, bidsRoot, voxRes, metrics=['imcoh', 'wpli']):
 
         plt.suptitle(f'Functional Hierarchy Bars ({metric.upper()}, n={len(results["loaded_subjects"])})', y=0.98, fontsize=14)
         sns.despine(fig)
-        plt.tight_layout()
+        fig.subplots_adjust(hspace=0.4, wspace=0.3, top=0.9, bottom=0.1, left=0.1, right=0.9)
         
         # Save Stats to CSV (Overwriting original Fs04 assets)
         out_dir = os.path.join(bidsRoot, 'derivatives', 'figures', 'Fs04')
@@ -227,9 +238,9 @@ def plot_functional_bars(results, bidsRoot, voxRes, metrics=['imcoh', 'wpli']):
         print(f"Stats report saved to {stats_file}")
 
         # Save Figures (Overwriting original Fs04 assets)
-        plt.savefig(os.path.join(out_dir, f'connectivity_functional_bars_{metric}_{voxRes}.png'), dpi=300, bbox_inches='tight')
-        plt.savefig(os.path.join(out_dir, f'connectivity_functional_bars_{metric}_{voxRes}.svg'), format='svg', bbox_inches='tight')
-        plt.close()
+        fig.savefig(os.path.join(out_dir, f'connectivity_functional_bars_{metric}_{voxRes}.png'), dpi=150)
+        fig.savefig(os.path.join(out_dir, f'connectivity_functional_bars_{metric}_{voxRes}.svg'))
+        plt.close(fig)
 
 def main():
     subjects = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, 18, 19, 23, 24, 25, 29, 31, 32]
@@ -239,7 +250,7 @@ def main():
     
     results = load_functional_bar_results(bidsRoot, subjects, taskName, voxRes)
     if results['loaded_subjects']:
-        plot_functional_bars(results, bidsRoot, voxRes)
+        plot_functional_bars(results, bidsRoot, voxRes, metrics=['imcoh'])
     print("Done! Interaction bar plots finalized.")
 
 if __name__ == '__main__':

@@ -79,7 +79,7 @@ def load_functional_ts_results(bidsRoot, subjects, taskName='mgs', voxRes='8mm')
                     cw = [get_subj_trace('left', 'rV2rF'), get_subj_trace('right', 'lV2lF')]
                     if all(d is not None for d in cw): all_data['raw_metrics'][m_name]['contra_within'].append(np.mean(cw, axis=0))
                     
-                    cc = [get_subj_trace('left', 'rV2lF'), get_subj_trace('right', 'rV2rF')]
+                    cc = [get_subj_trace('left', 'rV2lF'), get_subj_trace('right', 'lV2rF')]
                     if all(d is not None for d in cc): all_data['raw_metrics'][m_name]['contra_cross'].append(np.mean(cc, axis=0))
 
                 all_data['loaded_subjects'].append(subjID)

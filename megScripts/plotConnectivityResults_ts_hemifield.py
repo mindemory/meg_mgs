@@ -14,6 +14,8 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
+from scipy.stats import ttest_1samp
 
 def load_functional_ts_results(bidsRoot, subjects, taskName='mgs', voxRes='8mm'):
     """
@@ -59,28 +61,36 @@ def load_functional_ts_results(bidsRoot, subjects, taskName='mgs', voxRes='8mm')
                 for m_name, (data_dict, corr_type) in subj_metrics.items():
                     if m_name not in all_data['raw_metrics']: continue
                     
-                    def get_subj_trace(cond, link):
+                    def get_subj_trace_raw(cond, link):
                         for k in [f'{cond}_{link}_{m_name}', f'{cond}_{link}']:
                             if k in data_dict:
                                 val = data_dict[k]
                                 if val.ndim > 1: val = np.mean(val.reshape(val.shape[0], -1), axis=1)
-                                if len(b_idxs) > 0:
-                                    b_mean = np.nanmean(val[b_idxs])
-                                    return (val / (b_mean + 1e-10) - 1) if corr_type == 'ratio' else (val - b_mean)
+                                # Returning RAW values (no baseline correction)
                                 return val
                         return None
 
-                    iw = [get_subj_trace('left', 'lV2lF'), get_subj_trace('right', 'rV2rF')]
-                    if all(d is not None for d in iw): all_data['raw_metrics'][m_name]['ipsi_within'].append(np.mean(iw, axis=0))
-                    
-                    ic = [get_subj_trace('left', 'lV2rF'), get_subj_trace('right', 'rV2lF')]
-                    if all(d is not None for d in ic): all_data['raw_metrics'][m_name]['ipsi_cross'].append(np.mean(ic, axis=0))
+                    def avg_available_raw(cond_links):
+                        valid = [get_subj_trace_raw(c, l) for c, l in cond_links]
+                        valid = [v for v in valid if v is not None]
+                        return np.mean(valid, axis=0) if valid else None
 
-                    cw = [get_subj_trace('left', 'rV2rF'), get_subj_trace('right', 'lV2lF')]
-                    if all(d is not None for d in cw): all_data['raw_metrics'][m_name]['contra_within'].append(np.mean(cw, axis=0))
+                    # Mapping raw values (Contra-Vis/Ipsi-Vis x Contra-Front/Ipsi-Front)
+                    # 1. Contra-Visual to Contra-Frontal (contra_within)
+                    cw_trace = avg_available_raw([('left', 'rV2rF'), ('right', 'lV2lF')])
+                    if cw_trace is not None: all_data['raw_metrics'][m_name]['contra_within'].append(cw_trace)
                     
-                    cc = [get_subj_trace('left', 'rV2lF'), get_subj_trace('right', 'rV2rF')]
-                    if all(d is not None for d in cc): all_data['raw_metrics'][m_name]['contra_cross'].append(np.mean(cc, axis=0))
+                    # 2. Ipsi-Visual to Contra-Frontal (ipsi_cross)
+                    ic_trace = avg_available_raw([('left', 'lV2rF'), ('right', 'rV2lF')])
+                    if ic_trace is not None: all_data['raw_metrics'][m_name]['ipsi_cross'].append(ic_trace)
+
+                    # 3. Contra-Visual to Ipsi-Frontal (contra_cross)
+                    cc_trace = avg_available_raw([('left', 'rV2lF'), ('right', 'lV2rF')])
+                    if cc_trace is not None: all_data['raw_metrics'][m_name]['contra_cross'].append(cc_trace)
+
+                    # 4. Ipsi-Visual to Ipsi-Frontal (ipsi_within)
+                    iw_trace = avg_available_raw([('left', 'lV2lF'), ('right', 'rV2rF')])
+                    if iw_trace is not None: all_data['raw_metrics'][m_name]['ipsi_within'].append(iw_trace)
 
                 all_data['loaded_subjects'].append(subjID)
         except Exception as e:
@@ -89,104 +99,120 @@ def load_functional_ts_results(bidsRoot, subjects, taskName='mgs', voxRes='8mm')
     print(f"Successfully loaded {len(all_data['loaded_subjects'])} subjects")
     return all_data
 
-def plot_hemifield_ts(results, bidsRoot, voxRes, metrics=['imcoh']):
+def plot_hemifield_ts(results, bidsRoot, voxRes, metrics=['imcoh', 'wpli']):
     """
-    Generate 2x1 grid collapsing across visual hemifield:
-      Row 1: Contra-Frontal (avg of ipsi_cross + contra_cross)
-      Row 2: Ipsi-Frontal   (avg of ipsi_within + contra_within)
-    Significance: pointwise 1-sample sign-flipping permutation test vs 0, uncorrected.
+    Generate 2x2 Master Figure:
+      Row 1: Z-scored traces (Contra-Vis vs Ipsi-Vis seeds)
+      Row 2: Lateralization Index (CLI)
     """
     time_vector = results['time_vector']
     n_subs = len(results['loaded_subjects'])
-    y_min, y_max = -0.1, 0.1
+    
+    # Baseline mask for Z-scoring
+    b_mask = (time_vector >= -0.6) & (time_vector <= 0.0)
+    b_idxs = np.where(b_mask)[0]
 
     for metric in metrics:
         metric_data = results['raw_metrics'][metric]
         if not any(metric_data.values()): continue
 
-        print(f"Generating 2x1 hemifield time-series plots for {metric}...")
+        print(f"Generating 2x2 Master Figure for {metric}...")
 
-        # Build per-subject collapsed traces
-        # Contra-Frontal: both visual seeds connecting to the contra-lateral frontal
-        #   ipsi_cross   = ipsi visual  → contra frontal
-        #   contra_within= contra visual → contra frontal
-        contra_frontal = []
-        for i in range(n_subs):
-            traces = []
-            if i < len(metric_data['ipsi_cross']):    traces.append(metric_data['ipsi_cross'][i])
-            if i < len(metric_data['contra_within']):  traces.append(metric_data['contra_within'][i])
-            if traces: contra_frontal.append(np.mean(traces, axis=0))
+        # 1. Prepare Stacks (Raw)
+        cw = np.stack(metric_data['contra_within']) # Contra-Vis -> Contra-Front
+        ic = np.stack(metric_data['ipsi_cross'])     # Ipsi-Vis   -> Contra-Front
+        cc = np.stack(metric_data['contra_cross'])  # Contra-Vis -> Ipsi-Front
+        iw = np.stack(metric_data['ipsi_within'])   # Ipsi-Vis   -> Ipsi-Front
 
-        # Ipsi-Frontal: both visual seeds connecting to the ipsi-lateral frontal
-        #   ipsi_within  = ipsi visual  → ipsi frontal
-        #   contra_cross = contra visual → ipsi frontal
-        ipsi_frontal = []
-        for i in range(n_subs):
-            traces = []
-            if i < len(metric_data['ipsi_within']):   traces.append(metric_data['ipsi_within'][i])
-            if i < len(metric_data['contra_cross']):   traces.append(metric_data['contra_cross'][i])
-            if traces: ipsi_frontal.append(np.mean(traces, axis=0))
+        # 2. Z-scoring function
+        def zscore_traces(traces):
+            z_traces = np.zeros_like(traces)
+            for i in range(traces.shape[0]):
+                b_data = traces[i, b_idxs]
+                b_mean = np.nanmean(b_data)
+                b_std  = np.nanstd(b_data)
+                z_traces[i] = (traces[i] - b_mean) / (b_std + 1e-10)
+            return z_traces
 
-        contra_frontal = np.stack(contra_frontal)  # (N, T)
-        ipsi_frontal   = np.stack(ipsi_frontal)    # (N, T)
+        # 3. Calculate Derived Metrics
+        # 3. Calculate Z-scores
+        z_cw = zscore_traces(cw)
+        z_ic = zscore_traces(ic)
+        z_cc = zscore_traces(cc)
+        z_iw = zscore_traces(iw)
 
-        fig, axes = plt.subplots(2, 1, figsize=(10, 10), sharey=True)
-
+        # Plot Configs
         plot_configs = [
-            (0, 'Contra-Frontal (both visual seeds → contra frontal)', contra_frontal, 'royalblue'),
-            (1, 'Ipsi-Frontal (both visual seeds → ipsi frontal)',     ipsi_frontal,   'crimson'),
+            (0, 0, (z_cw, z_ic), "Contralateral Frontal Target", ["#e6550d", "#fec44f"], ["Contra-Visual", "Ipsi-Visual"]),
+            (0, 1, (z_cc, z_iw), "Ipsilateral Frontal Target",   ["#1b9e77", "#0571b0"], ["Contra-Visual", "Ipsi-Visual"]),
+            (1, 0, (z_ic, z_cc), "Cross-Hemisphere Connections", ["#fec44f", "#1b9e77"], ["Ipsi-Vis to Contra-Front", "Contra-Vis to Ipsi-Front"]),
+            (1, 1, (z_cw, z_iw), "Within-Hemisphere Connections", ["#e6550d", "#0571b0"], ["Contra-Vis to Contra-Front", "Ipsi-Vis to Ipsi-Front"])
         ]
 
-        for ax_idx, title, subj_traces, color in plot_configs:
-            ax = axes[ax_idx]
-            n = subj_traces.shape[0]
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12), sharex=True)
+        r1_y_lim = (-1.5, 1.5)
 
-            # Mean and SEM
-            m   = np.mean(subj_traces, axis=0)
-            sem = np.std(subj_traces, axis=0, ddof=1) / np.sqrt(n)
+        def pointwise_ttest_mask(traces, time_vec, label=""):
+            """Pointwise 1-sample t-test vs 0 within [0, 1.7]s."""
+            _, p_vals = ttest_1samp(traces, 0, axis=0)
+            sig_mask = p_vals < 0.05
+            
+            # Apply time window filter
+            t_window = (time_vec >= 0.0) & (time_vec <= 1.7)
+            sig_mask = sig_mask & t_window
+            
+            sig_count = np.sum(sig_mask)
+            if sig_count > 0:
+                print(f"    [{label}] Significant at {sig_count} timepoints in [0, 1.7]s.")
+            return sig_mask
 
-            # Vectorized sign-flipping permutation test vs 0 at each timepoint (1000 perms)
-            N = subj_traces.shape[0]
-            obs_mean = np.mean(subj_traces, axis=0)
-            signs = np.random.choice([-1, 1], size=(1000, N)).astype(np.float32)
-            null_means = (signs @ subj_traces.astype(np.float32)) / N  # (1000, T)
-            p_vals = (np.sum(np.abs(null_means) >= np.abs(obs_mean), axis=0) + 1) / 1001
-            sig_mask = p_vals < 0.05  # raw uncorrected
+        for r, c, (d1, d2), title, colors, labels in plot_configs:
+            ax = axes[r, c]
+            # Plot traces
+            for data, color, label in [(d1, colors[0], labels[0]), (d2, colors[1], labels[1])]:
+                m = np.mean(data, axis=0)
+                sem = np.std(data, axis=0, ddof=1) / np.sqrt(n_subs)
+                ax.plot(time_vector, m, color=color, lw=2.5, label=label)
+                ax.fill_between(time_vector, m-sem, m+sem, color=color, alpha=0.15)
+                
+                # Individual sig (vs 0)
+                sig = pointwise_ttest_mask(data, time_vector, label=f"({r},{c})-{label}")
+                if np.any(sig):
+                    y_off = r1_y_lim[0] + 0.1 + (0.2 if label == labels[1] else 0)
+                    ax.fill_between(time_vector, y_off, y_off+0.1, where=sig, color=color, alpha=0.8, interpolate=True)
+            
+            # Paired contrast sig
+            diffs = d1 - d2
+            sig_diff = pointwise_ttest_mask(diffs, time_vector, label=f"({r},{c})-diff")
+            if np.any(sig_diff):
+                ax.fill_between(time_vector, r1_y_lim[1]-0.2, r1_y_lim[1]-0.1, where=sig_diff, color='black', alpha=0.5)
 
-            # Plot trace + SEM band
-            ax.plot(time_vector, m, color=color, lw=2, label=f'Mean ± SEM (n={n})')
-            ax.fill_between(time_vector, m - sem, m + sem, color=color, alpha=0.15)
+            ax.set_title(title, fontweight='bold')
+            ax.set_ylim(r1_y_lim)
+            ax.set_ylabel("Baseline Z-score")
+            ax.legend(loc='upper right', frameon=False, fontsize=8)
 
-            # Draw significance bars just below x-axis as colored strips
-            bar_bottom = y_min + 0.002
-            bar_height = (y_max - y_min) * 0.025
-            if np.any(sig_mask):
-                ax.fill_between(time_vector, bar_bottom, bar_bottom + bar_height,
-                                where=sig_mask, color=color, alpha=0.8, zorder=3,
-                                label='p < 0.05 (permutation, uncorrected)')
-
-            # Decorations
+        # Global Decorations
+        for ax in axes.flat:
             ax.axhline(0, color='black', lw=1, alpha=0.3, ls='--')
-            ax.axvline(0,   color='red',    ls='--', alpha=0.6, label='Cue')
-            ax.axvline(0.2, color='orange', ls='--', alpha=0.6, label='Delay')
-            ax.axvline(1.7, color='green',  ls='--', alpha=0.6, label='Response')
-            ax.set_xlim(-0.5, 1.8)
-            ax.set_ylim(y_min, y_max)
-            ax.set_ylabel(f"Relative {metric.upper()} Change")
-            ax.set_title(title)
-            ax.legend(loc='upper right', frameon=False, fontsize=9)
+            ax.axvline(0,   color='gray', ls='--', alpha=0.6)
+            ax.axvline(0.2, color='gray', ls=':',  alpha=0.4)
+            ax.axvline(1.7, color='black', ls='--', alpha=0.6)
+            ax.set_xlim(-0.3, 1.7)
             ax.grid(False)
 
-        axes[-1].set_xlabel("Time (s)")
-        plt.suptitle(f'Frontal Connectivity Collapsed Across Visual Hemifield ({metric.upper()}, n={n_subs})',
-                     y=0.98, fontsize=13)
+        axes[1, 0].set_xlabel("Time (s)")
+        axes[1, 1].set_xlabel("Time (s)")
+        
+        plt.suptitle(f'{metric.upper()} Connectivity (N={n_subs})',
+                     y=0.98, fontsize=18, fontweight='bold')
 
         out_dir = os.path.join(bidsRoot, 'derivatives', 'figures', 'Fs04')
         os.makedirs(out_dir, exist_ok=True)
-        plt.savefig(os.path.join(out_dir, f'connectivity_ts_hemifield_{metric}_{voxRes}.png'), dpi=300, bbox_inches='tight')
-        plt.savefig(os.path.join(out_dir, f'connectivity_ts_hemifield_{metric}_{voxRes}.svg'), format='svg', bbox_inches='tight')
+        plt.savefig(os.path.join(out_dir, f'connectivity_ts_master_{metric}_{voxRes}.png'), dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(out_dir, f'connectivity_ts_master_{metric}_{voxRes}.svg'), format='svg', bbox_inches='tight')
         plt.close()
-        print(f"Saved hemifield time-series to {out_dir}")
+        print(f"Saved master figure to {out_dir}")
 
 def main():
     subjects = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, 18, 19, 23, 24, 25, 29, 31, 32]
@@ -196,7 +222,7 @@ def main():
     
     results = load_functional_ts_results(bidsRoot, subjects, taskName, voxRes)
     if results['loaded_subjects']:
-        plot_hemifield_ts(results, bidsRoot, voxRes)
+        plot_hemifield_ts(results, bidsRoot, voxRes, metrics=['imcoh'])
     print("Done!")
 
 if __name__ == '__main__':

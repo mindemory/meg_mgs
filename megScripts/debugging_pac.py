@@ -7,6 +7,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import sys
+from joblib import Parallel, delayed
 
 # Compute profile mapping
 def get_compute_profile():
@@ -111,6 +112,78 @@ def _peak_triggered_avg(phase_sig, amp_pow, sfreq, phase_band, time_vector, wind
     return results
 
 
+def compute_tort_mi(phase, amplitude, n_bins=18):
+    bins = np.linspace(-np.pi, np.pi, n_bins + 1)
+    bin_idx = np.digitize(phase, bins) - 1
+    bin_idx = np.clip(bin_idx, 0, n_bins - 1)
+    
+    bin_sums = np.bincount(bin_idx, weights=amplitude, minlength=n_bins)
+    bin_counts = np.bincount(bin_idx, minlength=n_bins)
+    
+    mask = bin_counts > 0
+    p = np.zeros(n_bins)
+    p[mask] = bin_sums[mask] / bin_counts[mask]
+    
+    if np.sum(p) == 0: return 0
+    p /= np.sum(p)
+    h = -np.sum(p[p > 0] * np.log(p[p > 0] + 1e-12))
+    return (np.log(n_bins) - h) / np.log(n_bins)
+
+
+def _compute_lagged_mi(phase_angle, amp_env, sfreq, time_vector, windows, lag_range=(-125, 125), lag_step=5, n_surrogates=200):
+    """
+    Computes Z-scored MI across a range of time lags.
+    """
+    lags_ms = np.arange(lag_range[0], lag_range[1] + lag_step, lag_step)
+    lags_samples = (lags_ms * sfreq / 1000.0).astype(int)
+    
+    results = {}
+    for w_name, w_start, w_end in windows:
+        t_win = np.where((time_vector >= w_start) & (time_vector <= w_end))[0]
+        
+        mi_vals = []
+        for shift in lags_samples:
+            # Base indices for the window
+            t_indices = t_win
+            
+            # shifted indices for amplitude
+            a_indices = t_indices + shift
+            
+            # keep only indices where shifted amplitude is within signal bounds
+            valid_mask = (a_indices >= 0) & (a_indices < amp_env.shape[1])
+            
+            p_idx = t_indices[valid_mask]
+            a_idx = a_indices[valid_mask]
+            
+            if len(p_idx) == 0:
+                mi_vals.append(np.nan)
+                continue
+            
+            # Extract and flatten across all trials
+            p_slice = phase_angle[:, p_idx].flatten()
+            a_slice = amp_env[:, a_idx].flatten()
+            
+            # 1. Observed MI
+            observed_mi = compute_tort_mi(p_slice, a_slice)
+            
+            # 2. Surrogate Distribution
+            n_samples = len(a_slice)
+            shuffled_mis = np.zeros(n_surrogates)
+            # Pre-generate random shifts (excluding 0 to ensure true shift)
+            random_shifts = np.random.randint(1, n_samples, size=n_surrogates)
+            for i in range(n_surrogates):
+                a_shuffled = np.roll(a_slice, random_shifts[i])
+                shuffled_mis[i] = compute_tort_mi(p_slice, a_shuffled)
+            
+            # 3. Z-score
+            z_mi = (observed_mi - np.mean(shuffled_mis)) / (np.std(shuffled_mis) + 1e-12)
+            mi_vals.append(z_mi)
+            
+        results[w_name] = {'lags': lags_ms, 'mi': np.array(mi_vals)}
+        
+    return results
+
+
 def get_single_subj_pac(subjID, voxRes):
     """
     Figure 1: 
@@ -186,28 +259,46 @@ def get_single_subj_pac(subjID, voxRes):
         'Ipsi-PFC→Ipsi-Vis',
     ]
     subj_fig2 = {k: {} for k in fig2_keys}
+    subj_fig3 = {k: {} for k in fig2_keys}
 
     # Pre-filter all ROIs once for reuse
     filtered = {}
     for roi_name in roi_list:
         if roi_name not in func_rois: continue
         d = func_rois[roi_name]
+        theta_filt = signal.filtfilt(b_theta, a_theta, d, axis=1)
+        beta_filt = signal.filtfilt(b_beta, a_beta, d, axis=1)
+        beta_hilb = signal.hilbert(beta_filt, axis=1)
         filtered[roi_name] = {
-            'theta':    signal.filtfilt(b_theta, a_theta, d, axis=1),
-            'beta_pow': np.abs(signal.hilbert(signal.filtfilt(b_beta, a_beta, d, axis=1), axis=1))**2
+            'theta':    theta_filt,
+            'theta_phase': np.angle(signal.hilbert(theta_filt, axis=1)),
+            'beta_phase': np.angle(beta_hilb),
+            'beta_pow': np.abs(beta_hilb)**2,
+            'beta_env': np.abs(beta_hilb)
         }
 
-    for key, (pfc_roi, vis_roi) in zip(fig2_keys, fig2_pairs):
-        if pfc_roi not in filtered or vis_roi not in filtered: continue
-        res = _peak_triggered_avg(
-            filtered[pfc_roi]['theta'],
-            filtered[vis_roi]['beta_pow'],
-            sfreq, f_theta, time_vector, windows
-        )
-        subj_fig2[key] = res
+    # for key, (pfc_roi, vis_roi) in zip(fig2_keys, fig2_pairs):
+    #     if pfc_roi not in filtered or vis_roi not in filtered: continue
+    #     # res = _peak_triggered_avg(
+    #     #     filtered[pfc_roi]['theta'],
+    #     #     filtered[vis_roi]['beta_pow'],
+    #     #     sfreq, f_theta, time_vector, windows
+    #     # )
+    #     # subj_fig2[key] = res
+    #     res_lag = _compute_lagged_mi(
+    #         filtered[pfc_roi]['theta_phase'],
+    #         filtered[vis_roi]['beta_env'],
+    #         sfreq, time_vector, windows, lag_range=(-125, 125), lag_step=5
+    #     )
+    #     subj_fig3[key] = res_lag
 
-    return subj_fig1, subj_fig2
+    return subj_fig1, subj_fig2, subj_fig3
 
+
+def _process_subject(s, voxRes):
+    print(f"[*] Processing Sub-{s:02d}...")
+    res1, res2, res3 = get_single_subj_pac(s, voxRes)
+    return s, res1, res2, res3
 
 def _collect_group(subj_list, voxRes):
     """Run all subjects and collect raw per-subject results for both figures."""
@@ -223,10 +314,18 @@ def _collect_group(subj_list, voxRes):
     ]
     group_fig1 = {roi: {win: {'beta': [], 'gamma': []} for win in windows} for roi in roi_list}
     group_fig2 = {k:   {win: {'beta': [], 'gamma': []} for win in windows} for k in fig2_keys}
+    group_fig3 = {k:   {win: {'lags': None, 'mi': []} for win in windows} for k in fig2_keys}
 
-    for s in subj_list:
-        print(f"[*] Processing Sub-{s:02d}...")
-        res1, res2 = get_single_subj_pac(s, voxRes)
+    # Process in batches of 4 to keep memory usage in check
+    results = []
+    for i in range(0, len(subj_list), 4):
+        batch = subj_list[i:i+4]
+        print(f"\n[*] Processing batch {i//4 + 1}: {batch}")
+        batch_results = [_process_subject(s, voxRes) for s in batch]
+        results.extend(batch_results)
+        gc.collect() # Force garbage collection after each batch
+
+    for s, res1, res2, res3 in results:
         if res1 is None: continue
 
         for roi in roi_list:
@@ -242,7 +341,15 @@ def _collect_group(subj_list, voxRes):
                         group_fig2[k][win]['beta'].append(res2[k][win]['beta'])
                         group_fig2[k][win]['gamma'].append(res2[k][win]['gamma'])
 
-    return group_fig1, group_fig2
+        if res3:
+            for k in fig2_keys:
+                for win in windows:
+                    if win in res3.get(k, {}):
+                        if group_fig3[k][win]['lags'] is None:
+                            group_fig3[k][win]['lags'] = res3[k][win]['lags']
+                        group_fig3[k][win]['mi'].append(res3[k][win]['mi'])
+
+    return group_fig1, group_fig2, group_fig3
 
 
 def _aggregate(group_data):
@@ -268,6 +375,26 @@ def _aggregate(group_data):
     g_lim = [g_min - pad_g, g_max + pad_g]
     b_lim = [b_min - pad_b, b_max + pad_b]
     return stats, g_lim, b_lim
+
+
+def _aggregate_lag(group_data):
+    stats = {}
+    m_min, m_max = np.inf, -np.inf
+    for key, wins in group_data.items():
+        stats[key] = {}
+        for win, d in wins.items():
+            if not d['mi']: continue
+            mi_mat = np.stack(d['mi'])
+            n = mi_mat.shape[0]
+            mi_mean = np.mean(mi_mat, axis=0)
+            mi_sem = np.std(mi_mat, axis=0) / np.sqrt(n)
+            stats[key][win] = {'lags': d['lags'], 'mi_mean': mi_mean, 'mi_sem': mi_sem}
+            m_min = min(m_min, np.min(mi_mean - mi_sem))
+            m_max = max(m_max, np.max(mi_mean + mi_sem))
+            
+    pad = abs(m_max - m_min) * 0.1
+    m_lim = [m_min - pad, m_max + pad] if m_min != np.inf else [0, 1]
+    return stats, m_lim
 
 
 def _plot_panel(ax_g, ax_b, s, p_ax, g_lim, b_lim, title,
@@ -298,9 +425,10 @@ def debug_pac_grand_average(subj_list, voxRes='8mm'):
     profile, n_cores, bidsRoot = get_compute_profile()
 
     # ── Collect data ──────────────────────────────────────────────
-    group_fig1, group_fig2 = _collect_group(subj_list, voxRes)
+    group_fig1, group_fig2, group_fig3 = _collect_group(subj_list, voxRes)
     stats1, g_lim1, b_lim1 = _aggregate(group_fig1)
     stats2, g_lim2, b_lim2 = _aggregate(group_fig2)
+    stats3, m_lim3 = _aggregate_lag(group_fig3)
 
     out_dir = os.path.join(bidsRoot, 'derivatives', 'figures', 'pac_debugging')
     os.makedirs(out_dir, exist_ok=True)
@@ -420,8 +548,85 @@ def debug_pac_grand_average(subj_list, voxRes='8mm'):
             os.path.join(out_dir, f'sub-GA{subj_str}_pac_fig2_crosssignal_{voxRes}.{ext}'),
             dpi=300, bbox_inches='tight'
         )
-    plt.close(fig2)
-    print(f"[*] Saved Figure 2 → pac_fig2_crosssignal_{voxRes}.png/.svg")
+    # plt.close(fig2)
+    # print(f"[*] Saved Figure 2 → pac_fig2_crosssignal_{voxRes}.png/.svg")
+
+    # # ==============================================================
+    # # FIGURE 3 — Lagged MI Sweep (Cross-Signal PAC)
+    # # ==============================================================
+    # fig3 = plt.figure(figsize=(24, 8))
+    # gs3  = fig3.add_gridspec(2, 4, hspace=0.4, wspace=0.3)
+
+    # for ci, h in enumerate(col_headers2):
+    #     fig3.text(0.14 + ci*0.21, 0.95, h, ha='center', va='top',
+    #               fontsize=12, style='italic', color='dimgray')
+
+    # fig3_rows = [
+    #     ('Contra-PFC θ →', 'Contra-PFC→Ipsi-Vis',  'Contra-PFC→Contra-Vis'),
+    #     ('Ipsi-PFC θ →',   'Ipsi-PFC→Ipsi-Vis',    'Ipsi-PFC→Contra-Vis'),
+    # ]
+
+    # # Pre-calculate global min and max for shared ylim
+    # z_min = np.inf
+    # z_max = -np.inf
+    # for key in stats3:
+    #     for win in stats3[key]:
+    #         s = stats3[key][win]
+    #         min_val = np.nanmin(s['mi_mean'] - s['mi_sem'])
+    #         max_val = np.nanmax(s['mi_mean'] + s['mi_sem'])
+    #         if min_val < z_min: z_min = min_val
+    #         if max_val > z_max: z_max = max_val
+
+    # z_range = z_max - z_min
+    # z_min -= z_range * 0.1
+    # z_max += z_range * 0.1
+    # if z_range == 0 or np.isnan(z_range):
+    #     z_min, z_max = -2, 5
+
+
+    # for r_idx, (row_label, ipsi_key, contra_key) in enumerate(fig3_rows):
+    #     fig3.text(0.01, 0.75 - r_idx * 0.48, row_label, va='center', ha='left', rotation=90,
+    #               fontsize=13, fontweight='bold')
+    #     keys_for_cols = [ipsi_key,  ipsi_key,  contra_key, contra_key]
+    #     wins_for_cols = ['Stimulus', 'Delay', 'Stimulus', 'Delay']
+    #     col_subtitles = [
+    #         f'{ipsi_key.split("→")[1]}\nStimulus',
+    #         f'{ipsi_key.split("→")[1]}\nDelay',
+    #         f'{contra_key.split("→")[1]}\nStimulus',
+    #         f'{contra_key.split("→")[1]}\nDelay',
+    #     ]
+        
+    #     for col, (key, win, subtitle) in enumerate(zip(keys_for_cols, wins_for_cols, col_subtitles)):
+    #         if win not in stats3.get(key, {}): continue
+    #         ax = fig3.add_subplot(gs3[r_idx, col])
+            
+    #         s = stats3[key][win]
+    #         ax.plot(s['lags'], s['mi_mean'], color='purple', linewidth=2.5, marker='.')
+    #         ax.fill_between(s['lags'], s['mi_mean']-s['mi_sem'], s['mi_mean']+s['mi_sem'],
+    #                         color='purple', alpha=0.2)
+            
+    #         ax.set_title(subtitle, fontsize=12, fontweight='bold')
+    #         ax.set_ylabel('Z-Scored MI' if col == 0 else '', fontsize=11)
+    #         ax.set_xlabel('Lag (ms)', fontsize=11)
+            
+    #         ax.set_ylim(z_min, z_max)
+            
+    #         ax.axvline(0, color='gray', linestyle='--', alpha=0.7)
+    #         ax.axhline(0, color='gray', linestyle='--', alpha=0.7)
+    #         ax.grid(False)
+
+    # fig3.suptitle(
+    #     f'Figure 3 — Lagged MI Sweep: PFC Theta Phase → Visual Beta Amp (Sub-{subj_str}, {voxRes})\nZ-Scored Modulation Index',
+    #     fontsize=16, y=1.02
+    # )
+
+    # for ext in ['png', 'svg']:
+    #     fig3.savefig(
+    #         os.path.join(out_dir, f'sub-GA{subj_str}_pac_fig3_lagsweep_{voxRes}.{ext}'),
+    #         dpi=300, bbox_inches='tight'
+    #     )
+    # plt.close(fig3)
+    # print(f"[*] Saved Figure 3 → pac_fig3_lagsweep_{voxRes}.png/.svg")
 
     print("[*] Done.")
 
