@@ -24,7 +24,7 @@ LOG_DIR="logs_G02"
 mkdir -p "$LOG_DIR"
 log_file="${LOG_DIR}/rois_${RESOLUTION}mm.log"
 
-matlab -nodisplay -nosplash -nodesktop -r "G02_WangAtlasParcellation(${RESOLUTION}); exit;" > "$log_file" 2>&1
+matlab9.13 -nodisplay -nosplash -nodesktop -r "G02_WangAtlasParcellation(${RESOLUTION}); exit;" > "$log_file" 2>&1
 
 echo "========================================================"
 echo " Done! Log: ${log_file}  $(date)"

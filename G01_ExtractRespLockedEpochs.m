@@ -30,7 +30,12 @@ addpath('/d/DATD/hyper/software/fieldtrip-20250318/');
 ft_defaults;
 addpath(genpath('/d/DATD/hyper/experiments/Mrugank/meg_mgs'));
 
-bidsRoot         = '/System/Volumes/Data/d/DATD/datd/MEG_MGS/MEG_BIDS';
+% NOTE: A02_preprocMEG.m hardcodes '/System/Volumes/Data/d/DATD/...' --
+% a macOS APFS firmlink path that only resolves on that filesystem. This
+% script runs on vader (Linux), so it uses the plain /d/DATD/... mount
+% path instead, matching the convention already used by G02/G03/G04 and
+% by S02A/S03A's local (non-HPC) path branch.
+bidsRoot         = '/d/DATD/datd/MEG_MGS/MEG_BIDS';
 derivativesRoot  = [bidsRoot filesep 'derivatives/sub-' num2str(subjID, '%02d') '/meg'];
 taskName         = 'mgs';
 subName          = ['sub-' num2str(subjID, '%02d')];

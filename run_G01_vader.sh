@@ -36,7 +36,7 @@ for subjID in "${SUBJ_LIST[@]}"; do
     log_file="${LOG_DIR}/sub-${subjID}.log"
     echo "[$(date '+%H:%M:%S')] Starting sub-${subjID} in background..."
 
-    matlab -nodisplay -nosplash -nodesktop -r "G01_ExtractRespLockedEpochs(${subj_num}); exit;" > "$log_file" 2>&1 &
+    matlab9.13 -nodisplay -nosplash -nodesktop -r "G01_ExtractRespLockedEpochs(${subj_num}); exit;" > "$log_file" 2>&1 &
 
     count=$((count + 1))
     if [ $((count % MAX_PARALLEL)) -eq 0 ]; then

@@ -45,8 +45,8 @@ for subjID in "${SUBJ_LIST[@]}"; do
     echo "[$(date '+%H:%M:%S')] Starting sub-${subjID} (stim then resp) in background..."
 
     (
-        matlab -nodisplay -nosplash -nodesktop -r "G03_SourceLocalizationBroadband(${subj_num}, 'stim', ${RESOLUTION}); exit;" > "$stim_log" 2>&1
-        matlab -nodisplay -nosplash -nodesktop -r "G03_SourceLocalizationBroadband(${subj_num}, 'resp', ${RESOLUTION}); exit;" > "$resp_log" 2>&1
+        matlab9.13 -nodisplay -nosplash -nodesktop -r "G03_SourceLocalizationBroadband(${subj_num}, 'stim', ${RESOLUTION}); exit;" > "$stim_log" 2>&1
+        matlab9.13 -nodisplay -nosplash -nodesktop -r "G03_SourceLocalizationBroadband(${subj_num}, 'resp', ${RESOLUTION}); exit;" > "$resp_log" 2>&1
     ) &
 
     count=$((count + 1))
