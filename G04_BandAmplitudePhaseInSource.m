@@ -27,19 +27,30 @@ function G04_BandAmplitudePhaseInSource(subjID, lockType, frequency_band, volume
 %   complex/h5py compound-dtype friction for Python consumers and matches
 %   exactly what downstream analyses (PAC, connectivity, GLUE) need.
 %
+%   *** One shared storage rate across ALL bands (not per-band) ***
+%   Every band is downsampled after the Hilbert transform to the SAME
+%   TARGET_RATE (chosen to satisfy highgamma's Nyquist needs, the fastest
+%   band), rather than a band-optimized rate. A per-band rate would save
+%   some storage for the narrower, slower-fluctuating bands (theta/alpha/
+%   beta), but it would leave each band on a different time axis --
+%   directly at odds with the project's target unified array
+%   ([subject,band,trial,parcel,time], one shared time axis across
+%   bands), and it would force a resample-to-common-axis step before any
+%   cross-band analysis (cross-frequency PAC, cross-band coherence, the
+%   amplitude-vs-amplitude+phase capacity comparison across bands). One
+%   shared rate costs more storage for theta/alpha/beta than they
+%   strictly need, but keeps every band trivially stackable as-is.
+%
 %   *** Amplitude vs. phase downsampling (different treatment, on purpose) ***
-%   Each band is downsampled after the Hilbert transform to a
-%   band-appropriate storage rate (lower for theta/alpha/beta, higher for
-%   low/high-gamma to preserve faster envelope dynamics). Amplitude
-%   (envelope) is a smooth, non-wrapping real signal, so it is
+%   Amplitude (envelope) is a smooth, non-wrapping real signal, so it is
 %   anti-alias lowpass-filtered before decimation. Phase is a WRAPPED
 %   circular quantity in [-pi,pi]; naively lowpass-filtering a wrapped
 %   phase signal corrupts it at every +-pi wrap discontinuity, so phase
 %   is decimated directly (no filtering) at the same sample indices used
-%   for amplitude, keeping both on a shared time axis per band. This is
-%   safe here because the instantaneous-frequency content of a
-%   band-limited analytic signal is bounded by the band's own upper edge
-%   (e.g. <=25Hz for beta), well below the new phase sampling Nyquist.
+%   for amplitude, keeping both on a shared time axis. This is safe here
+%   because the instantaneous-frequency content of a band-limited
+%   analytic signal is bounded by the band's own upper edge (e.g. <=25Hz
+%   for beta), well below TARGET_RATE's Nyquist.
 
 if nargin < 1 || isempty(subjID)
     error('Subject ID is required');
@@ -54,13 +65,13 @@ if nargin < 4 || isempty(volumetric_resolution)
     volumetric_resolution = 8;
 end
 
-% Canonical band edges + what to save + target post-Hilbert storage rate (Hz)
+% Canonical band edges + what to save
 band_table = struct( ...
-    'theta',     struct('range', [4  8],  'savePhase', true,  'targetRate', 100), ...
-    'alpha',     struct('range', [8  12], 'savePhase', true,  'targetRate', 100), ...
-    'beta',      struct('range', [15 25], 'savePhase', true,  'targetRate', 100), ...
-    'lowgamma',  struct('range', [30 50], 'savePhase', false, 'targetRate', 150), ...
-    'highgamma', struct('range', [65 95], 'savePhase', false, 'targetRate', 200) ...
+    'theta',     struct('range', [4  8],  'savePhase', true), ...
+    'alpha',     struct('range', [8  12], 'savePhase', true), ...
+    'beta',      struct('range', [15 25], 'savePhase', true), ...
+    'lowgamma',  struct('range', [30 50], 'savePhase', false), ...
+    'highgamma', struct('range', [65 95], 'savePhase', false) ...
 );
 valid_bands = fieldnames(band_table);
 if ~ismember(frequency_band, valid_bands)
@@ -69,10 +80,13 @@ end
 bandSpec  = band_table.(frequency_band);
 freq_range = bandSpec.range;
 savePhase  = bandSpec.savePhase;
-targetRate = bandSpec.targetRate;
+
+% Single storage rate shared by ALL bands -- see header comment. 200Hz
+% (Nyquist 100Hz) comfortably covers highgamma's 95Hz upper edge.
+TARGET_RATE = 200;
 
 restoredefaultpath;
-clearvars -except subjID lockType frequency_band volumetric_resolution band_table valid_bands bandSpec freq_range savePhase targetRate;
+clearvars -except subjID lockType frequency_band volumetric_resolution band_table valid_bands bandSpec freq_range savePhase TARGET_RATE;
 close all; clc;
 
 %% Setup paths (vader / local only -- no HPC)
@@ -116,10 +130,10 @@ fprintf('  Total trials: %d\n', length(sourcedataCombined.trial));
 fprintf('  Inside sources: %d\n', length(inside_pos));
 
 origFs = sourcedataCombined.fsample;
-decimationFactor = max(1, round(origFs / targetRate));
+decimationFactor = max(1, round(origFs / TARGET_RATE));
 actualRate = origFs / decimationFactor;
-fprintf('Post-Hilbert storage rate: requested %dHz -> decimation factor %d -> actual %.2fHz\n', ...
-    targetRate, decimationFactor, actualRate);
+fprintf('Post-Hilbert storage rate (shared across all bands): requested %dHz -> decimation factor %d -> actual %.2fHz\n', ...
+    TARGET_RATE, decimationFactor, actualRate);
 
 %% Process each target location separately (same convention as S03A)
 target_locations = 1:10;
@@ -168,7 +182,7 @@ for target = target_locations
     if decimationFactor > 1
         cfg = [];
         cfg.lpfilter = 'yes';
-        cfg.lpfreq = 0.8 * (targetRate / 2); % margin below the new Nyquist
+        cfg.lpfreq = 0.8 * (TARGET_RATE / 2); % margin below the new Nyquist
         amplitudeData = ft_preprocessing(cfg, amplitudeData);
     end
 
