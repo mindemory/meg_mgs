@@ -3,13 +3,14 @@
 #
 # Runs G03_SourceLocalizationBroadband in parallel across all subjects on
 # Vader. For each subject, 'stim' and 'resp' are run IN SEQUENCE within the
-# same backgrounded job -- not because either lockType requires the other
-# to run first (both stim- and resp-locked epochs are uniform-length, so
-# covariance/LCMV estimation is valid from either), but to avoid two
-# parallel MATLAB jobs for the same subject racing to compute and write
-# the same cached beamformer filter file at once (see the "Shared
-# beamformer filter" note in G03_SourceLocalizationBroadband.m). Different
-# subjects still run concurrently up to max_parallel.
+# same backgrounded job. G03 always derives the shared beamformer filter
+# from STIM-LOCKED covariance regardless of run order (it self-loads
+# stim-locked data internally if 'resp' runs before a cache exists -- see
+# the "Shared beamformer filter" note in G03_SourceLocalizationBroadband.m),
+# so this ordering isn't required for correctness; it's kept simply to
+# avoid two parallel jobs for the same subject both computing and writing
+# the same cached filter file at once. Different subjects still run
+# concurrently up to max_parallel.
 #
 # Usage:
 #   bash run_G03_vader.sh [resolution] [max_parallel]

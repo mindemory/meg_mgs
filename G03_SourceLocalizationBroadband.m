@@ -21,22 +21,29 @@ function G03_SourceLocalizationBroadband(subjID, lockType, volumetric_resolution
 %         BROADBAND output; per-band filtering/downsampling is the job of
 %         G04_BandAmplitudePhaseInSource.m, not this script.
 %     (3) Accepts a lockType parameter and loads/saves accordingly.
-%     (4) Reuses the LCMV spatial filter (W_meg/source/inside_pos) across
-%         lock types for a given subject+resolution rather than
-%         recomputing the beamformer twice -- see "Shared beamformer
-%         filter" below.
+%     (4) Always derives the LCMV spatial filter from STIM-LOCKED
+%         covariance -- see "Shared beamformer filter" below.
 %
 %   *** Shared beamformer filter across lock types ***
-%   The LCMV spatial filter is a property of the forward model + sensor
-%   covariance, not of which epoch window is later projected through it.
-%   Both stim-locked (A02's fixed [-1.5,2.5]s crop) and resp-locked
-%   (G01_ExtractRespLockedEpochs.m's fixed 5.0s-ending-at-trial-end crop)
-%   epochs are uniform-length across all trials, so covariance/LCMV
-%   estimation is valid from either one. Whichever lockType is run FIRST
-%   for a given subject/resolution computes the beamformer filter and
-%   caches it to sub-XX_task-mgs_beamformerFilter_{res}.mat; the other
-%   lockType then REUSES that cached filter and only performs the
-%   per-trial projection step (W_meg * trial, applied per-cell).
+%   The LCMV filter W = (L'C^-1 L)^-1 L'C^-1 depends on the sensor
+%   covariance C, which IS genuinely different between stim-locked and
+%   resp-locked windows (different slices of the trial, different
+%   noise/artifact characteristics near the response) -- so a filter
+%   derived separately per lock type would NOT be the same filter. This
+%   project needs stim-locked and resp-locked source estimates to be
+%   directly comparable (subspace alignment across encoding->delay->
+%   pre-saccade epochs), so ONE common filter is used for both, and it is
+%   always trained on STIM-LOCKED covariance specifically (not
+%   "whichever lockType happens to run first" -- that would make the
+%   result non-deterministic and silently wrong if resp is ever run
+%   before stim). Concretely:
+%     - The filter is cached to sub-XX_task-mgs_beamformerFilter_{res}.mat
+%       on first use, regardless of which lockType triggered its creation.
+%     - If lockType='resp' is run before a cache exists, this function
+%       transparently loads+preprocesses the STIM-LOCKED epochs (in
+%       addition to the requested resp-locked epochs) purely to derive
+%       and cache the filter, then projects the resp-locked trials
+%       through it. This makes the result independent of run order.
 
 if nargin < 1 || isempty(subjID)
     error('Subject ID is required');
@@ -89,8 +96,8 @@ if ~exist(output_dir, 'dir')
     mkdir(output_dir);
 end
 
-source_data_path     = fullfile(output_dir, sprintf('sub-%02d_task-mgs_sourceSpaceData_%d_%s.mat', subjID, volumetric_resolution, lockType));
-beamformer_fpath      = fullfile(output_dir, sprintf('sub-%02d_task-mgs_beamformerFilter_%d.mat', subjID, volumetric_resolution));
+source_data_path = fullfile(output_dir, sprintf('sub-%02d_task-mgs_sourceSpaceData_%d_%s.mat', subjID, volumetric_resolution, lockType));
+beamformer_fpath = fullfile(output_dir, sprintf('sub-%02d_task-mgs_beamformerFilter_%d.mat', subjID, volumetric_resolution));
 
 if exist(source_data_path, 'file')
     fprintf('Broadband source space data already exists at: %s\n', source_data_path);
@@ -98,86 +105,30 @@ if exist(source_data_path, 'file')
     return;
 end
 
-%% Load epochs for the requested lock type
-subDerivativesRoot = sprintf('%s/sub-%02d/meg/sub-%02d_task-mgs_', data_base_path, subjID, subjID);
-switch lockType
-    case 'stim'
-        epoch_path = [subDerivativesRoot 'stimlocked_lineremoved.mat'];
-        epochVarName = 'epocStimLocked';
-        if ~exist(epoch_path, 'file')
-            error('Stimlocked data not found at: %s\nPlease run A02_preprocMEG.m first!', epoch_path);
-        end
-    case 'resp'
-        epoch_path = [subDerivativesRoot 'resplocked_lineremoved.mat'];
-        epochVarName = 'epocRespLocked';
-        if ~exist(epoch_path, 'file')
-            error('Resplocked data not found at: %s\nPlease run G01_ExtractRespLockedEpochs.m first!', epoch_path);
-        end
-end
-fprintf('Loading %s epochs from: %s\n', lockType, epoch_path);
-loaded = load(epoch_path, epochVarName);
-epocThis = loaded.(epochVarName);
-clearvars loaded;
-fprintf('Loaded %d trials\n', length(epocThis.trial));
+%% Load + preprocess the epochs to be PROJECTED (the requested lockType)
+fprintf('Loading %s-locked epochs for projection...\n', lockType);
+epocCombined = loadAndPreprocessEpoch(lockType, subjID, data_base_path);
 
-%% Remove trials with NaNs before any filtering
-fprintf('Removing trials with NaNs before filtering...\n');
-has_no_nans = cellfun(@(x) ~any(isnan(x(:))), epocThis.trial)';
-valid_trials_all = find(has_no_nans);
-cfg = [];
-cfg.trials = valid_trials_all;
-epocThis_clean = ft_selectdata(cfg, epocThis);
-fprintf('Kept %d valid trials (removed %d trials with NaNs)\n', length(epocThis_clean.trial), length(epocThis.trial) - length(epocThis_clean.trial));
-clearvars epocThis has_no_nans;
-
-%% Raised-ceiling lowpass + downsample (broadband substrate for G04's per-band stage)
-% 120Hz lowpass (vs. S02A's 55Hz) + 250Hz resample (vs. S02A's 120Hz)
-% gives Nyquist=125Hz, comfortably above the highgamma band's 95Hz upper
-% edge, while the 120Hz anti-alias lowpass sits below that Nyquist with
-% margin for filter roll-off.
-cfg = [];
-cfg.lpfilter = 'yes';
-cfg.lpfreq = 120;
-epocThis_filtered = ft_preprocessing(cfg, epocThis_clean);
-clearvars epocThis_clean;
-
-cfg = [];
-cfg.resamplefs = 250;
-cfg.detrend = 'no';
-epocThis_resampled = ft_resampledata(cfg, epocThis_filtered);
-clearvars epocThis_filtered;
-fprintf('Sensor data preprocessed. New sampling rate: %.1f Hz\n', epocThis_resampled.fsample);
-
-%% Left/right trial split (same target-code convention as S02A)
-trial_criteria_left = ismember(epocThis_resampled.trialinfo(:,2), [4 5 6 7 8]);
-trial_criteria_right = ismember(epocThis_resampled.trialinfo(:,2), [1 2 3 9 10]);
-
-valid_trialsLeft = find(trial_criteria_left);
-valid_trialsRight = find(trial_criteria_right);
-fprintf('Valid left trials: %d | Valid right trials: %d\n', length(valid_trialsLeft), length(valid_trialsRight));
-
-cfg = [];
-cfg.trials = valid_trialsLeft;
-epocLeft = ft_selectdata(cfg, epocThis_resampled);
-
-cfg = [];
-cfg.trials = valid_trialsRight;
-epocRight = ft_selectdata(cfg, epocThis_resampled);
-
-epocCombined = ft_appenddata([], epocLeft, epocRight);
-
-%% Obtain the LCMV spatial filter: reuse cached filter, or compute+cache it
+%% Obtain the LCMV spatial filter: reuse cached filter, or derive+cache it from STIM-LOCKED data
 if exist(beamformer_fpath, 'file')
     fprintf('Loading cached beamformer filter from: %s\n', beamformer_fpath);
     load(beamformer_fpath, 'source', 'inside_pos', 'W_meg');
 else
-    fprintf('No cached filter found -- computing beamformer filter from %s-locked data.\n', lockType);
+    fprintf('No cached filter found -- deriving beamformer filter from STIM-LOCKED data (regardless of requested lockType).\n');
+    if strcmp(lockType, 'stim')
+        epocForFilter = epocCombined; % already loaded above, avoid redundant work
+    else
+        fprintf('Requested lockType is ''resp'' -- loading stim-locked epochs separately to train the filter.\n');
+        epocForFilter = loadAndPreprocessEpoch('stim', subjID, data_base_path);
+    end
+
     cfg = [];
     cfg.covariance = 'yes';
     cfg.covariancewindow = 'all';
     cfg.keeptrials = 'no';
-    timelockedCombined = ft_timelockanalysis(cfg, epocCombined);
-    fprintf('Computed timelocked data with covariance\n');
+    timelockedCombined = ft_timelockanalysis(cfg, epocForFilter);
+    fprintf('Computed timelocked data with covariance (from stim-locked data)\n');
+    clearvars epocForFilter;
 
     cfg = [];
     cfg.method = 'lcmv';
@@ -201,7 +152,7 @@ else
     save(beamformer_fpath, 'source', 'inside_pos', 'W_meg', 'volumetric_resolution', '-v7.3');
 end
 
-%% Project every trial to broadband source space
+%% Project every trial (of the requested lockType) to broadband source space
 fprintf('Projecting %s-locked data to volumetric source space...\n', lockType);
 
 sourcedataCombined = [];
@@ -218,5 +169,79 @@ sourcedataCombined.fsample = epocCombined.fsample;
 fprintf('Saving broadband source space data to: %s\n', source_data_path);
 save(source_data_path, 'sourcedataCombined', 'inside_pos', 'volumetric_resolution', 'lockType', '-v7.3');
 fprintf('Done.\n');
+
+end
+
+function epocCombined = loadAndPreprocessEpoch(lockType, subjID, data_base_path)
+%LOADANDPREPROCESSEPOCH  Load a subject's stim- or resp-locked epochs and
+%   run them through the same NaN-removal / raised-ceiling lowpass+resample
+%   / left-right-append preprocessing used before beamforming, matching
+%   S02A_ReverseModelMNIVolumetric.m's pattern.
+
+subDerivativesRoot = sprintf('%s/sub-%02d/meg/sub-%02d_task-mgs_', data_base_path, subjID, subjID);
+switch lockType
+    case 'stim'
+        epoch_path = [subDerivativesRoot 'stimlocked_lineremoved.mat'];
+        epochVarName = 'epocStimLocked';
+        if ~exist(epoch_path, 'file')
+            error('Stimlocked data not found at: %s\nPlease run A02_preprocMEG.m first!', epoch_path);
+        end
+    case 'resp'
+        epoch_path = [subDerivativesRoot 'resplocked_lineremoved.mat'];
+        epochVarName = 'epocRespLocked';
+        if ~exist(epoch_path, 'file')
+            error('Resplocked data not found at: %s\nPlease run G01_ExtractRespLockedEpochs.m first!', epoch_path);
+        end
+end
+fprintf('  Loading %s epochs from: %s\n', lockType, epoch_path);
+loaded = load(epoch_path, epochVarName);
+epocThis = loaded.(epochVarName);
+clearvars loaded;
+fprintf('  Loaded %d trials\n', length(epocThis.trial));
+
+% Remove trials with NaNs before any filtering
+has_no_nans = cellfun(@(x) ~any(isnan(x(:))), epocThis.trial)';
+valid_trials_all = find(has_no_nans);
+cfg = [];
+cfg.trials = valid_trials_all;
+epocThis_clean = ft_selectdata(cfg, epocThis);
+fprintf('  Kept %d valid trials (removed %d trials with NaNs)\n', length(epocThis_clean.trial), length(epocThis.trial) - length(epocThis_clean.trial));
+clearvars epocThis has_no_nans;
+
+% Raised-ceiling lowpass + downsample (broadband substrate for G04's per-band stage)
+% 120Hz lowpass (vs. S02A's 55Hz) + 250Hz resample (vs. S02A's 120Hz)
+% gives Nyquist=125Hz, comfortably above the highgamma band's 95Hz upper
+% edge, while the 120Hz anti-alias lowpass sits below that Nyquist with
+% margin for filter roll-off.
+cfg = [];
+cfg.lpfilter = 'yes';
+cfg.lpfreq = 120;
+epocThis_filtered = ft_preprocessing(cfg, epocThis_clean);
+clearvars epocThis_clean;
+
+cfg = [];
+cfg.resamplefs = 250;
+cfg.detrend = 'no';
+epocThis_resampled = ft_resampledata(cfg, epocThis_filtered);
+clearvars epocThis_filtered;
+fprintf('  Sensor data preprocessed. New sampling rate: %.1f Hz\n', epocThis_resampled.fsample);
+
+% Left/right trial split (same target-code convention as S02A)
+trial_criteria_left = ismember(epocThis_resampled.trialinfo(:,2), [4 5 6 7 8]);
+trial_criteria_right = ismember(epocThis_resampled.trialinfo(:,2), [1 2 3 9 10]);
+
+valid_trialsLeft = find(trial_criteria_left);
+valid_trialsRight = find(trial_criteria_right);
+fprintf('  Valid left trials: %d | Valid right trials: %d\n', length(valid_trialsLeft), length(valid_trialsRight));
+
+cfg = [];
+cfg.trials = valid_trialsLeft;
+epocLeft = ft_selectdata(cfg, epocThis_resampled);
+
+cfg = [];
+cfg.trials = valid_trialsRight;
+epocRight = ft_selectdata(cfg, epocThis_resampled);
+
+epocCombined = ft_appenddata([], epocLeft, epocRight);
 
 end
