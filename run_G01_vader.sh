@@ -7,13 +7,16 @@
 # Usage:
 #   bash run_G01_vader.sh [max_parallel]
 #
+# Defaults to 21 (all subjects at once) -- vader has ~50 cores, so the
+# full cohort fits comfortably. Pass a lower number to throttle.
+#
 # Examples:
-#   bash run_G01_vader.sh 8
-#   bash run_G01_vader.sh 21  # Run all 21 subjects in parallel
+#   bash run_G01_vader.sh        # all 21 subjects in parallel (default)
+#   bash run_G01_vader.sh 8      # throttle to 8 at a time
 
 set -euo pipefail
 
-MAX_PARALLEL="${1:-8}"
+MAX_PARALLEL="${1:-21}"
 
 # Subject list
 SUBJ_LIST=(01 02 03 04 05 06 07 09 10 12 13 15 17 18 19 23 24 25 29 31 32)

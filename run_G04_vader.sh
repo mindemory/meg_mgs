@@ -13,15 +13,20 @@
 #
 # Bands: theta | alpha | beta | lowgamma | highgamma
 #
+# Defaults to 21 (all subjects at once, per lockType batch) -- vader has
+# ~50 cores, so the full cohort fits comfortably. Pass a lower number to
+# throttle. Each (subject, lockType) pair is its own job, so a full run
+# of one band launches 42 jobs total, 21 running concurrently by default.
+#
 # Examples:
-#   bash run_G04_vader.sh beta 8 8
-#   bash run_G04_vader.sh highgamma 8 16
+#   bash run_G04_vader.sh beta 8         # all 21 subjects in parallel (default)
+#   bash run_G04_vader.sh highgamma 8 8  # throttle to 8 at a time
 
 set -euo pipefail
 
 BAND="${1:-beta}"
 RESOLUTION="${2:-8}"
-MAX_PARALLEL="${3:-8}"
+MAX_PARALLEL="${3:-21}"
 
 SUBJ_LIST=(01 02 03 04 05 06 07 09 10 12 13 15 17 18 19 23 24 25 29 31 32)
 LOCK_TYPES=("stim" "resp")

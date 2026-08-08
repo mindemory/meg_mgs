@@ -14,13 +14,20 @@
 # Usage:
 #   bash run_G03_vader.sh [resolution] [max_parallel]
 #
+# Defaults to 21 (all subjects at once) -- vader has ~50 cores, so the
+# full cohort fits comfortably. Pass a lower number to throttle. Note
+# each subject's background job runs TWO matlab calls in sequence (stim
+# then resp), so effective peak concurrency is max_parallel simultaneous
+# subjects, not max_parallel simultaneous matlab processes.
+#
 # Examples:
-#   bash run_G03_vader.sh 8 8
+#   bash run_G03_vader.sh 8       # all 21 subjects in parallel (default)
+#   bash run_G03_vader.sh 8 8     # throttle to 8 subjects at a time
 
 set -euo pipefail
 
 RESOLUTION="${1:-8}"
-MAX_PARALLEL="${2:-8}"
+MAX_PARALLEL="${2:-21}"
 
 SUBJ_LIST=(01 02 03 04 05 06 07 09 10 12 13 15 17 18 19 23 24 25 29 31 32)
 
