@@ -161,12 +161,27 @@ def compute_subject_dim(subjID, lockType, voxRes, bids_root, atlas_masks,
         return None
 
     inside_pos = g03['inside_pos']
+    g03_data   = g03['data']   # (n_trials, n_times, n_sources)
 
-    # Build ROI index maps once per subject
+    # Guard: some subjects have inside_pos values that exceed the atlas grid
+    # size by one (1-based MATLAB index >= atlas length).  Drop those columns
+    # from both inside_pos and the data array before building ROI masks.
+    n_atlas_grid = len(next(iter(atlas_masks.values())))
+    valid_col_mask = (inside_pos >= 1) & (inside_pos <= n_atlas_grid)
+    if not valid_col_mask.all():
+        n_bad = (~valid_col_mask).sum()
+        print(f'  sub-{subjID:02d}: {n_bad} source column(s) exceed atlas grid '
+              f'({n_atlas_grid}), dropping them.')
+        valid_cols = np.where(valid_col_mask)[0]
+        inside_pos = inside_pos[valid_cols]
+        g03_data   = g03_data[:, :, valid_cols]
+
+    # Build ROI index maps once per subject (against the (possibly filtered)
+    # inside_pos; local column indices are now 0..len(valid_cols)-1).
     roi_indices = {}
     for roi in rois_all:
         if roi == 'whole':
-            roi_indices[roi] = np.arange(g03['data'].shape[2])
+            roi_indices[roi] = np.arange(g03_data.shape[2])
         else:
             roi_indices[roi] = roi_local_indices(atlas_masks, inside_pos, roi)
 
@@ -180,7 +195,7 @@ def compute_subject_dim(subjID, lockType, voxRes, bids_root, atlas_masks,
             print(f'  sub-{subjID:02d} broadband {roi}: empty ROI, skipping')
             result['broadband'][roi] = None
             continue
-        data_roi = g03['data'][:, :, idx]          # (n_trials, n_times, n_roi)
+        data_roi = g03_data[:, :, idx]             # (n_trials, n_times, n_roi)
         pr, npcs = dim_over_time(data_roi, var_threshold)
         result['broadband'][roi] = {
             'pr':          pr,
@@ -188,7 +203,7 @@ def compute_subject_dim(subjID, lockType, voxRes, bids_root, atlas_masks,
             'time_vector': g03['time_vector'],
         }
     print(f'  sub-{subjID:02d} broadband done '
-          f'({g03["data"].shape[0]} trials, {g03["data"].shape[1]} times)')
+          f'({g03_data.shape[0]} trials, {g03_data.shape[1]} times)')
 
     # G04 bands (amplitude only; phase not used for dimensionality)
     for band in AMP_ONLY_BANDS:
@@ -202,8 +217,11 @@ def compute_subject_dim(subjID, lockType, voxRes, bids_root, atlas_masks,
                 result[band][roi] = None
             continue
 
-        # G04 columns same as G03 columns - reuse same inside_pos
+        # G04 columns are the same source columns as G03; apply the same
+        # valid_col_mask filter to stay consistent with inside_pos.
         amp = g04['amp']   # (n_trials, n_times, n_sources)
+        if not valid_col_mask.all():
+            amp = amp[:, :, valid_cols]
         for roi in rois_all:
             idx = roi_indices[roi]
             if idx.size == 0:
