@@ -29,6 +29,26 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
 
+# Black background constants (shared across all glue_decoding figures)
+_BG   = '#0d0d0d'
+_FG   = '#e0e0e0'
+_GRID = '#2a2a2a'
+
+
+def _apply_black_style(fig, axes_iter):
+    """Apply black-background style to all axes in the figure."""
+    fig.patch.set_facecolor(_BG)
+    for ax in axes_iter:
+        ax.set_facecolor(_BG)
+        ax.tick_params(colors=_FG, which='both')
+        ax.xaxis.label.set_color(_FG)
+        ax.yaxis.label.set_color(_FG)
+        ax.title.set_color(_FG)
+        for spine in ax.spines.values():
+            spine.set_edgecolor(_GRID)
+        ax.grid(True, color=_GRID, linewidth=0.5, linestyle='--', alpha=0.5)
+        ax.set_axisbelow(True)
+
 from constants import AMP_ONLY_BANDS, AMP_PHASE_BANDS, ANGLE_MAPPING, ROI_NAMES, get_bids_root
 
 # The valid (condition, band) grid glue_decoding produces (see run_glue_cell.py).
@@ -115,12 +135,15 @@ def save_aggregated(outdir, condition, band, roi, lockType, voxRes, agg):
 
 def plot_combo(plot_dir, condition, band, lockType, voxRes, per_roi_result, rois):
     """One figure per (condition, band, lockType): ROI panels side by side,
-    shared colorbar, fixed [0,180] scale, dashed chance-level (90) contour."""
+    shared colorbar, fixed [0,180] scale, dashed chance-level (90) contour.
+    Saved with black background."""
     os.makedirs(plot_dir, exist_ok=True)
     cmap = sequential_cmap()
 
     fig, axes = plt.subplots(1, len(rois), figsize=(4.2 * len(rois), 4), squeeze=False)
     axes = axes[0]
+    _apply_black_style(fig, axes)
+
     im = None
     for ax, roi in zip(axes, rois):
         agg = per_roi_result[roi]
@@ -130,17 +153,21 @@ def plot_combo(plot_dir, condition, band, lockType, voxRes, per_roi_result, rois
                         extent=[tv[0], tv[-1], tv[0], tv[-1]])
         ax.contour(tv, tv, agg['mean_abs_err'], levels=[CHANCE_LEVEL],
                    colors='white', linewidths=1, linestyles='dashed')
-        ax.set_title(f'{roi} (n={agg["n_subjects"]})')
-        ax.set_xlabel('Test time (s)')
+        ax.set_title(f'{roi} (n={agg["n_subjects"]})', color=_FG)
+        ax.set_xlabel('Test time (s)', color=_FG)
         ax.plot([tv[0], tv[-1]], [tv[0], tv[-1]], color='white', linewidth=0.5, alpha=0.5)
-    axes[0].set_ylabel('Train time (s)')
+    axes[0].set_ylabel('Train time (s)', color=_FG)
 
-    fig.suptitle(f'{condition} / {band} / {lockType} / {voxRes} -- mean abs. angular error')
+    fig.suptitle(f'{condition} / {band} / {lockType} / {voxRes} -- mean abs. angular error',
+                 color=_FG)
     cbar = fig.colorbar(im, ax=list(axes), shrink=0.85, label='Mean abs. angular error (deg)')
+    cbar.ax.yaxis.label.set_color(_FG)
+    cbar.ax.tick_params(colors=_FG)
     cbar.ax.axhline(CHANCE_LEVEL, color='white', linewidth=1, linestyle='dashed')
 
     out_fpath = os.path.join(plot_dir, f'{condition}_{band}_{lockType}_{voxRes}.png')
-    fig.savefig(out_fpath, dpi=150, bbox_inches='tight')
+    fig.savefig(out_fpath, dpi=150, bbox_inches='tight',
+                facecolor=fig.get_facecolor())
     plt.close(fig)
     return out_fpath
 
