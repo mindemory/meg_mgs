@@ -34,6 +34,7 @@ Usage:
                                        [--var_threshold 0.90]
 """
 
+import glob
 import os
 import sys
 import argparse
@@ -47,11 +48,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 
-from atlas import load_atlas_masks, roi_local_indices
-from constants import (AMP_ONLY_BANDS, SUBJECT_LIST, ROI_NAMES,
-                       get_bids_root)
-from io_g03 import load_g03_unfiltered
-from io_g04 import load_g04_band
+from constants import (AMP_ONLY_BANDS, SUBJECT_LIST, ROI_NAMES, get_bids_root)
 
 # --- Colour palette (black-background friendly) ----------------------------
 # One vivid colour per ROI, plus whole-brain
@@ -76,184 +73,65 @@ BAND_LABELS = {
 VAR_THRESHOLD_DEFAULT = 0.90  # fraction of variance for n_pcs metric
 
 
-# --- Core dimensionality estimators ----------------------------------------
+# --- .npz file discovery and loading ----------------------------------------
 
-def participation_ratio(X_t):
+def _npz_path(bids_root, subjID, band, lockType, voxRes, flat_outdir=None):
+    """Match the path convention used by intrinsic_dim_cell.py."""
+    subName = f'sub-{subjID:02d}'
+    fname   = f'{subName}_task-mgs_intrinsicDim_{band}_{lockType}_{voxRes}.npz'
+    if flat_outdir:
+        return os.path.join(flat_outdir, fname)
+    return os.path.join(bids_root, 'derivatives', subName,
+                         'sourceRecon', 'intrinsicDim', fname)
+
+
+def load_subject_npz(bids_root, subjID, band, lockType, voxRes,
+                     rois_all, flat_outdir=None):
     """
-    Compute the participation ratio (effective dimensionality) for a single
-    timepoint.
-
-    X_t : (n_trials, n_sources)  -- z-scored recommended but not required.
-    Returns scalar float.
+    Load one subject's saved .npz cell output.
+    Returns a dict mirroring compute_subject_dim's per-band result:
+        {roi: {'pr': ..., 'npcs': ..., 'time_vector': ...}}
+    or None if the file doesn't exist.
     """
-    # Trial covariance (n_sources x n_sources), unbiased
-    C = np.cov(X_t, rowvar=False)           # (n_sources, n_sources)
-    # Eigenvalues only (faster than full SVD; eigvalsh for symmetric matrices)
-    lam = np.linalg.eigvalsh(C)
-    lam = np.maximum(lam, 0.0)             # numerical safety
-    s1 = lam.sum()
-    if s1 < 1e-30:
-        return 1.0
-    s2 = (lam ** 2).sum()
-    return float(s1 ** 2 / s2)
-
-
-def n_pcs_for_var(X_t, var_threshold=0.90):
-    """
-    Number of principal components needed to explain >= var_threshold of
-    the total variance at one timepoint.
-
-    X_t : (n_trials, n_sources)
-    Returns int.
-    """
-    C = np.cov(X_t, rowvar=False)
-    lam = np.sort(np.maximum(np.linalg.eigvalsh(C), 0.0))[::-1]
-    s = lam.sum()
-    if s < 1e-30:
-        return 1
-    cum = np.cumsum(lam) / s
-    hits = np.where(cum >= var_threshold)[0]
-    return int(hits[0] + 1) if hits.size > 0 else len(lam)
-
-
-def dim_over_time(data, var_threshold=0.90):
-    """
-    Compute participation ratio and n_pcs over every timepoint.
-
-    data : (n_trials, n_times, n_sources)
-    Returns:
-        pr   : (n_times,) float  -- participation ratio
-        npcs : (n_times,) int    -- n PCs for >= var_threshold variance
-    """
-    n_trials, n_times, n_sources = data.shape
-    pr   = np.zeros(n_times)
-    npcs = np.zeros(n_times, dtype=int)
-    for t in range(n_times):
-        X_t = data[:, t, :]                 # (n_trials, n_sources)
-        # z-score across sources (centre trials; each source unit-variance)
-        mu = X_t.mean(axis=0, keepdims=True)
-        sd = X_t.std(axis=0, keepdims=True)
-        sd[sd < 1e-10] = 1.0
-        X_t_z = (X_t - mu) / sd
-        pr[t]   = participation_ratio(X_t_z)
-        npcs[t] = n_pcs_for_var(X_t_z, var_threshold)
-    return pr, npcs
-
-
-# --- Per-subject, per-band loaders -----------------------------------------
-
-def compute_subject_dim(subjID, lockType, voxRes, bids_root, atlas_masks,
-                        rois_all, var_threshold):
-    """
-    For one subject, compute PR and n_pcs over time for every (band, ROI)
-    combination.
-
-    Returns a nested dict:
-        result[band][roi_name] = {'pr': (n_times,), 'npcs': (n_times,),
-                                   'time_vector': (n_times,)}
-    or None entries where data files are missing.
-    """
-    # Load G03 (needed for inside_pos in ALL conditions)
-    try:
-        g03 = load_g03_unfiltered(subjID, lockType, voxRes, bids_root)
-    except FileNotFoundError as e:
-        print(f'  sub-{subjID:02d} G03 missing: {e}')
+    fpath = _npz_path(bids_root, subjID, band, lockType, voxRes, flat_outdir)
+    if not os.path.exists(fpath):
         return None
-
-    inside_pos = g03['inside_pos']
-    g03_data   = g03['data']   # (n_trials, n_times, n_sources)
-
-    # Guard: some subjects have inside_pos values that exceed the atlas grid
-    # size by one (1-based MATLAB index >= atlas length).  Drop those columns
-    # from both inside_pos and the data array before building ROI masks.
-    n_atlas_grid = len(next(iter(atlas_masks.values())))
-    valid_col_mask = (inside_pos >= 1) & (inside_pos <= n_atlas_grid)
-    if not valid_col_mask.all():
-        n_bad = (~valid_col_mask).sum()
-        print(f'  sub-{subjID:02d}: {n_bad} source column(s) exceed atlas grid '
-              f'({n_atlas_grid}), dropping them.')
-        valid_cols = np.where(valid_col_mask)[0]
-        inside_pos = inside_pos[valid_cols]
-        g03_data   = g03_data[:, :, valid_cols]
-
-    # Build ROI index maps once per subject (against the (possibly filtered)
-    # inside_pos; local column indices are now 0..len(valid_cols)-1).
-    roi_indices = {}
-    for roi in rois_all:
-        if roi == 'whole':
-            roi_indices[roi] = np.arange(g03_data.shape[2])
-        else:
-            roi_indices[roi] = roi_local_indices(atlas_masks, inside_pos, roi)
-
+    d = np.load(fpath)
     result = {}
-
-    # Broadband (G03 data)
-    result['broadband'] = {}
     for roi in rois_all:
-        idx = roi_indices[roi]
-        if idx.size == 0:
-            print(f'  sub-{subjID:02d} broadband {roi}: empty ROI, skipping')
-            result['broadband'][roi] = None
+        pr_key = f'pr_{roi}'
+        if pr_key not in d:
+            result[roi] = None
             continue
-        data_roi = g03_data[:, :, idx]             # (n_trials, n_times, n_roi)
-        pr, npcs = dim_over_time(data_roi, var_threshold)
-        result['broadband'][roi] = {
-            'pr':          pr,
-            'npcs':        npcs,
-            'time_vector': g03['time_vector'],
+        result[roi] = {
+            'pr':          d[f'pr_{roi}'],
+            'npcs':        d[f'npcs_{roi}'],
+            'time_vector': d[f'time_vector_{roi}'],
         }
-    print(f'  sub-{subjID:02d} broadband done '
-          f'({g03_data.shape[0]} trials, {g03_data.shape[1]} times)')
-
-    # G04 bands (amplitude only; phase not used for dimensionality)
-    for band in AMP_ONLY_BANDS:
-        result[band] = {}
-        try:
-            g04 = load_g04_band(subjID, lockType, band, voxRes, bids_root,
-                                 want_phase=False)
-        except (FileNotFoundError, ValueError) as e:
-            print(f'  sub-{subjID:02d} {band}: {e}')
-            for roi in rois_all:
-                result[band][roi] = None
-            continue
-
-        # G04 columns are the same source columns as G03; apply the same
-        # valid_col_mask filter to stay consistent with inside_pos.
-        amp = g04['amp']   # (n_trials, n_times, n_sources)
-        if not valid_col_mask.all():
-            amp = amp[:, :, valid_cols]
-        for roi in rois_all:
-            idx = roi_indices[roi]
-            if idx.size == 0:
-                result[band][roi] = None
-                continue
-            data_roi = amp[:, :, idx]
-            pr, npcs = dim_over_time(data_roi, var_threshold)
-            result[band][roi] = {
-                'pr':          pr,
-                'npcs':        npcs,
-                'time_vector': g04['time_vector'],
-            }
-        print(f'  sub-{subjID:02d} {band} done '
-              f'({amp.shape[0]} trials, {amp.shape[1]} times)')
-
     return result
 
 
-# --- Cross-subject aggregation ----------------------------------------------
+
+
+# --- Cross-subject aggregation (reads from loaded npz dicts) ----------------
 
 def aggregate_subjects(all_subject_results, band, roi, metric='pr'):
     """
-    Stack per-subject curves for (band, roi) and return mean +/- SEM.
-    Returns (time_vector, mean_curve, sem_curve) or (None, None, None)
-    if no valid subjects.
+    all_subject_results : list where each element is either:
+      - a dict  {band: {roi: {'pr', 'npcs', 'time_vector'}}}  (all_wrapped from main)
+      - or None if that subject had no data at all.
+
+    Returns (time_vector, mean_curve, sem_curve) or (None, None, None).
     """
-    curves = []
+    curves      = []
     time_vector = None
     for subj_result in all_subject_results:
         if subj_result is None:
             continue
-        entry = subj_result.get(band, {}).get(roi)
+        band_dict = subj_result.get(band)  # {roi: {...}} or None
+        if band_dict is None:
+            continue
+        entry = band_dict.get(roi)          # {'pr', 'npcs', 'time_vector'} or None
         if entry is None:
             continue
         curves.append(entry[metric])
@@ -267,6 +145,8 @@ def aggregate_subjects(all_subject_results, band, roi, metric='pr'):
     mean    = stacked.mean(axis=0)
     sem     = stacked.std(axis=0) / np.sqrt(stacked.shape[0])
     return time_vector, mean, sem
+
+
 
 
 # --- Plotting ---------------------------------------------------------------
@@ -337,10 +217,12 @@ def plot_dim_figure(all_subject_results, rois_all, metric, metric_label,
             ax.axvline(0, color='#555555', linewidth=1.0,
                         linestyle='--', alpha=0.8)
 
-            # Count subjects
+            # Count subjects with valid data for this (band, roi)
             n_subj = sum(
                 1 for s in all_subject_results
-                if s is not None and s.get(band, {}).get(roi) is not None
+                if s is not None
+                and s.get(band) is not None
+                and s.get(band, {}).get(roi) is not None
             )
 
             if r_idx == 0:
@@ -456,75 +338,88 @@ def plot_overview_figure(all_subject_results, rois_all, lockType, voxRes,
     return fname
 
 
-# --- Main ------------------------------------------------------------------
+# --- Main (plot-only: reads saved .npz cell outputs) -----------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Intrinsic dimensionality of MEG source data over time.')
+        description='Aggregate and plot intrinsic-dimensionality results '
+                    'from pre-computed .npz cell files.')
     parser.add_argument('--voxRes',        default='8mm')
     parser.add_argument('--lockTypes',     nargs='+', default=['stim', 'resp'])
     parser.add_argument('--rois',          nargs='+', default=list(ROI_NAMES))
     parser.add_argument('--subjects',      nargs='+', type=int,
                         default=SUBJECT_LIST)
-    parser.add_argument('--outdir',        default=None)
-    parser.add_argument('--var_threshold', type=float,
-                        default=VAR_THRESHOLD_DEFAULT,
-                        help='Variance threshold for n_pcs metric '
-                             '(default: 0.90)')
-    parser.add_argument('--bands',         nargs='+', default=BAND_ORDER,
-                        help='Which bands to process (default: all)')
+    parser.add_argument('--outdir',        default=None,
+                        help='Directory where .npz files AND plots are saved. '
+                             'If not set, plots go to '
+                             '<bids_root>/derivatives/glueDecoding/intrinsicDim/plots '
+                             'and .npz files are expected under each subject.')
+    parser.add_argument('--var_threshold', type=float, default=VAR_THRESHOLD_DEFAULT)
+    parser.add_argument('--bands',         nargs='+', default=BAND_ORDER)
     args = parser.parse_args()
 
     bids_root = get_bids_root()
-    outdir = args.outdir or os.path.join(
-        bids_root, 'derivatives', 'glueDecoding', 'intrinsicDim')
 
-    # Always include whole-brain in ROI list
+    # If --outdir was given, treat it as both the .npz source AND plot dest.
+    # Otherwise: .npz files live per-subject; plots go to a central dir.
+    flat_outdir = args.outdir  # may be None
+    plot_dir = args.outdir or os.path.join(
+        bids_root, 'derivatives', 'glueDecoding', 'intrinsicDim', 'plots')
+
     rois_all = list(args.rois)
     if 'whole' not in rois_all:
         rois_all.append('whole')
 
-    print(f'intrinsic_dimensionality | voxRes={args.voxRes} | '
-          f'subjects={args.subjects} | rois={rois_all} | '
-          f'bands={args.bands} | var_threshold={args.var_threshold}')
+    print(f'intrinsic_dimensionality (plot) | voxRes={args.voxRes} | '
+          f'subjects={args.subjects} | rois={rois_all} | bands={args.bands}')
 
     for lockType in args.lockTypes:
         print(f'\n=== lockType: {lockType} ===')
 
-        # Load atlas masks (shared across subjects)
-        atlas_masks = load_atlas_masks(args.voxRes, bids_root)
+        # Load per-subject, per-band .npz results
+        # Structure: all_results[band] = list of per-subject dicts (one per subject)
+        all_results = {}   # band -> [subj0_roi_dict, subj1_roi_dict, ...]
+        for band in args.bands:
+            band_results = []
+            for subjID in args.subjects:
+                rd = load_subject_npz(bids_root, subjID, band, lockType,
+                                      args.voxRes, rois_all, flat_outdir)
+                if rd is None:
+                    print(f'  MISSING: sub-{subjID:02d} {band} {lockType}')
+                band_results.append(rd)
+            all_results[band] = band_results
 
-        # Per-subject computation
-        all_subject_results = []
-        for subjID in args.subjects:
-            print(f'\nsub-{subjID:02d} ...')
-            subj_result = compute_subject_dim(
-                subjID, lockType, args.voxRes, bids_root,
-                atlas_masks, rois_all, args.var_threshold)
-            all_subject_results.append(subj_result)
+        # aggregate_subjects expects all_subject_results[i] to be a per-band
+        # dict (as produced by compute_subject_dim).  Wrap the npz dicts into
+        # the same shape so the plotting functions need no changes.
+        # Shape: all_wrapped[i] = {band: {roi: {'pr', 'npcs', 'time_vector'}}}
+        all_wrapped = [{} for _ in args.subjects]
+        for band in args.bands:
+            for i, rd in enumerate(all_results[band]):
+                all_wrapped[i][band] = rd  # rd is {roi: {...}} or None per roi
 
-        # Plotting
-        # 1) Full grid: rows=bands, cols=ROIs, metric=participation ratio
-        plot_dim_figure(all_subject_results, rois_all,
+        # 1) Full grid: participation ratio
+        plot_dim_figure(all_wrapped, rois_all,
                          metric='pr',
                          metric_label='Participation Ratio',
                          lockType=lockType, voxRes=args.voxRes,
-                         outdir=outdir, bands=args.bands)
+                         outdir=plot_dir, bands=args.bands)
 
-        # 2) Full grid: rows=bands, cols=ROIs, metric=n_pcs
-        plot_dim_figure(all_subject_results, rois_all,
+        # 2) Full grid: n_pcs
+        plot_dim_figure(all_wrapped, rois_all,
                          metric='npcs',
                          metric_label=f'# PCs (>={int(args.var_threshold*100)}% var)',
                          lockType=lockType, voxRes=args.voxRes,
-                         outdir=outdir, bands=args.bands)
+                         outdir=plot_dir, bands=args.bands)
 
-        # 3) Overview: one panel per ROI, all bands overlaid
-        plot_overview_figure(all_subject_results, rois_all,
+        # 3) Overview: all bands per ROI
+        plot_overview_figure(all_wrapped, rois_all,
                               lockType=lockType, voxRes=args.voxRes,
-                              outdir=outdir, bands=args.bands)
+                              outdir=plot_dir, bands=args.bands)
 
     print('\nDone.')
 
 
 if __name__ == '__main__':
     main()
+
