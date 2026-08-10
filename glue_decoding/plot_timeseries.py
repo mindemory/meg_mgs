@@ -131,6 +131,14 @@ def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
     except FileNotFoundError as e:
         print(f'  sub-{subjID:02d}: G03 missing: {e}', flush=True)
         return None
+    except OSError as e:
+        # open_h5 exhausted its retries (e.g. file was mid-write / genuinely
+        # unreadable at the moment this worker hit it). Skip this subject
+        # rather than letting one bad file crash the whole parallel batch
+        # and lose every other subject's already-computed results.
+        print(f'  sub-{subjID:02d}: G03 failed to open, skipping subject: {e}',
+              flush=True)
+        return None
 
     inside_pos, g03_data = _filter_inside_pos(
         g03['inside_pos'], g03['data'], atlas_masks)
@@ -170,7 +178,10 @@ def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
         try:
             g04 = load_g04_band(subjID, lockType, band, voxRes, bids_root,
                                  want_phase=False)
-        except (FileNotFoundError, ValueError) as e:
+        except (FileNotFoundError, ValueError, OSError) as e:
+            # OSError here means open_h5 exhausted its retries for this one
+            # band file -- skip just this band for this subject rather than
+            # crashing the whole joblib batch (see G03 handling above).
             print(f'  sub-{subjID:02d} {band}: {e}', flush=True)
             result['time_vectors'][band] = None
             for roi in rois_all:
