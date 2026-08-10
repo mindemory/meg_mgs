@@ -25,10 +25,49 @@ from constants import open_h5, resolution_tag
 from h5_ft import deref_cell_trials, deref_first_time, get_scalar, get_trialinfo, iter_target_pairs
 
 
-def load_g04_band(subjID, lockType, band, voxRes, bids_root, want_phase):
+def g04_roi_cache_path(subjID, lockType, band, voxRes, bids_root, roi):
+    """Path to the precomputed per-ROI cache built by precompute_roi_splits.py."""
+    subName = f'sub-{subjID:02d}'
+    res = resolution_tag(voxRes)
+    return os.path.join(
+        bids_root, 'derivatives', subName, 'sourceRecon', 'freqSpace',
+        f'{subName}_task-mgs_{band}_allTargets_{res}_{lockType}_roi-{roi}.npz')
+
+
+def _load_g04_roi_cache(subjID, lockType, band, voxRes, bids_root, roi, want_phase):
+    """
+    Fast path: load a small pre-sliced per-ROI cache instead of the full
+    whole-grid file. Built by precompute_roi_splits.py -- raises with a
+    pointer to that script if the cache hasn't been built yet.
+    """
+    fpath = g04_roi_cache_path(subjID, lockType, band, voxRes, bids_root, roi)
+    if not os.path.exists(fpath):
+        raise FileNotFoundError(
+            f'G04 ROI cache not found: {fpath}. Run '
+            f'`python precompute_roi_splits.py` for sub-{subjID:02d} first.')
+    with np.load(fpath) as npz:
+        if want_phase and 'phase' not in npz:
+            raise ValueError(f"'{band}' has no saved phase data (cache: {fpath})")
+        return {
+            'amp': npz['amp'],
+            'phase': npz['phase'] if (want_phase and 'phase' in npz) else None,
+            'time_vector': npz['time_vector'],
+            'target_labels': npz['target_labels'],
+            'trialinfo_col2': npz['trialinfo_col2'],
+            'actualRate': float(npz['actualRate']),
+            'freq_range': tuple(npz['freq_range'].tolist()),
+        }
+
+
+def load_g04_band(subjID, lockType, band, voxRes, bids_root, want_phase, roi=None):
     """
     Loads derivatives/sub-{XX}/sourceRecon/freqSpace/
         sub-{XX}_task-mgs_{band}_allTargets_{res}_{lockType}.mat
+
+    roi: None or 'whole' loads the full whole-grid file (default, unchanged
+    behaviour). Any other ROI name (e.g. 'visual') loads the small
+    precomputed per-ROI cache from precompute_roi_splits.py instead of the
+    whole-grid file -- much cheaper when the caller only needs that ROI.
 
     Returns:
         amp:            (n_trials, n_times, n_sources) float32
@@ -44,6 +83,9 @@ def load_g04_band(subjID, lockType, band, voxRes, bids_root, want_phase):
     Raises ValueError if want_phase=True but this band has no saved phase
     (lowgamma/highgamma).
     """
+    if roi is not None and roi != 'whole':
+        return _load_g04_roi_cache(subjID, lockType, band, voxRes, bids_root, roi, want_phase)
+
     subName = f'sub-{subjID:02d}'
     res = resolution_tag(voxRes)
     fpath = os.path.join(bids_root, 'derivatives', subName, 'sourceRecon', 'freqSpace',

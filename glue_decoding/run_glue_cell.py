@@ -36,7 +36,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 
 from align import attach_behav, g04_orig_row_index, load_behav, verify_alignment
-from atlas import load_atlas_masks, roi_local_indices
 from constants import AMP_ONLY_BANDS, AMP_PHASE_BANDS, ROI_NAMES, get_bids_root
 from features import build_features
 from io_g03 import load_g03_unfiltered
@@ -84,33 +83,68 @@ def _decode_and_save(out_path, condition, band, lockType, voxRes, subjID,
     print(f'  Saved: {out_path}')
 
 
-def run_unfiltered(g03, subjID, lockType, voxRes, bids_root, atlas_masks, rois, behav):
+def _g03_for_roi(subjID, lockType, voxRes, bids_root, roi_name, g03_whole):
+    """
+    Returns (data, trialinfo_col2, time_vector) for one ROI.
+
+    For 'whole' this uses the already-loaded whole-grid g03_whole (unchanged
+    behaviour). For any other ROI it loads the small precomputed per-ROI
+    cache directly (io_g03.load_g03_unfiltered's roi= fast path) instead of
+    touching the whole-grid array at all.
+    """
+    if roi_name == 'whole':
+        return g03_whole['data'], g03_whole['trialinfo_col2'], g03_whole['time_vector']
+    g03_roi = load_g03_unfiltered(subjID, lockType, voxRes, bids_root, roi=roi_name)
+    return g03_roi['data'], g03_roi['trialinfo_col2'], g03_roi['time_vector']
+
+
+def run_unfiltered(subjID, lockType, voxRes, bids_root, rois, behav, g03_whole=None):
     band, condition = 'broadband', 'unfiltered'
     out_path = _output_path(bids_root, subjID, condition, band, lockType, voxRes)
     if os.path.exists(out_path):
         print(f'SKIP (exists): {out_path}')
         return
 
-    aligned = behav is not None and verify_alignment(g03['trialinfo_col2'], behav['tarlocCode'])
+    data_by_roi = {}
+    trialinfo_col2 = time_vector = None
+    for roi_name in rois:
+        data, trialinfo_col2, time_vector = _g03_for_roi(
+            subjID, lockType, voxRes, bids_root, roi_name, g03_whole)
+        data_by_roi[roi_name] = build_features('unfiltered', data)
+
+    aligned = behav is not None and verify_alignment(trialinfo_col2, behav['tarlocCode'])
     if behav is not None and not aligned:
         print(f'  WARNING: behav alignment check FAILED for sub-{subjID:02d} {lockType} '
               f'(unfiltered) -- proceeding without behavioral attachment.')
     # Unfiltered rows are already in original sourcedataCombined order (no target regrouping).
-    orig_row_idx = np.arange(g03['data'].shape[0])
+    orig_row_idx = np.arange(next(iter(data_by_roi.values())).shape[0])
     behav_rows = _behav_for_rows(orig_row_idx, behav, aligned)
 
-    data_by_roi = {}
-    for roi_name in rois:
-        idx = roi_local_indices(atlas_masks, g03['inside_pos'], roi_name)
-        data_by_roi[roi_name] = build_features('unfiltered', g03['data'][:, :, idx])
-
+    target_labels = trialinfo_col2.astype(np.int64)
     _decode_and_save(out_path, condition, band, lockType, voxRes, subjID,
-                      data_by_roi, g03['target_labels'], g03['time_vector'],
+                      data_by_roi, target_labels, time_vector,
                       behav_rows, aligned, freq_range=None)
 
 
-def run_g04_condition(g03, subjID, lockType, voxRes, bids_root, atlas_masks, rois, behav,
-                       condition, bands):
+def _g04_for_roi(subjID, lockType, band, voxRes, bids_root, roi_name, want_phase, g04_whole):
+    """
+    Returns (amp, phase, target_labels, time_vector, freq_range, actualRate) for one ROI.
+
+    For 'whole' this uses the already-loaded whole-grid g04_whole. For any
+    other ROI it loads the small precomputed per-ROI cache directly instead
+    of touching the whole-grid array at all.
+    """
+    if roi_name == 'whole':
+        return (g04_whole['amp'], g04_whole['phase'], g04_whole['target_labels'],
+                g04_whole['time_vector'], g04_whole['freq_range'], g04_whole['actualRate'])
+    g04_roi = load_g04_band(subjID, lockType, band, voxRes, bids_root,
+                             want_phase=want_phase, roi=roi_name)
+    return (g04_roi['amp'], g04_roi['phase'], g04_roi['target_labels'], g04_roi['time_vector'],
+            g04_roi['freq_range'], g04_roi['actualRate'])
+
+
+def run_g04_condition(subjID, lockType, voxRes, bids_root, rois, behav,
+                       condition, bands, g03_trialinfo_col2):
     want_phase = condition == 'ampPhase'
     for band in bands:
         out_path = _output_path(bids_root, subjID, condition, band, lockType, voxRes)
@@ -118,34 +152,38 @@ def run_g04_condition(g03, subjID, lockType, voxRes, bids_root, atlas_masks, roi
             print(f'SKIP (exists): {out_path}')
             continue
 
+        g04_whole = None
+        if 'whole' in rois:
+            try:
+                g04_whole = load_g04_band(subjID, lockType, band, voxRes, bids_root,
+                                           want_phase=want_phase)
+            except (FileNotFoundError, ValueError) as e:
+                print(f'  SKIP {condition}/{band}: {e}')
+                continue
+
+        data_by_roi = {}
+        target_labels = time_vector = freq_range = None
         try:
-            g04 = load_g04_band(subjID, lockType, band, voxRes, bids_root, want_phase=want_phase)
+            for roi_name in rois:
+                amp_roi, phase_roi, target_labels, time_vector, freq_range, _ = _g04_for_roi(
+                    subjID, lockType, band, voxRes, bids_root, roi_name, want_phase, g04_whole)
+                data_by_roi[roi_name] = build_features(condition, amp_roi, phase_roi)
         except (FileNotFoundError, ValueError) as e:
             print(f'  SKIP {condition}/{band}: {e}')
             continue
 
-        orig_row_idx = g04_orig_row_index(g03['trialinfo_col2'])
+        orig_row_idx = g04_orig_row_index(g03_trialinfo_col2)
         aligned = (behav is not None
-                   and orig_row_idx.shape[0] == g04['amp'].shape[0]
-                   and verify_alignment(g03['trialinfo_col2'], behav['tarlocCode']))
+                   and orig_row_idx.shape[0] == target_labels.shape[0]
+                   and verify_alignment(g03_trialinfo_col2, behav['tarlocCode']))
         if behav is not None and not aligned:
             print(f'  WARNING: behav alignment check FAILED for sub-{subjID:02d} {lockType} '
                   f'{condition}/{band} -- proceeding without behavioral attachment.')
         behav_rows = _behav_for_rows(orig_row_idx, behav, aligned)
 
-        data_by_roi = {}
-        for roi_name in rois:
-            # G04's per-target structs don't carry inside_pos (see io_g04.py docstring) --
-            # reuse this subject/lockType's G03 inside_pos, since G04's source columns are
-            # the exact same columns/order, just band-filtered.
-            idx = roi_local_indices(atlas_masks, g03['inside_pos'], roi_name)
-            amp_roi = g04['amp'][:, :, idx]
-            phase_roi = g04['phase'][:, :, idx] if g04['phase'] is not None else None
-            data_by_roi[roi_name] = build_features(condition, amp_roi, phase_roi)
-
         _decode_and_save(out_path, condition, band, lockType, voxRes, subjID,
-                          data_by_roi, g04['target_labels'], g04['time_vector'],
-                          behav_rows, aligned, freq_range=g04['freq_range'])
+                          data_by_roi, target_labels, time_vector,
+                          behav_rows, aligned, freq_range=freq_range)
 
 
 def main():
@@ -161,27 +199,37 @@ def main():
     print(f'glue_decoding | sub-{args.subjID:02d} | {args.lockType} | {args.voxRes} | '
           f'conditions={args.conditions} | rois={args.rois}')
 
-    atlas_masks = load_atlas_masks(args.voxRes, bids_root)
     behav = load_behav(args.subjID, bids_root)
     if behav is None:
         print(f'  NOTE: no behavioral file found for sub-{args.subjID:02d} -- '
               f'i_sacc_err/i_sacc_angle will be NaN, behav_aligned=False everywhere.')
 
-    # G03's trialinfo/inside_pos are needed for unfiltered AND for G04 conditions (G04's
-    # per-target regrouping and source columns are keyed off this exact same G03 file).
-    g03 = load_g03_unfiltered(args.subjID, args.lockType, args.voxRes, bids_root)
+    # Only load the whole-grid G03 file when 'whole' is actually requested -- for
+    # ROI-only runs (the default: visual/parietal/frontal), each condition loads
+    # the small precomputed per-ROI caches directly instead (see io_g03.py's
+    # roi= fast path), skipping the 8-10GB whole-grid array entirely.
+    need_whole = 'whole' in args.rois
+    g03_whole = load_g03_unfiltered(args.subjID, args.lockType, args.voxRes, bids_root) \
+        if need_whole else None
+
+    # trialinfo_col2 (per-trial metadata, identical across ROI caches -- only the
+    # source axis differs) is needed for G04's row alignment regardless of which
+    # ROIs are requested; grab it from whichever G03 load is cheapest.
+    g03_trialinfo_col2 = (g03_whole['trialinfo_col2'] if need_whole else
+                           load_g03_unfiltered(args.subjID, args.lockType, args.voxRes,
+                                                bids_root, roi=args.rois[0])['trialinfo_col2'])
 
     if 'unfiltered' in args.conditions:
-        run_unfiltered(g03, args.subjID, args.lockType, args.voxRes, bids_root,
-                        atlas_masks, args.rois, behav)
+        run_unfiltered(args.subjID, args.lockType, args.voxRes, bids_root,
+                        args.rois, behav, g03_whole=g03_whole)
 
     if 'ampOnly' in args.conditions:
-        run_g04_condition(g03, args.subjID, args.lockType, args.voxRes, bids_root,
-                           atlas_masks, args.rois, behav, 'ampOnly', AMP_ONLY_BANDS)
+        run_g04_condition(args.subjID, args.lockType, args.voxRes, bids_root,
+                           args.rois, behav, 'ampOnly', AMP_ONLY_BANDS, g03_trialinfo_col2)
 
     if 'ampPhase' in args.conditions:
-        run_g04_condition(g03, args.subjID, args.lockType, args.voxRes, bids_root,
-                           atlas_masks, args.rois, behav, 'ampPhase', AMP_PHASE_BANDS)
+        run_g04_condition(args.subjID, args.lockType, args.voxRes, bids_root,
+                           args.rois, behav, 'ampPhase', AMP_PHASE_BANDS, g03_trialinfo_col2)
 
     print(f'Done | sub-{args.subjID:02d} | {args.lockType}')
 
