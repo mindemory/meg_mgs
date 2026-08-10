@@ -10,11 +10,20 @@ already duplicates this same dict, so this matches the established repo conventi
 """
 
 import os
+import random
 import socket
 import tempfile
+import time
 from shutil import copyfile
 
 import h5py
+
+# Retries for transient NFS read failures (soft-mount short reads / stale
+# filehandles under concurrent load) surfacing as h5py "file signature not
+# found" -- seen on vader when 8 parallel workers hit the NFS mount at once,
+# even for direct locking=False reads of an otherwise-valid file.
+_OPEN_RETRIES = 5
+_OPEN_BACKOFF_S = 0.5
 
 # Target-location label (1-10) -> degrees. Used everywhere angle targets are needed.
 ANGLE_MAPPING = {1: 0, 2: 25, 3: 50, 4: 130, 5: 155,
@@ -67,12 +76,8 @@ def _copy_and_open(fpath, tmp_dir, tmp_name):
         os.remove(tmp)
 
 
-def open_h5(fpath, tmp_name):
-    """
-    Open an h5py file with the same host-aware copy/locking strategy as
-    megScripts/temporalGeneralizationDecoding.py's open_h5(): on zod/vader,
-    fall back to copying to a local scratch path if direct/locked access fails.
-    """
+def _open_h5_once(fpath, tmp_name):
+    """One attempt at the host-aware copy/locking strategy, no retries."""
     h = socket.gethostname()
     if h == 'zod':
         return _copy_and_open(fpath, '/Users/mrugank/Desktop', tmp_name)
@@ -82,3 +87,27 @@ def open_h5(fpath, tmp_name):
         except Exception:
             return _copy_and_open(fpath, '/tmp', tmp_name)
     return h5py.File(fpath, 'r')
+
+
+def open_h5(fpath, tmp_name):
+    """
+    Open an h5py file with the same host-aware copy/locking strategy as
+    megScripts/temporalGeneralizationDecoding.py's open_h5(): on zod/vader,
+    fall back to copying to a local scratch path if direct/locked access fails.
+
+    Retries with jittered backoff on OSError, since both the direct
+    locking=False path and the copy fallback can transiently fail under
+    concurrent NFS load (short reads / stale filehandles), not just when the
+    file is genuinely missing or corrupt.
+    """
+    last_err = None
+    for attempt in range(_OPEN_RETRIES):
+        try:
+            return _open_h5_once(fpath, tmp_name)
+        except OSError as e:
+            last_err = e
+            if attempt < _OPEN_RETRIES - 1:
+                time.sleep(_OPEN_BACKOFF_S * (attempt + 1) + random.uniform(0, 0.5))
+    raise OSError(
+        f'Failed to open {fpath!r} after {_OPEN_RETRIES} attempts (last error: {last_err})'
+    ) from last_err
