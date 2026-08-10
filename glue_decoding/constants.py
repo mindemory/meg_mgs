@@ -11,6 +11,7 @@ already duplicates this same dict, so this matches the established repo conventi
 
 import os
 import socket
+import tempfile
 from shutil import copyfile
 
 import h5py
@@ -46,6 +47,26 @@ def get_bids_root():
     return '/scratch/mdd9787/meg_prf_greene/MEG_HPC'
 
 
+def _copy_and_open(fpath, tmp_dir, tmp_name):
+    """
+    Copy fpath to a process/call-unique path under tmp_dir and open it with
+    h5py. Using a unique name (rather than just tmp_name, which collides
+    whenever two parallel workers load the same file basename) avoids one
+    worker's copyfile()/os.remove() truncating or deleting another's
+    in-flight copy, which otherwise surfaces as h5py's
+    "file signature not found" on the corrupted/half-written copy.
+    Cleanup happens in `finally` so a failed h5py.File() open doesn't leak
+    the temp copy.
+    """
+    fd, tmp = tempfile.mkstemp(prefix=f'{os.getpid()}_', suffix=f'_{tmp_name}', dir=tmp_dir)
+    os.close(fd)
+    try:
+        copyfile(fpath, tmp)
+        return h5py.File(tmp, 'r')
+    finally:
+        os.remove(tmp)
+
+
 def open_h5(fpath, tmp_name):
     """
     Open an h5py file with the same host-aware copy/locking strategy as
@@ -54,18 +75,10 @@ def open_h5(fpath, tmp_name):
     """
     h = socket.gethostname()
     if h == 'zod':
-        tmp = os.path.join('/Users/mrugank/Desktop', tmp_name)
-        copyfile(fpath, tmp)
-        f = h5py.File(tmp, 'r')
-        os.remove(tmp)
-        return f
+        return _copy_and_open(fpath, '/Users/mrugank/Desktop', tmp_name)
     if h == 'vader':
         try:
             return h5py.File(fpath, 'r', locking=False)
         except Exception:
-            tmp = os.path.join('/tmp', tmp_name)
-            copyfile(fpath, tmp)
-            f = h5py.File(tmp, 'r')
-            os.remove(tmp)
-            return f
+            return _copy_and_open(fpath, '/tmp', tmp_name)
     return h5py.File(fpath, 'r')
