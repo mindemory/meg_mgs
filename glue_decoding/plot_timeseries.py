@@ -372,8 +372,6 @@ def _apply_black_style(fig, axes_flat):
         ax.title.set_color(_FG)
         for spine in ax.spines.values():
             spine.set_edgecolor(_GRID)
-        ax.grid(True, color=_GRID, linewidth=0.5, linestyle='--', alpha=0.7)
-        ax.set_axisbelow(True)
 
 
 def _draw_event_flags(ax, flags, y_lim):
@@ -410,15 +408,36 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir, base
                               squeeze=False)
     _apply_black_style(fig, axes.flatten())
 
+    # First pass: aggregate every (band, ROI) cell once, and find each row's
+    # (band's) symmetric y-limit -- the max abs value across the mean+/-SEM
+    # band over ALL ROI columns in that row -- so every column in a row
+    # shares one consistent, zero-centered scale.
+    curves = {}
+    row_ylim = {}
+    for band in bands:
+        row_max_abs = 0.0
+        for roi in rois_all:
+            tv, mean_curve, sem_curve = aggregate(all_results, band, roi)
+            curves[(band, roi)] = (tv, mean_curve, sem_curve)
+            if tv is None:
+                continue
+            row_max_abs = max(row_max_abs,
+                               np.max(np.abs(mean_curve + sem_curve)),
+                               np.max(np.abs(mean_curve - sem_curve)))
+        row_ylim[band] = (-row_max_abs * 1.1, row_max_abs * 1.1) if row_max_abs > 0 else None
+
     for r_idx, band in enumerate(bands):
         for c_idx, roi in enumerate(rois_all):
             ax     = axes[r_idx, c_idx]
             colour = ROI_COLOURS.get(roi, '#ffffff')
 
-            tv, mean_curve, sem_curve = aggregate(all_results, band, roi)
+            tv, mean_curve, sem_curve = curves[(band, roi)]
+
+            ax.set_xlim(t_min, t_max)
+            if row_ylim[band] is not None:
+                ax.set_ylim(*row_ylim[band])
 
             if tv is None:
-                ax.set_xlim(t_min, t_max)
                 ax.text(0.5, 0.5, 'no data', transform=ax.transAxes,
                         ha='center', va='center', color='#555555', fontsize=9)
                 continue
@@ -429,12 +448,8 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir, base
                              color=colour, alpha=0.25)
             ax.plot(tv, mean_curve, color=colour, linewidth=1.6)
 
-            ax.set_xlim(t_min, t_max)
-            ax.axhline(0, color='#333333', linewidth=0.4, alpha=0.5)
-
             # Draw event flags
-            y_lim = ax.get_ylim()
-            _draw_event_flags(ax, flags, y_lim)
+            _draw_event_flags(ax, flags, ax.get_ylim())
 
             # Count valid subjects
             n_subj = sum(
@@ -465,9 +480,10 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir, base
                              ha='right', va='center',
                              rotation=90, fontweight='bold')
 
-            # Tick spacing: 0.5 s major, 0.1 s minor
-            ax.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
-            ax.xaxis.set_minor_locator(ticker.MultipleLocator(0.1))
+            # Tick spacing: 1 unit on both axes (1 s on x, 1 z-score/amplitude
+            # unit on y) -- consistent, uncluttered ticks for slide use.
+            ax.xaxis.set_major_locator(ticker.MultipleLocator(1.0))
+            ax.yaxis.set_major_locator(ticker.MultipleLocator(1.0))
             ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2g'))
 
     lock_label = 'Stimulus-locked' if lockType == 'stim' else 'Response-locked'
