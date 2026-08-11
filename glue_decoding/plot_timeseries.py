@@ -95,31 +95,35 @@ BASELINE_WINDOWS = {
 }
 
 # Each flag: (time_s, label, label_y_frac)
-# label_y_frac controls vertical placement of the text label (0=bottom, 1=top)
+# label_y_frac controls vertical placement of the text label (0=bottom, 1=top).
+# Adjacent flags are staggered (alternating high / mid) so their rotated
+# labels don't overlap when the time gap is small (e.g. Stim/Delay at 0.0/0.2s).
 EVENT_FLAGS = {
     'stim': [
-        (0.0,  'Stim',        0.93),
-        (0.2,  'Delay\nOnset', 0.93),
+        (0.0,  'Stim',         0.93),   # top
+        (0.2,  'Delay Onset',  0.55),   # mid -- staggered away from Stim label
     ],
     'resp': [
-        (-4.0, 'Delay\nOnset', 0.93),
-        (-2.5, 'R Onset',     0.93),
-        (-2.0, 'Feedback',    0.78),
+        (-4.0, 'Delay Onset',  0.93),   # top
+        (-2.5, 'R Onset',      0.75),   # mid-high
+        (-2.0, 'Feedback',     0.55),   # mid
     ],
 }
 
-# ── Visual design ─────────────────────────────────────────────────────────────
-_BG   = '#0d0d0d'
-_FG   = '#e0e0e0'
-_GRID = '#1e1e1e'
-_FLAG_LINE = '#888888'
+# ── Visual design ────────────────────────────────────────────────────────────────────────────────
+_BG        = '#000000'   # true black
+_FG        = '#e0e0e0'
+_GRID      = '#1c1c1c'
+_FLAG_LINE = '#777777'
 _FLAG_TXT  = '#cccccc'
 
+# ROI colours: mango/bumble for visual, soft violet for parietal,
+# emerald mint for frontal -- all vivid on true black.
 ROI_COLOURS = {
-    'visual':    '#7EB8F7',
-    'parietal':  '#F4A261',
-    'frontal':   '#A8DADC',
-    'whole':     '#E76F51',
+    'visual':   '#FFC629',   # mango / Bumble amber
+    'parietal': '#A78BFA',   # soft violet
+    'frontal':  '#34D399',   # emerald mint
+    'whole':    '#E76F51',   # coral (unchanged)
 }
 
 # 'unfiltered' (G03 broadband) is intentionally excluded -- that row wasn't
@@ -440,7 +444,7 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir, base
                 ax.set_xlabel('Time (s)', fontsize=12)
 
             if c_idx == 0:
-                ylabel = 'Z-score (baseline-normalized)' if baselined else 'Amplitude (a.u.)'
+                ylabel = 'Normalized activity'
                 ax.set_ylabel(ylabel, fontsize=11)
 
             if c_idx == 0:
@@ -462,12 +466,9 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir, base
             ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=5, symmetric=True))
             ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2g'))
 
-    lock_label = 'Stimulus-locked' if lockType == 'stim' else 'Response-locked'
-    win_str    = f'{t_min:+.1f} to {t_max:+.1f} s'
-    fig.suptitle(
-        f'Mean +/- SEM Source Activity  |  {lock_label}  ({win_str})  |  {voxRes}',
-        color=_FG, fontsize=17, fontweight='bold', y=1.01
-    )
+    title = 'Stim-locked Activity' if lockType == 'stim' else 'Response-locked Activity'
+    fig.suptitle(f'{title}  |  {voxRes}',
+                 color=_FG, fontsize=17, fontweight='bold', y=1.01)
     fig.tight_layout(rect=[0.07, 0, 1, 1])
 
     os.makedirs(outdir, exist_ok=True)
