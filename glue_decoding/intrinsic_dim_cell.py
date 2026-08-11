@@ -55,6 +55,13 @@ from io_g04 import load_g04_band
 
 # ── Dimensionality estimators (same as intrinsic_dimensionality.py) ──────────
 
+# Default one-sided half-width of the temporal averaging window (ms).
+# Each timepoint uses data averaged over [t - WIN_MS, t + WIN_MS] ms.
+DEFAULT_WIN_MS = 50.0   # → 100 ms total window
+
+# Band list without broadband (matches plot_timeseries convention).
+AMP_BAND_ORDER = ['theta', 'alpha', 'beta', 'lowgamma', 'highgamma']
+
 def participation_ratio(X_t):
     """Participation ratio from z-scored (n_trials, n_sources) slice."""
     C   = np.cov(X_t, rowvar=False)
@@ -77,16 +84,31 @@ def n_pcs_for_var(X_t, var_threshold=0.90):
     return int(hits[0] + 1) if hits.size > 0 else len(lam)
 
 
-def dim_over_time(data, var_threshold=0.90):
+def dim_over_time(data, fsample, var_threshold=0.90, win_ms=DEFAULT_WIN_MS):
     """
-    data : (n_trials, n_times, n_sources)
+    data    : (n_trials, n_times, n_sources)
+    fsample : sampling rate in Hz (used to convert win_ms → samples)
+    win_ms  : one-sided half-width in ms (total window = 2*win_ms ms,
+              default 50 ms → ±50 ms = 100 ms total).  At each
+              timepoint t the trial data are averaged across the window
+              [t - half_win, t + half_win] samples (clamped to array
+              bounds) before covariance estimation -- this acts as a
+              temporal smoother that stabilises the covariance estimate
+              without biasing the dimensionality measure.
+              Set win_ms=0 to use single-sample snapshots (original
+              behaviour).
+
     Returns pr (n_times,) and npcs (n_times,).
     """
     n_trials, n_times, n_sources = data.shape
+    half_win = max(0, round(win_ms * 1e-3 * fsample))
+
     pr   = np.zeros(n_times)
     npcs = np.zeros(n_times, dtype=int)
     for t in range(n_times):
-        X_t = data[:, t, :]
+        t0  = max(0, t - half_win)
+        t1  = min(n_times, t + half_win + 1)
+        X_t = data[:, t0:t1, :].mean(axis=1)   # (n_trials, n_sources)
         mu  = X_t.mean(axis=0, keepdims=True)
         sd  = X_t.std(axis=0,  keepdims=True)
         sd[sd < 1e-10] = 1.0
@@ -114,7 +136,7 @@ def output_path(bids_root, subjID, band, lockType, voxRes, outdir=None):
 # ── Main computation ─────────────────────────────────────────────────────────
 
 def run_cell(subjID, lockType, band, voxRes, bids_root, rois_all,
-             var_threshold, outdir=None):
+             var_threshold, win_ms=DEFAULT_WIN_MS, outdir=None):
 
     out_path = output_path(bids_root, subjID, band, lockType, voxRes, outdir)
     if os.path.exists(out_path):
@@ -127,9 +149,6 @@ def run_cell(subjID, lockType, band, voxRes, bids_root, rois_all,
     arrays = {}
 
     # ── Whole-grid path (only when 'whole' ROI is requested) ─────────────────
-    # Requires the full G03 (and G04 for non-broadband) HDF5 file.  Skipped
-    # entirely when 'whole' is not in rois_all, since every other ROI is
-    # served by the per-ROI cache fast path below.
     if need_whole:
         try:
             g03 = load_g03_unfiltered(subjID, lockType, voxRes, bids_root)
@@ -158,10 +177,12 @@ def run_cell(subjID, lockType, band, voxRes, bids_root, rois_all,
 
             src_data_whole    = None
             time_vector_whole = None
+            fsample_whole     = None
 
             if band == 'broadband':
                 src_data_whole    = g03_data
                 time_vector_whole = g03['time_vector']
+                fsample_whole     = g03['fsample']
             else:
                 try:
                     g04 = load_g04_band(subjID, lockType, band, voxRes, bids_root,
@@ -179,17 +200,16 @@ def run_cell(subjID, lockType, band, voxRes, bids_root, rois_all,
                         amp = amp[:, :, valid_cols]
                     src_data_whole    = amp
                     time_vector_whole = g04['time_vector']
+                    fsample_whole     = g04['actualRate']
 
             if src_data_whole is not None and src_data_whole.shape[2] > 0:
-                pr, npcs = dim_over_time(src_data_whole, var_threshold)
+                pr, npcs = dim_over_time(src_data_whole, fsample_whole,
+                                          var_threshold, win_ms)
                 arrays['pr_whole']          = pr
                 arrays['npcs_whole']        = npcs.astype(np.int32)
                 arrays['time_vector_whole'] = time_vector_whole
 
     # ── ROI-cache fast path (non-'whole' ROIs) ────────────────────────────────
-    # Loads small per-ROI .npz files written by precompute_roi_splits.py
-    # instead of the full whole-grid HDF5 -- avoids 8-10 GB reads when only
-    # a handful of ROI sources are needed.
     for roi in rois_cache:
         try:
             if band == 'broadband':
@@ -197,11 +217,13 @@ def run_cell(subjID, lockType, band, voxRes, bids_root, rois_all,
                                                    bids_root, roi=roi)
                 data_roi    = roi_data['data']
                 time_vector = roi_data['time_vector']
+                fsample     = roi_data['fsample']
             else:
                 roi_data    = load_g04_band(subjID, lockType, band, voxRes,
                                              bids_root, want_phase=False, roi=roi)
                 data_roi    = roi_data['amp']
                 time_vector = roi_data['time_vector']
+                fsample     = roi_data['actualRate']
         except (FileNotFoundError, ValueError) as e:
             print(f'  sub-{subjID:02d} {band} roi={roi}: {e}')
             continue
@@ -210,7 +232,7 @@ def run_cell(subjID, lockType, band, voxRes, bids_root, rois_all,
             print(f'  sub-{subjID:02d} {band} {roi}: empty ROI, skipping')
             continue
 
-        pr, npcs = dim_over_time(data_roi, var_threshold)
+        pr, npcs = dim_over_time(data_roi, fsample, var_threshold, win_ms)
         arrays[f'pr_{roi}']          = pr
         arrays[f'npcs_{roi}']        = npcs.astype(np.int32)
         arrays[f'time_vector_{roi}'] = time_vector
@@ -221,6 +243,7 @@ def run_cell(subjID, lockType, band, voxRes, bids_root, rois_all,
 
     arrays['subjID']        = np.array([subjID])
     arrays['var_threshold'] = np.array([var_threshold])
+    arrays['win_ms']        = np.array([win_ms])
     np.savez(out_path, **arrays)
     print(f'Saved: {out_path}')
 
@@ -236,6 +259,11 @@ def main():
     parser.add_argument('--voxRes',        default='8mm')
     parser.add_argument('--rois',          nargs='+', default=list(ROI_NAMES))
     parser.add_argument('--var_threshold', type=float, default=0.90)
+    parser.add_argument('--win_ms',        type=float, default=DEFAULT_WIN_MS,
+                        help='One-sided temporal averaging half-width in ms '
+                             f'(default {DEFAULT_WIN_MS} ms → ±{DEFAULT_WIN_MS} ms '
+                             f'= {2*DEFAULT_WIN_MS:.0f} ms total window). '
+                             'Set to 0 for single-sample snapshots.')
     parser.add_argument('--outdir',        default=None,
                         help='Override per-subject output dir')
     args = parser.parse_args()
@@ -247,10 +275,12 @@ def main():
         rois_all.append('whole')
 
     print(f'intrinsic_dim_cell | sub-{args.subjID:02d} | {args.lockType} | '
-          f'{args.band} | {args.voxRes} | rois={rois_all}')
+          f'{args.band} | {args.voxRes} | rois={rois_all} | '
+          f'win_ms={args.win_ms}')
 
     run_cell(args.subjID, args.lockType, args.band, args.voxRes,
-             bids_root, rois_all, args.var_threshold, args.outdir)
+             bids_root, rois_all, args.var_threshold,
+             win_ms=args.win_ms, outdir=args.outdir)
 
 
 if __name__ == '__main__':

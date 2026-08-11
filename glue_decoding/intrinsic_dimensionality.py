@@ -78,6 +78,10 @@ BAND_LABELS = {
 
 VAR_THRESHOLD_DEFAULT = 0.90  # fraction of variance for n_pcs metric
 
+# AMP_BAND_ORDER excludes broadband (unfiltered G03) -- matches the
+# plot_timeseries convention of only plotting Hilbert-amplitude bands.
+AMP_BAND_ORDER = ['theta', 'alpha', 'beta', 'lowgamma', 'highgamma']
+
 # Time windows and event flags (mirrors plot_timeseries.py)
 TIME_WINDOWS = {
     'stim': (-1.0, 1.7),
@@ -431,7 +435,9 @@ def main():
                              '<bids_root>/derivatives/glueDecoding/intrinsicDim/plots '
                              'and .npz files are expected under each subject.')
     parser.add_argument('--var_threshold', type=float, default=VAR_THRESHOLD_DEFAULT)
-    parser.add_argument('--bands',         nargs='+', default=BAND_ORDER)
+    parser.add_argument('--bands',         nargs='+', default=AMP_BAND_ORDER,
+                        help='Bands to aggregate (default: theta alpha beta '
+                             'lowgamma highgamma -- broadband excluded).')
     args = parser.parse_args()
 
     bids_root = get_bids_root()
