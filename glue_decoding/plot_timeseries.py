@@ -12,6 +12,14 @@ Data sources:
   - Unfiltered  : G03 raw broadband voltage,   mean across sources in ROI
   - Band amps   : G04 Hilbert amplitude,        mean across sources in ROI
 
+By default, each subject's (band, ROI) curve is z-scored against its own
+mean/std within a baseline window (see BASELINE_WINDOWS: pre-stim fixation
+for stim-locked, pre-response tail segment for resp-locked) before being
+averaged across subjects -- otherwise raw voltage/amplitude scale differs
+enough across subjects/bands/ROIs that a cross-subject mean is dominated by
+whichever subject happens to have the largest scale. Pass --no_baseline to
+plot raw units instead.
+
 'whole' is opt-in rather than default because including it forces a full
 whole-grid load of every G03/G04 file (8-10GB each); without it, each ROI is
 read directly from precompute_roi_splits.py's small precomputed per-ROI
@@ -69,6 +77,20 @@ from io_g04 import load_g04_band
 TIME_WINDOWS = {
     'stim': (-1.0, 1.7),
     'resp': (-4.5, -0.5),
+}
+
+# Baseline window used to z-score each subject's curve before cross-subject
+# averaging (per (subject, band, ROI) independently -- amplitude scale
+# differs hugely across bands/ROIs/subjects, so raw units aren't comparable
+# in a cross-subject mean). stim uses the pre-stimulus fixation period;
+# resp has no true ITI within its cropped window (it ends at -0.5s, well
+# before the response), so the tail segment just before that crop boundary
+# is used as the closest available baseline proxy. Both windows are subsets
+# of TIME_WINDOWS above, so they can be computed straight from a subject's
+# already-cropped curve.
+BASELINE_WINDOWS = {
+    'stim': (-1.0, 0.0),
+    'resp': (-1.0, -0.5),
 }
 
 # Each flag: (time_s, label, label_y_frac)
@@ -144,8 +166,32 @@ def _reduce_curve(data, tv_crop_mask, idx=None):
     return curve[tv_crop_mask]
 
 
+def _baseline_zscore(curve, tv_crop, baseline_window):
+    """
+    Z-score curve using its own mean/std within baseline_window of tv_crop --
+    per (subject, band, ROI) independently, since amplitude scale differs
+    across bands and ROIs and raw units aren't comparable across subjects.
+
+    baseline_window: (b_min, b_max), or None to disable (returns curve as-is).
+    Falls back to a mean-subtract only (no /std) if the baseline segment has
+    ~zero variance, to avoid dividing by ~0.
+    """
+    if curve is None or tv_crop is None or baseline_window is None:
+        return curve
+    b_min, b_max = baseline_window
+    b_mask = (tv_crop >= b_min) & (tv_crop <= b_max)
+    if not b_mask.any():
+        return curve
+    b_mean = curve[b_mask].mean()
+    b_std = curve[b_mask].std()
+    if b_std < 1e-12:
+        return curve - b_mean
+    return (curve - b_mean) / b_std
+
+
 def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
-                             atlas_masks, rois_all, t_min, t_max):
+                             atlas_masks, rois_all, t_min, t_max,
+                             baseline_window=None):
     """
     Load and reduce one subject's data to per-ROI mean timeseries curves,
     cropped to [t_min, t_max].
@@ -156,6 +202,12 @@ def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
     files are loaded once and sliced in-memory for every ROI (including
     'whole'), same as before -- there's no cache-based shortcut once the
     whole-grid load is unavoidable anyway.
+
+    baseline_window: (b_min, b_max) or None. If given, each (band, ROI)
+    curve is independently z-scored against its own mean/std within this
+    window (see _baseline_zscore) before being returned -- this happens
+    per subject, so cross-subject amplitude-scale differences don't distort
+    the aggregate() mean/SEM computed afterwards.
 
     Returns dict:
         result[band][roi]           = (n_crop_times,) float, or None
@@ -190,9 +242,11 @@ def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
 
             tv_full = g03['time_vector']
             tv_crop_mask = (tv_full >= t_min) & (tv_full <= t_max)
-            result['time_vectors']['unfiltered'] = tv_full[tv_crop_mask]
+            tv_crop = tv_full[tv_crop_mask]
+            result['time_vectors']['unfiltered'] = tv_crop
             for roi in rois_all:
-                result['unfiltered'][roi] = _reduce_curve(g03_data, tv_crop_mask, roi_idx[roi])
+                curve = _reduce_curve(g03_data, tv_crop_mask, roi_idx[roi])
+                result['unfiltered'][roi] = _baseline_zscore(curve, tv_crop, baseline_window)
             del g03_data, g03
         else:
             result['time_vectors']['unfiltered'] = None
@@ -203,6 +257,7 @@ def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
         # cache directly (io_g03.load_g03_unfiltered's roi= fast path) --
         # no whole-grid load needed since 'whole' wasn't requested.
         tv_crop_mask = None
+        tv_crop = None
         for roi in rois_all:
             try:
                 g03_roi = load_g03_unfiltered(subjID, lockType, voxRes, bids_root, roi=roi)
@@ -213,8 +268,10 @@ def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
             if tv_crop_mask is None:
                 tv_full = g03_roi['time_vector']
                 tv_crop_mask = (tv_full >= t_min) & (tv_full <= t_max)
-                result['time_vectors']['unfiltered'] = tv_full[tv_crop_mask]
-            result['unfiltered'][roi] = _reduce_curve(g03_roi['data'], tv_crop_mask)
+                tv_crop = tv_full[tv_crop_mask]
+                result['time_vectors']['unfiltered'] = tv_crop
+            curve = _reduce_curve(g03_roi['data'], tv_crop_mask)
+            result['unfiltered'][roi] = _baseline_zscore(curve, tv_crop, baseline_window)
         if tv_crop_mask is None:
             result['time_vectors']['unfiltered'] = None
 
@@ -239,7 +296,8 @@ def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
             amp        = g04['amp']
             tv_g04     = g04['time_vector']
             tv_g04_mask = (tv_g04 >= t_min) & (tv_g04 <= t_max)
-            result['time_vectors'][band] = tv_g04[tv_g04_mask]
+            tv_g04_crop = tv_g04[tv_g04_mask]
+            result['time_vectors'][band] = tv_g04_crop
             for roi in rois_all:
                 # roi_idx may be None if G03 failed above (need_whole=True but
                 # G03 load errored) -- without it we can only still resolve
@@ -251,12 +309,14 @@ def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
                 else:
                     result[band][roi] = None
                     continue
-                result[band][roi] = _reduce_curve(amp, tv_g04_mask, idx)
+                curve = _reduce_curve(amp, tv_g04_mask, idx)
+                result[band][roi] = _baseline_zscore(curve, tv_g04_crop, baseline_window)
             del amp, g04
             continue
 
         # ROI-only fast path (mirrors the G03 branch above).
         tv_g04_mask = None
+        tv_g04_crop = None
         for roi in rois_all:
             try:
                 g04_roi = load_g04_band(subjID, lockType, band, voxRes, bids_root,
@@ -268,8 +328,10 @@ def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
             if tv_g04_mask is None:
                 tv_g04 = g04_roi['time_vector']
                 tv_g04_mask = (tv_g04 >= t_min) & (tv_g04 <= t_max)
-                result['time_vectors'][band] = tv_g04[tv_g04_mask]
-            result[band][roi] = _reduce_curve(g04_roi['amp'], tv_g04_mask)
+                tv_g04_crop = tv_g04[tv_g04_mask]
+                result['time_vectors'][band] = tv_g04_crop
+            curve = _reduce_curve(g04_roi['amp'], tv_g04_mask)
+            result[band][roi] = _baseline_zscore(curve, tv_g04_crop, baseline_window)
         if tv_g04_mask is None:
             result['time_vectors'][band] = None
 
@@ -327,7 +389,7 @@ def _draw_event_flags(ax, flags, y_lim):
                 transform=ax.get_xaxis_transform() if False else ax.transData)
 
 
-def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir):
+def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir, baselined=True):
     """
     One figure per lockType:
         rows = bands (6)
@@ -389,8 +451,11 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir):
                 ax.set_xlabel('Time (s)', fontsize=8)
 
             if c_idx == 0:
-                ylabel = ('Voltage (a.u.)' if band == 'unfiltered'
-                          else 'Amplitude (a.u.)')
+                if baselined:
+                    ylabel = 'Z-score (baseline-normalized)'
+                else:
+                    ylabel = ('Voltage (a.u.)' if band == 'unfiltered'
+                              else 'Amplitude (a.u.)')
                 ax.set_ylabel(ylabel, fontsize=7)
 
             if c_idx == 0:
@@ -436,6 +501,11 @@ def main():
     parser.add_argument('--n_jobs',    type=int, default=None,
                         help='Parallel workers (subjects). Default: len(--subjects) '
                              '-- one worker per requested subject.')
+    parser.add_argument('--no_baseline', action='store_true',
+                        help='Disable per-subject baseline z-scoring (see BASELINE_WINDOWS). '
+                             'Default: on -- each (subject, band, ROI) curve is z-scored '
+                             'against its own fixation/pre-response baseline period before '
+                             'cross-subject averaging.')
     args = parser.parse_args()
 
     if args.n_jobs is None:
@@ -460,18 +530,20 @@ def main():
 
     for lockType in args.lockTypes:
         t_min, t_max = TIME_WINDOWS.get(lockType, (-1.0, 2.0))
-        print(f'\n=== lockType: {lockType}  window: [{t_min}, {t_max}] s ===')
+        baseline_window = None if args.no_baseline else BASELINE_WINDOWS.get(lockType)
+        print(f'\n=== lockType: {lockType}  window: [{t_min}, {t_max}] s  '
+              f'baseline: {baseline_window} ===')
 
         all_results = Parallel(n_jobs=n_jobs, prefer='processes', verbose=5)(
             delayed(load_subject_timeseries)(
                 subjID, lockType, args.voxRes, bids_root,
-                atlas_masks, rois_all, t_min, t_max
+                atlas_masks, rois_all, t_min, t_max, baseline_window
             )
             for subjID in args.subjects
         )
 
         plot_timeseries_figure(all_results, rois_all, lockType,
-                                args.voxRes, outdir)
+                                args.voxRes, outdir, baselined=baseline_window is not None)
 
     print('\nDone.')
 
