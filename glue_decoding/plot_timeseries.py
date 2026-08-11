@@ -459,7 +459,7 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir, base
             xticks = sorted(set(np.round(np.concatenate([base_xticks, flag_times]), 3))) \
                 if flag_times else base_xticks
             ax.xaxis.set_major_locator(ticker.FixedLocator(xticks))
-            ax.yaxis.set_major_locator(ticker.MultipleLocator(1.0))
+            ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=5, symmetric=True))
             ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2g'))
 
     lock_label = 'Stimulus-locked' if lockType == 'stim' else 'Response-locked'
