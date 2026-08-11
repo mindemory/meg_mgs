@@ -3,14 +3,15 @@
 plot_timeseries.py
 
 Plots mean +/- SEM timeseries of source-space MEG activity averaged across
-subjects, for stim-locked and resp-locked epochs, for all frequency bands
-(unfiltered broadband + theta/alpha/beta/lowgamma/highgamma amplitude) and
-the requested ROIs (visual, parietal, frontal by default; whole-brain is
-opt-in -- pass `--rois visual parietal frontal whole`).
+subjects, for stim-locked and resp-locked epochs, for all G04 frequency
+bands (theta/alpha/beta/lowgamma/highgamma amplitude) and the requested
+ROIs (visual, parietal, frontal by default; whole-brain is opt-in --
+pass `--rois visual parietal frontal whole`).
 
-Data sources:
-  - Unfiltered  : G03 raw broadband voltage,   mean across sources in ROI
-  - Band amps   : G04 Hilbert amplitude,        mean across sources in ROI
+Data source: G04 Hilbert amplitude, mean across sources in ROI, mean across
+trials. (G03 raw broadband ["unfiltered"] is no longer plotted -- that row
+wasn't useful -- though it's still loaded internally when 'whole' is
+requested, to derive per-ROI source indices for G04's whole-grid slicing.)
 
 By default, each subject's (band, ROI) curve is z-scored against its own
 mean/std within a baseline window (see BASELINE_WINDOWS: pre-stim fixation
@@ -121,9 +122,10 @@ ROI_COLOURS = {
     'whole':     '#E76F51',
 }
 
-BAND_ORDER = ['unfiltered', 'theta', 'alpha', 'beta', 'lowgamma', 'highgamma']
+# 'unfiltered' (G03 broadband) is intentionally excluded -- that row wasn't
+# useful and has been dropped from the plotted grid (see load_subject_timeseries).
+BAND_ORDER = ['theta', 'alpha', 'beta', 'lowgamma', 'highgamma']
 BAND_LABELS = {
-    'unfiltered': 'Unfiltered\n(broadband)',
     'theta':      'Theta\n(4-8 Hz)',
     'alpha':      'Alpha\n(8-12 Hz)',
     'beta':       'Beta\n(13-30 Hz)',
@@ -217,11 +219,14 @@ def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
     """
     need_whole = 'whole' in rois_all
     result = {'time_vectors': {}}
-
-    # ── Unfiltered (G03 broadband voltage) ────────────────────────────────────
-    result['unfiltered'] = {}
     roi_idx = None  # only populated (and only needed) on the whole-grid path
 
+    # G03 (broadband/"unfiltered") is no longer plotted -- that row wasn't
+    # useful -- but on the whole-grid path we still need one G03 load to
+    # derive inside_pos -> per-ROI source indices for slicing G04's
+    # whole-grid arrays (G04 has no inside_pos of its own; see io_g04.py).
+    # On the ROI-only fast path, G04's per-ROI caches are already sliced
+    # offline by precompute_roi_splits.py, so G03 isn't needed at all there.
     if need_whole:
         try:
             g03 = load_g03_unfiltered(subjID, lockType, voxRes, bids_root)
@@ -239,41 +244,7 @@ def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
             for roi in rois_all:
                 roi_idx[roi] = (np.arange(g03_data.shape[2]) if roi == 'whole'
                                  else roi_local_indices(atlas_masks, inside_pos, roi))
-
-            tv_full = g03['time_vector']
-            tv_crop_mask = (tv_full >= t_min) & (tv_full <= t_max)
-            tv_crop = tv_full[tv_crop_mask]
-            result['time_vectors']['unfiltered'] = tv_crop
-            for roi in rois_all:
-                curve = _reduce_curve(g03_data, tv_crop_mask, roi_idx[roi])
-                result['unfiltered'][roi] = _baseline_zscore(curve, tv_crop, baseline_window)
             del g03_data, g03
-        else:
-            result['time_vectors']['unfiltered'] = None
-            for roi in rois_all:
-                result['unfiltered'][roi] = None
-    else:
-        # ROI-only fast path: read each subject's small precomputed per-ROI
-        # cache directly (io_g03.load_g03_unfiltered's roi= fast path) --
-        # no whole-grid load needed since 'whole' wasn't requested.
-        tv_crop_mask = None
-        tv_crop = None
-        for roi in rois_all:
-            try:
-                g03_roi = load_g03_unfiltered(subjID, lockType, voxRes, bids_root, roi=roi)
-            except (FileNotFoundError, OSError) as e:
-                print(f'  sub-{subjID:02d}: G03 roi={roi} missing/failed: {e}', flush=True)
-                result['unfiltered'][roi] = None
-                continue
-            if tv_crop_mask is None:
-                tv_full = g03_roi['time_vector']
-                tv_crop_mask = (tv_full >= t_min) & (tv_full <= t_max)
-                tv_crop = tv_full[tv_crop_mask]
-                result['time_vectors']['unfiltered'] = tv_crop
-            curve = _reduce_curve(g03_roi['data'], tv_crop_mask)
-            result['unfiltered'][roi] = _baseline_zscore(curve, tv_crop, baseline_window)
-        if tv_crop_mask is None:
-            result['time_vectors']['unfiltered'] = None
 
     # ── G04 band amplitudes ───────────────────────────────────────────────────
     for band in AMP_ONLY_BANDS:
@@ -366,7 +337,7 @@ def _apply_black_style(fig, axes_flat):
     fig.patch.set_facecolor(_BG)
     for ax in axes_flat:
         ax.set_facecolor(_BG)
-        ax.tick_params(colors=_FG, which='both', labelsize=7)
+        ax.tick_params(colors=_FG, which='both', labelsize=11)
         ax.xaxis.label.set_color(_FG)
         ax.yaxis.label.set_color(_FG)
         ax.title.set_color(_FG)
@@ -381,7 +352,7 @@ def _draw_event_flags(ax, flags, y_lim):
                    linestyle=':', alpha=0.85, zorder=3)
         y_pos = y_lim[0] + y_frac * (y_lim[1] - y_lim[0])
         ax.text(t_flag, y_pos, label,
-                color=_FLAG_TXT, fontsize=5.5, ha='left', va='top',
+                color=_FLAG_TXT, fontsize=9, ha='left', va='top',
                 rotation=90, rotation_mode='anchor',
                 fontweight='bold', zorder=4,
                 transform=ax.get_xaxis_transform() if False else ax.transData)
@@ -448,6 +419,9 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir, base
                              color=colour, alpha=0.25)
             ax.plot(tv, mean_curve, color=colour, linewidth=1.6)
 
+            # Reference line at z(or amplitude)=0
+            ax.axhline(0, color=_FLAG_LINE, linewidth=0.8, alpha=0.6, zorder=2)
+
             # Draw event flags
             _draw_event_flags(ax, flags, ax.get_ylim())
 
@@ -460,29 +434,31 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir, base
             if r_idx == 0:
                 roi_lbl = roi.capitalize() if roi != 'whole' else 'Whole brain'
                 ax.set_title(f'{roi_lbl}  (n={n_subj})',
-                             fontsize=10, fontweight='bold', pad=5)
+                             fontsize=14, fontweight='bold', pad=6)
 
             if r_idx == n_rows - 1:
-                ax.set_xlabel('Time (s)', fontsize=8)
+                ax.set_xlabel('Time (s)', fontsize=12)
 
             if c_idx == 0:
-                if baselined:
-                    ylabel = 'Z-score (baseline-normalized)'
-                else:
-                    ylabel = ('Voltage (a.u.)' if band == 'unfiltered'
-                              else 'Amplitude (a.u.)')
-                ax.set_ylabel(ylabel, fontsize=7)
+                ylabel = 'Z-score (baseline-normalized)' if baselined else 'Amplitude (a.u.)'
+                ax.set_ylabel(ylabel, fontsize=11)
 
             if c_idx == 0:
                 ax.annotate(BAND_LABELS.get(band, band),
-                             xy=(-0.34, 0.5), xycoords='axes fraction',
-                             fontsize=7.5, color=_FG,
+                             xy=(-0.36, 0.5), xycoords='axes fraction',
+                             fontsize=12, color=_FG,
                              ha='right', va='center',
                              rotation=90, fontweight='bold')
 
-            # Tick spacing: 1 unit on both axes (1 s on x, 1 z-score/amplitude
-            # unit on y) -- consistent, uncluttered ticks for slide use.
-            ax.xaxis.set_major_locator(ticker.MultipleLocator(1.0))
+            # Tick spacing: 1 unit on the base grid (1 s on x, 1 z-score/
+            # amplitude unit on y), PLUS an explicit x-tick at every epoch
+            # transition (event flag time) so its exact time is readable
+            # directly off the axis, not just from the floating flag label.
+            base_xticks = np.arange(np.ceil(t_min), np.floor(t_max) + 1.0, 1.0)
+            flag_times  = [f[0] for f in flags]
+            xticks = sorted(set(np.round(np.concatenate([base_xticks, flag_times]), 3))) \
+                if flag_times else base_xticks
+            ax.xaxis.set_major_locator(ticker.FixedLocator(xticks))
             ax.yaxis.set_major_locator(ticker.MultipleLocator(1.0))
             ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2g'))
 
@@ -490,7 +466,7 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir, base
     win_str    = f'{t_min:+.1f} to {t_max:+.1f} s'
     fig.suptitle(
         f'Mean +/- SEM Source Activity  |  {lock_label}  ({win_str})  |  {voxRes}',
-        color=_FG, fontsize=12, fontweight='bold', y=1.01
+        color=_FG, fontsize=17, fontweight='bold', y=1.01
     )
     fig.tight_layout(rect=[0.07, 0, 1, 1])
 
