@@ -69,6 +69,22 @@ def _atomic_savez(fpath, **arrays):
         raise
 
 
+def _filter_inside_pos(inside_pos, atlas_masks):
+    """
+    Drop source columns whose 1-based inside_pos exceeds the atlas grid --
+    same guard plot_timeseries.py/intrinsic_dim_cell.py apply before calling
+    roi_local_indices (a small number of subjects have out-of-bounds
+    columns). Returns (filtered_inside_pos, valid_cols) where valid_cols
+    indexes into the ORIGINAL (unfiltered) source axis -- callers must slice
+    any other per-source array (e.g. G04's amp/phase) with valid_cols too,
+    since they share this exact column space.
+    """
+    n_grid = len(next(iter(atlas_masks.values())))
+    valid_mask = (inside_pos >= 1) & (inside_pos <= n_grid)
+    valid_cols = np.where(valid_mask)[0]
+    return inside_pos[valid_cols], valid_cols
+
+
 def _save_g03_roi_splits(subjID, lockType, voxRes, bids_root, atlas_masks, g03, rois, force):
     """Save any missing (or --force) G03 per-ROI caches from an already-loaded g03 dict."""
     for roi in rois:
@@ -90,7 +106,7 @@ def _save_g03_roi_splits(subjID, lockType, voxRes, bids_root, atlas_masks, g03, 
 
 
 def _save_g04_roi_splits(subjID, lockType, band, voxRes, bids_root, atlas_masks,
-                          inside_pos_full, rois, force):
+                          inside_pos_full, valid_cols, rois, force):
     want_phase = band in AMP_PHASE_BANDS
     out_paths = {roi: g04_roi_cache_path(subjID, lockType, band, voxRes, bids_root, roi)
                  for roi in rois}
@@ -103,6 +119,14 @@ def _save_g04_roi_splits(subjID, lockType, band, voxRes, bids_root, atlas_masks,
     except (FileNotFoundError, ValueError) as e:
         print(f'  sub-{subjID:02d} {lockType} {band}: {e}', flush=True)
         return
+
+    # G04's source axis is in the same (unfiltered) column space as G03's inside_pos --
+    # drop the same out-of-bounds columns before computing ROI indices (see
+    # _filter_inside_pos).
+    if valid_cols.size != g04['amp'].shape[2]:
+        g04['amp'] = g04['amp'][:, :, valid_cols]
+        if g04['phase'] is not None:
+            g04['phase'] = g04['phase'][:, :, valid_cols]
 
     for roi in rois:
         out_path = out_paths[roi]
@@ -150,13 +174,19 @@ def process_unit(subjID, lockType, voxRes, bids_root, rois, bands, force):
         # is also needed for G04's ROI slicing, since G04's per-target structs don't
         # carry inside_pos themselves (see io_g04.py docstring).
         g03 = load_g03_unfiltered(subjID, lockType, voxRes, bids_root)
-        inside_pos_full = g03['inside_pos']
+        inside_pos_full, valid_cols = _filter_inside_pos(g03['inside_pos'], atlas_masks)
+        if valid_cols.size != g03['data'].shape[2]:
+            n_bad = g03['data'].shape[2] - valid_cols.size
+            print(f'  sub-{subjID:02d} {lockType}: {n_bad} source column(s) exceed atlas '
+                  f'grid, dropping.', flush=True)
+            g03['data'] = g03['data'][:, :, valid_cols]
+            g03['inside_pos'] = inside_pos_full
         _save_g03_roi_splits(subjID, lockType, voxRes, bids_root, atlas_masks, g03, rois, force)
         del g03
 
         for band in bands:
             _save_g04_roi_splits(subjID, lockType, band, voxRes, bids_root, atlas_masks,
-                                  inside_pos_full, rois, force)
+                                  inside_pos_full, valid_cols, rois, force)
     except (FileNotFoundError, OSError) as e:
         # A bad/missing raw file for this subject (e.g. corrupt/truncated .mat)
         # shouldn't abort the whole precompute batch -- skip this unit and continue.

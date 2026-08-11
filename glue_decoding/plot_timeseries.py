@@ -5,11 +5,18 @@ plot_timeseries.py
 Plots mean +/- SEM timeseries of source-space MEG activity averaged across
 subjects, for stim-locked and resp-locked epochs, for all frequency bands
 (unfiltered broadband + theta/alpha/beta/lowgamma/highgamma amplitude) and
-all ROIs (visual, parietal, frontal, whole-brain).
+the requested ROIs (visual, parietal, frontal by default; whole-brain is
+opt-in -- pass `--rois visual parietal frontal whole`).
 
 Data sources:
   - Unfiltered  : G03 raw broadband voltage,   mean across sources in ROI
   - Band amps   : G04 Hilbert amplitude,        mean across sources in ROI
+
+'whole' is opt-in rather than default because including it forces a full
+whole-grid load of every G03/G04 file (8-10GB each); without it, each ROI is
+read directly from precompute_roi_splits.py's small precomputed per-ROI
+cache instead (see load_subject_timeseries) -- run that script first if the
+caches don't exist yet.
 
 Time windows & event flags (hard-coded per lock type):
   stim-locked : -1.0 to +1.7 s   | Stim at 0 s, Delay Onset at +0.2 s
@@ -19,8 +26,8 @@ Time windows & event flags (hard-coded per lock type):
 Parallelism:
   Subjects are processed in parallel using joblib (processes, not threads,
   to avoid GIL contention in numpy operations). Default n_jobs = min(21, 8).
-  The bottleneck is HDF5 IO + memory reduction for whole-brain G03/G04 data;
-  parallelising across subjects gives roughly linear speedup up to IO saturation.
+  Without 'whole', per-subject IO is small (ROI caches only) so this is
+  no longer memory-bound the way the old always-whole-grid load was.
 
 Usage:
     python plot_timeseries.py [--voxRes 8mm] [--lockTypes stim resp]
@@ -113,95 +120,150 @@ def _crop_to_window(tv, curve, t_min, t_max):
     return tv[mask], curve[mask]
 
 
+def _reduce_curve(data, tv_crop_mask, idx=None):
+    """
+    Mean across trials then sources -> (n_crop_times,) cropped to tv_crop_mask.
+    idx, if given, first slices data[:, :, idx] (whole-grid path); omit it
+    when data is already ROI-sliced (roi-cache fast path).
+    """
+    if idx is not None:
+        if idx.size == 0:
+            return None
+        data = data[:, :, idx]
+    if data.shape[2] == 0:
+        return None
+    curve = data.mean(axis=0).mean(axis=1)
+    return curve[tv_crop_mask]
+
+
 def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
                              atlas_masks, rois_all, t_min, t_max):
     """
     Load and reduce one subject's data to per-ROI mean timeseries curves,
     cropped to [t_min, t_max].
 
+    If 'whole' is NOT in rois_all (the default), each ROI is loaded directly
+    from precompute_roi_splits.py's small per-ROI cache -- the whole-grid
+    G03/G04 files are never touched. If 'whole' IS requested, the whole-grid
+    files are loaded once and sliced in-memory for every ROI (including
+    'whole'), same as before -- there's no cache-based shortcut once the
+    whole-grid load is unavoidable anyway.
+
     Returns dict:
-        result[band][roi]           = (n_crop_times,) float
-        result['time_vectors'][band] = (n_crop_times,) float
-    or None if G03 is missing.
+        result[band][roi]           = (n_crop_times,) float, or None
+        result['time_vectors'][band] = (n_crop_times,) float, or None
 
     Called in parallel via joblib -- must be importable at top level.
     """
-    try:
-        g03 = load_g03_unfiltered(subjID, lockType, voxRes, bids_root)
-    except FileNotFoundError as e:
-        print(f'  sub-{subjID:02d}: G03 missing: {e}', flush=True)
-        return None
-    except OSError as e:
-        # open_h5 exhausted its retries (e.g. file was mid-write / genuinely
-        # unreadable at the moment this worker hit it). Skip this subject
-        # rather than letting one bad file crash the whole parallel batch
-        # and lose every other subject's already-computed results.
-        print(f'  sub-{subjID:02d}: G03 failed to open, skipping subject: {e}',
-              flush=True)
-        return None
-
-    inside_pos, g03_data = _filter_inside_pos(
-        g03['inside_pos'], g03['data'], atlas_masks)
-
-    # ROI index maps
-    roi_idx = {}
-    for roi in rois_all:
-        if roi == 'whole':
-            roi_idx[roi] = np.arange(g03_data.shape[2])
-        else:
-            roi_idx[roi] = roi_local_indices(atlas_masks, inside_pos, roi)
-
+    need_whole = 'whole' in rois_all
     result = {'time_vectors': {}}
 
     # ── Unfiltered (G03 broadband voltage) ────────────────────────────────────
     result['unfiltered'] = {}
-    tv_full = g03['time_vector']
-    tv_crop_mask = (tv_full >= t_min) & (tv_full <= t_max)
-    tv_crop = tv_full[tv_crop_mask]
-    result['time_vectors']['unfiltered'] = tv_crop
+    roi_idx = None  # only populated (and only needed) on the whole-grid path
 
-    for roi in rois_all:
-        idx = roi_idx[roi]
-        if idx.size == 0:
-            result['unfiltered'][roi] = None
-            continue
-        # mean across trials -> (n_times, n_roi), then mean across sources
-        curve = g03_data[:, :, idx].mean(axis=0).mean(axis=1)   # (n_times,)
-        result['unfiltered'][roi] = curve[tv_crop_mask]
+    if need_whole:
+        try:
+            g03 = load_g03_unfiltered(subjID, lockType, voxRes, bids_root)
+        except (FileNotFoundError, OSError) as e:
+            # OSError: open_h5 exhausted its retries (e.g. file mid-write).
+            # Skip just G03 for this subject rather than crashing the whole
+            # joblib batch and losing every other subject's results.
+            print(f'  sub-{subjID:02d}: G03 missing/failed to open: {e}', flush=True)
+            g03 = None
 
-    # Free the large broadband array immediately
-    del g03_data, g03
+        if g03 is not None:
+            inside_pos, g03_data = _filter_inside_pos(
+                g03['inside_pos'], g03['data'], atlas_masks)
+            roi_idx = {}
+            for roi in rois_all:
+                roi_idx[roi] = (np.arange(g03_data.shape[2]) if roi == 'whole'
+                                 else roi_local_indices(atlas_masks, inside_pos, roi))
+
+            tv_full = g03['time_vector']
+            tv_crop_mask = (tv_full >= t_min) & (tv_full <= t_max)
+            result['time_vectors']['unfiltered'] = tv_full[tv_crop_mask]
+            for roi in rois_all:
+                result['unfiltered'][roi] = _reduce_curve(g03_data, tv_crop_mask, roi_idx[roi])
+            del g03_data, g03
+        else:
+            result['time_vectors']['unfiltered'] = None
+            for roi in rois_all:
+                result['unfiltered'][roi] = None
+    else:
+        # ROI-only fast path: read each subject's small precomputed per-ROI
+        # cache directly (io_g03.load_g03_unfiltered's roi= fast path) --
+        # no whole-grid load needed since 'whole' wasn't requested.
+        tv_crop_mask = None
+        for roi in rois_all:
+            try:
+                g03_roi = load_g03_unfiltered(subjID, lockType, voxRes, bids_root, roi=roi)
+            except (FileNotFoundError, OSError) as e:
+                print(f'  sub-{subjID:02d}: G03 roi={roi} missing/failed: {e}', flush=True)
+                result['unfiltered'][roi] = None
+                continue
+            if tv_crop_mask is None:
+                tv_full = g03_roi['time_vector']
+                tv_crop_mask = (tv_full >= t_min) & (tv_full <= t_max)
+                result['time_vectors']['unfiltered'] = tv_full[tv_crop_mask]
+            result['unfiltered'][roi] = _reduce_curve(g03_roi['data'], tv_crop_mask)
+        if tv_crop_mask is None:
+            result['time_vectors']['unfiltered'] = None
 
     # ── G04 band amplitudes ───────────────────────────────────────────────────
     for band in AMP_ONLY_BANDS:
         result[band] = {}
-        try:
-            g04 = load_g04_band(subjID, lockType, band, voxRes, bids_root,
-                                 want_phase=False)
-        except (FileNotFoundError, ValueError, OSError) as e:
-            # OSError here means open_h5 exhausted its retries for this one
-            # band file -- skip just this band for this subject rather than
-            # crashing the whole joblib batch (see G03 handling above).
-            print(f'  sub-{subjID:02d} {band}: {e}', flush=True)
-            result['time_vectors'][band] = None
+
+        if need_whole:
+            try:
+                g04 = load_g04_band(subjID, lockType, band, voxRes, bids_root,
+                                     want_phase=False)
+            except (FileNotFoundError, ValueError, OSError) as e:
+                # OSError: open_h5 exhausted its retries for this one band
+                # file -- skip just this band for this subject rather than
+                # crashing the whole joblib batch (see G03 handling above).
+                print(f'  sub-{subjID:02d} {band}: {e}', flush=True)
+                result['time_vectors'][band] = None
+                for roi in rois_all:
+                    result[band][roi] = None
+                continue
+
+            amp        = g04['amp']
+            tv_g04     = g04['time_vector']
+            tv_g04_mask = (tv_g04 >= t_min) & (tv_g04 <= t_max)
+            result['time_vectors'][band] = tv_g04[tv_g04_mask]
             for roi in rois_all:
-                result[band][roi] = None
+                # roi_idx may be None if G03 failed above (need_whole=True but
+                # G03 load errored) -- without it we can only still resolve
+                # the 'whole' ROI (all columns, no inside_pos mapping needed).
+                if roi_idx is not None:
+                    idx = roi_idx[roi]
+                elif roi == 'whole':
+                    idx = np.arange(amp.shape[2])
+                else:
+                    result[band][roi] = None
+                    continue
+                result[band][roi] = _reduce_curve(amp, tv_g04_mask, idx)
+            del amp, g04
             continue
 
-        amp        = g04['amp']
-        tv_g04     = g04['time_vector']
-        tv_g04_mask = (tv_g04 >= t_min) & (tv_g04 <= t_max)
-        result['time_vectors'][band] = tv_g04[tv_g04_mask]
-
+        # ROI-only fast path (mirrors the G03 branch above).
+        tv_g04_mask = None
         for roi in rois_all:
-            idx = roi_idx[roi]
-            if idx.size == 0:
+            try:
+                g04_roi = load_g04_band(subjID, lockType, band, voxRes, bids_root,
+                                         want_phase=False, roi=roi)
+            except (FileNotFoundError, ValueError, OSError) as e:
+                print(f'  sub-{subjID:02d} {band} roi={roi}: {e}', flush=True)
                 result[band][roi] = None
                 continue
-            curve = amp[:, :, idx].mean(axis=0).mean(axis=1)
-            result[band][roi] = curve[tv_g04_mask]
-
-        del amp, g04
+            if tv_g04_mask is None:
+                tv_g04 = g04_roi['time_vector']
+                tv_g04_mask = (tv_g04 >= t_min) & (tv_g04 <= t_max)
+                result['time_vectors'][band] = tv_g04[tv_g04_mask]
+            result[band][roi] = _reduce_curve(g04_roi['amp'], tv_g04_mask)
+        if tv_g04_mask is None:
+            result['time_vectors'][band] = None
 
     print(f'  sub-{subjID:02d} done', flush=True)
     return result
@@ -372,9 +434,12 @@ def main():
     outdir    = args.outdir or os.path.join(
         bids_root, 'derivatives', 'glueDecoding', 'timeseries')
 
+    # 'whole' is opt-in (pass --rois visual parietal frontal whole), not
+    # forced on by default: including it forces a full whole-grid G03/G04
+    # load per subject, whereas the default ROI set (visual/parietal/frontal)
+    # can be served entirely from precompute_roi_splits.py's small per-ROI
+    # caches -- see load_subject_timeseries's need_whole branch.
     rois_all = list(args.rois)
-    if 'whole' not in rois_all:
-        rois_all.append('whole')
 
     n_jobs = max(1, args.n_jobs)
     print(f'plot_timeseries | voxRes={args.voxRes} | '
