@@ -50,13 +50,19 @@ import numpy as np
 
 from constants import (AMP_ONLY_BANDS, SUBJECT_LIST, ROI_NAMES, get_bids_root)
 
+# ── Visual design ────────────────────────────────────────────────────────────────────────────────
+_BG        = '#0d0d0d'
+_FG        = '#e0e0e0'
+_GRID      = '#1e1e1e'
+_FLAG_LINE = '#888888'
+_FLAG_TXT  = '#cccccc'
+
 # --- Colour palette (black-background friendly) ----------------------------
-# One vivid colour per ROI, plus whole-brain
 ROI_COLOURS = {
-    'visual':    '#7EB8F7',   # sky blue
-    'parietal':  '#F4A261',   # warm orange
-    'frontal':   '#A8DADC',   # teal
-    'whole':     '#E76F51',   # coral-red
+    'visual':    '#7EB8F7',
+    'parietal':  '#F4A261',
+    'frontal':   '#A8DADC',
+    'whole':     '#E76F51',
 }
 
 # Band display order and pretty labels
@@ -71,6 +77,24 @@ BAND_LABELS = {
 }
 
 VAR_THRESHOLD_DEFAULT = 0.90  # fraction of variance for n_pcs metric
+
+# Time windows and event flags (mirrors plot_timeseries.py)
+TIME_WINDOWS = {
+    'stim': (-1.0, 1.7),
+    'resp': (-4.5, -0.5),
+}
+# Each flag: (time_s, label, label_y_frac)
+EVENT_FLAGS = {
+    'stim': [
+        (0.0,  'Stim',          0.93),
+        (0.2,  'Delay\nOnset',  0.93),
+    ],
+    'resp': [
+        (-4.0, 'Delay\nOnset',  0.93),
+        (-2.5, 'R Onset',       0.93),
+        (-2.0, 'Feedback',      0.78),
+    ],
+}
 
 
 # --- .npz file discovery and loading ----------------------------------------
@@ -153,20 +177,29 @@ def aggregate_subjects(all_subject_results, band, roi, metric='pr'):
 
 def _apply_black_style(fig, axes_flat):
     """Apply black background and matching text/spine colours to a figure."""
-    BG   = '#0d0d0d'
-    FG   = '#e0e0e0'
-    GRID = '#2a2a2a'
-    fig.patch.set_facecolor(BG)
+    fig.patch.set_facecolor(_BG)
     for ax in axes_flat:
-        ax.set_facecolor(BG)
-        ax.tick_params(colors=FG, which='both', labelsize=7)
-        ax.xaxis.label.set_color(FG)
-        ax.yaxis.label.set_color(FG)
-        ax.title.set_color(FG)
+        ax.set_facecolor(_BG)
+        ax.tick_params(colors=_FG, which='both', labelsize=11)
+        ax.xaxis.label.set_color(_FG)
+        ax.yaxis.label.set_color(_FG)
+        ax.title.set_color(_FG)
         for spine in ax.spines.values():
-            spine.set_edgecolor(GRID)
-        ax.grid(True, color=GRID, linewidth=0.5, linestyle='--', alpha=0.6)
+            spine.set_edgecolor(_GRID)
+        ax.grid(True, color=_GRID, linewidth=0.5, linestyle='--', alpha=0.6)
         ax.set_axisbelow(True)
+
+
+def _draw_event_flags(ax, flags, y_lim):
+    """Draw vertical flag lines and rotated text labels."""
+    for t_flag, label, y_frac in flags:
+        ax.axvline(t_flag, color=_FLAG_LINE, linewidth=0.9,
+                   linestyle=':', alpha=0.85, zorder=3)
+        y_pos = y_lim[0] + y_frac * (y_lim[1] - y_lim[0])
+        ax.text(t_flag, y_pos, label,
+                color=_FLAG_TXT, fontsize=9, ha='left', va='top',
+                rotation=90, rotation_mode='anchor',
+                fontweight='bold', zorder=4)
 
 
 def plot_dim_figure(all_subject_results, rois_all, metric, metric_label,
@@ -181,6 +214,9 @@ def plot_dim_figure(all_subject_results, rois_all, metric, metric_label,
     if bands is None:
         bands = BAND_ORDER
 
+    flags        = EVENT_FLAGS.get(lockType, [])
+    t_min, t_max = TIME_WINDOWS.get(lockType, (-1.0, 2.0))
+
     n_rows = len(bands)
     n_cols = len(rois_all)
     fig_w  = max(4.5 * n_cols, 12)
@@ -194,13 +230,37 @@ def plot_dim_figure(all_subject_results, rois_all, metric, metric_label,
     axes_flat = axes.flatten()
     _apply_black_style(fig, axes_flat)
 
-    for r_idx, band in enumerate(bands):
-        for c_idx, roi in enumerate(rois_all):
-            ax = axes[r_idx, c_idx]
-            colour = ROI_COLOURS.get(roi, '#ffffff')
-
+    # First pass: aggregate every (band, ROI) cell and compute per-row y-limits
+    # so all ROI columns in the same band row share a consistent scale.
+    curves   = {}
+    row_ylim = {}
+    for band in bands:
+        row_min, row_max = np.inf, 0.0
+        for roi in rois_all:
             tv, mean_curve, sem_curve = aggregate_subjects(
                 all_subject_results, band, roi, metric)
+            curves[(band, roi)] = (tv, mean_curve, sem_curve)
+            if tv is None:
+                continue
+            row_max = max(row_max, float(np.max(mean_curve + sem_curve)))
+            row_min = min(row_min, float(np.min(mean_curve - sem_curve)))
+        if row_max > 0:
+            span = row_max - row_min
+            row_ylim[band] = (max(0.0, row_min - 0.05 * span),
+                              row_max + 0.10 * span)
+        else:
+            row_ylim[band] = None
+
+    for r_idx, band in enumerate(bands):
+        for c_idx, roi in enumerate(rois_all):
+            ax     = axes[r_idx, c_idx]
+            colour = ROI_COLOURS.get(roi, '#ffffff')
+
+            tv, mean_curve, sem_curve = curves[(band, roi)]
+
+            ax.set_xlim(t_min, t_max)
+            if row_ylim[band] is not None:
+                ax.set_ylim(*row_ylim[band])
 
             if tv is None:
                 ax.text(0.5, 0.5, 'no data', transform=ax.transAxes,
@@ -213,9 +273,8 @@ def plot_dim_figure(all_subject_results, rois_all, metric, metric_label,
                              color=colour, alpha=0.25)
             ax.plot(tv, mean_curve, color=colour, linewidth=1.8)
 
-            # Epoch zero line
-            ax.axvline(0, color='#555555', linewidth=1.0,
-                        linestyle='--', alpha=0.8)
+            # Draw event flags
+            _draw_event_flags(ax, flags, ax.get_ylim())
 
             # Count subjects with valid data for this (band, roi)
             n_subj = sum(
@@ -228,32 +287,39 @@ def plot_dim_figure(all_subject_results, rois_all, metric, metric_label,
             if r_idx == 0:
                 roi_lbl = roi.capitalize() if roi != 'whole' else 'Whole brain'
                 ax.set_title(f'{roi_lbl}  (n={n_subj})',
-                             fontsize=10, fontweight='bold', pad=6)
+                             fontsize=14, fontweight='bold', pad=6)
             if c_idx == 0:
-                ax.set_ylabel(metric_label, fontsize=8)
+                ax.set_ylabel(metric_label, fontsize=11)
             if r_idx == n_rows - 1:
-                ax.set_xlabel('Time (s)', fontsize=8)
+                ax.set_xlabel('Time (s)', fontsize=12)
 
             # Band label on left edge of first column
             if c_idx == 0:
                 band_txt = BAND_LABELS.get(band, band)
-                ax.annotate(band_txt, xy=(-0.32, 0.5),
+                ax.annotate(band_txt, xy=(-0.36, 0.5),
                              xycoords='axes fraction',
-                             fontsize=8, color='#e0e0e0',
+                             fontsize=12, color=_FG,
                              ha='right', va='center', rotation=90,
                              fontweight='bold')
 
-            ax.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
-            ax.xaxis.set_minor_locator(ticker.MultipleLocator(0.1))
+            # x-ticks: integer seconds + exact flag times so epoch transitions
+            # are directly readable off the axis.
+            base_xticks = np.arange(np.ceil(t_min), np.floor(t_max) + 1.0, 1.0)
+            flag_times  = [f[0] for f in flags]
+            xticks = sorted(set(np.round(np.concatenate([base_xticks, flag_times]), 3))) \
+                if flag_times else base_xticks
+            ax.xaxis.set_major_locator(ticker.FixedLocator(xticks))
+            ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=5))
+            ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2g'))
 
     metric_str = 'participation_ratio' if metric == 'pr' else 'n_pcs'
     fig.suptitle(
         f'Intrinsic Dimensionality over Time  |  '
         f'{lockType}-locked  |  {voxRes}  |  metric: {metric_str}',
-        color='#e0e0e0', fontsize=11, fontweight='bold', y=1.01
+        color=_FG, fontsize=17, fontweight='bold', y=1.01
     )
 
-    fig.tight_layout(rect=[0.05, 0, 1, 1])
+    fig.tight_layout(rect=[0.07, 0, 1, 1])
 
     os.makedirs(outdir, exist_ok=True)
     fname = os.path.join(outdir,
@@ -273,6 +339,9 @@ def plot_overview_figure(all_subject_results, rois_all, lockType, voxRes,
     """
     if bands is None:
         bands = BAND_ORDER
+
+    flags        = EVENT_FLAGS.get(lockType, [])
+    t_min, t_max = TIME_WINDOWS.get(lockType, (-1.0, 2.0))
 
     # Distinct colours per band (perceptually even, vivid on black)
     band_palette = {
@@ -305,26 +374,33 @@ def plot_overview_figure(all_subject_results, rois_all, lockType, voxRes,
                              color=colour, alpha=0.15)
             ax.plot(tv, mean_curve, color=colour, linewidth=1.6, label=lbl)
 
-        ax.axvline(0, color='#555555', linewidth=1.0,
-                    linestyle='--', alpha=0.8)
+        ax.set_xlim(t_min, t_max)
+        _draw_event_flags(ax, flags, ax.get_ylim())
+
         roi_lbl = roi.capitalize() if roi != 'whole' else 'Whole brain'
-        ax.set_title(roi_lbl, fontsize=11, fontweight='bold', pad=6)
-        ax.set_xlabel('Time (s)', fontsize=9)
+        ax.set_title(roi_lbl, fontsize=14, fontweight='bold', pad=6)
+        ax.set_xlabel('Time (s)', fontsize=12)
         if c_idx == 0:
-            ax.set_ylabel('Participation Ratio', fontsize=9)
+            ax.set_ylabel('Participation Ratio', fontsize=11)
         if c_idx == n_cols - 1:
-            leg = ax.legend(fontsize=7, loc='upper right',
+            leg = ax.legend(fontsize=9, loc='upper right',
                              framealpha=0.2, edgecolor='#444444',
-                             labelcolor='#e0e0e0')
+                             labelcolor=_FG)
             leg.get_frame().set_facecolor('#1a1a1a')
 
-        ax.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
-        ax.xaxis.set_minor_locator(ticker.MultipleLocator(0.1))
+        # x-ticks: integer seconds + exact flag times
+        base_xticks = np.arange(np.ceil(t_min), np.floor(t_max) + 1.0, 1.0)
+        flag_times  = [f[0] for f in flags]
+        xticks = sorted(set(np.round(np.concatenate([base_xticks, flag_times]), 3))) \
+            if flag_times else base_xticks
+        ax.xaxis.set_major_locator(ticker.FixedLocator(xticks))
+        ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=5))
+        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2g'))
 
     fig.suptitle(
         f'Intrinsic Dimensionality (Participation Ratio) -- All Bands  |  '
         f'{lockType}-locked  |  {voxRes}',
-        color='#e0e0e0', fontsize=11, fontweight='bold', y=1.01
+        color=_FG, fontsize=17, fontweight='bold', y=1.01
     )
     fig.tight_layout()
 
