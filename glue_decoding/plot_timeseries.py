@@ -41,7 +41,6 @@ import os
 import sys
 import argparse
 from pathlib import Path
-from multiprocessing import cpu_count
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -425,10 +424,13 @@ def main():
     parser.add_argument('--subjects',  nargs='+', type=int,
                         default=SUBJECT_LIST)
     parser.add_argument('--outdir',    default=None)
-    parser.add_argument('--n_jobs',    type=int,
-                        default=min(len(SUBJECT_LIST), cpu_count() - 1, 8),
-                        help='Parallel workers (subjects). Default: min(21, ncpu-1, 8)')
+    parser.add_argument('--n_jobs',    type=int, default=None,
+                        help='Parallel workers (subjects). Default: len(--subjects) '
+                             '-- one worker per requested subject.')
     args = parser.parse_args()
+
+    if args.n_jobs is None:
+        args.n_jobs = len(args.subjects)
 
     bids_root = get_bids_root()
     outdir    = args.outdir or os.path.join(
