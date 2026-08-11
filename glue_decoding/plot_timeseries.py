@@ -25,9 +25,13 @@ Time windows & event flags (hard-coded per lock type):
 
 Parallelism:
   Subjects are processed in parallel using joblib (processes, not threads,
-  to avoid GIL contention in numpy operations). Default n_jobs = min(21, 8).
-  Without 'whole', per-subject IO is small (ROI caches only) so this is
-  no longer memory-bound the way the old always-whole-grid load was.
+  to avoid GIL contention in numpy operations). Default n_jobs = len(subjects)
+  -- one worker per requested subject. Without 'whole', per-subject IO is
+  small (ROI caches only), so OMP/MKL/OPENBLAS_NUM_THREADS are pinned to 1
+  below (same as run_glue_cell.py) -- otherwise each of these many
+  concurrent processes would spawn its own multi-threaded BLAS pool for
+  numpy's tiny .mean() reductions, oversubscribing the machine's cores far
+  more than the actual compute needs.
 
 Usage:
     python plot_timeseries.py [--voxRes 8mm] [--lockTypes stim resp]
@@ -38,6 +42,11 @@ Usage:
 """
 
 import os
+
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('MKL_NUM_THREADS', '1')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+
 import sys
 import argparse
 from pathlib import Path
