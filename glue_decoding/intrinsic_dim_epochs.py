@@ -66,15 +66,28 @@ EPOCHS = {
 EPOCH_ORDER  = ['stim', 'delay']
 EPOCH_LABELS = {'stim': 'Stim\n(0-0.2 s)', 'delay': 'Delay\n(0.2-1.7 s)'}
 
-# -- Visual design ------------------------------------------------------------
+# -- Visual design (mirrors plot_timeseries.py) --------------------------------
 
-_BG        = '#0d0d0d'
+_BG        = '#000000'   # true black
 _FG        = '#e0e0e0'
-_GRID      = '#1e1e1e'
+_GRID      = '#1c1c1c'
+_FLAG_LINE = '#777777'
+_FLAG_TXT  = '#cccccc'
 
+# ROI colours: mango/bumble for visual, soft violet for parietal,
+# emerald mint for frontal -- identical to plot_timeseries.py.
+ROI_COLOURS = {
+    'visual':   '#FFC629',   # mango / Bumble amber
+    'parietal': '#A78BFA',   # soft violet
+    'frontal':  '#34D399',   # emerald mint
+    'whole':    '#E76F51',   # coral
+}
+
+# Epoch bar colours: reuse mango (stim) and violet (delay) from ROI palette
+# so the two sets of figures share a coherent visual language.
 EPOCH_COLOURS = {
-    'stim':  '#7EB8F7',   # sky blue
-    'delay': '#F4A261',   # warm orange
+    'stim':  '#FFC629',   # mango
+    'delay': '#A78BFA',   # soft violet
 }
 
 AMP_BAND_ORDER = ['theta', 'alpha', 'beta', 'lowgamma', 'highgamma']
@@ -85,6 +98,7 @@ BAND_LABELS = {
     'lowgamma':  'Low gamma\n(30-80 Hz)',
     'highgamma': 'High gamma\n(80-150 Hz)',
 }
+
 
 # -- Dimensionality estimator -------------------------------------------------
 
