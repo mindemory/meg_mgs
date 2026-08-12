@@ -51,8 +51,21 @@ def load_behav(subjID, bids_root):
         f.close()
 
     # Saccade angle from (x,y), matching megScripts/temporalGeneralizationDecoding.py's main().
-    x_c = i_sacc_raw[0] if i_sacc_raw.shape[0] == 2 else i_sacc_raw[:, 0]
-    y_c = i_sacc_raw[1] if i_sacc_raw.shape[0] == 2 else i_sacc_raw[:, 1]
+    # MATLAB stores i_sacc_raw as (n_trials, 2); HDF5 transposes to (2, n_trials).
+    # Guard against edge cases:
+    #   - 1D shape (2,): single trial [x, y] -- reshape to (2, 1)
+    #   - (n_trials, 2) stored without transposition (n_trials != 2): transpose
+    #   - canonical (2, n_trials): use rows directly
+    raw = i_sacc_raw
+    if raw.ndim == 1:
+        # Single trial stored as [x, y]
+        raw = raw.reshape(2, 1)
+    elif raw.shape[0] != 2:
+        # (n_trials, 2) -- transpose to (2, n_trials)
+        raw = raw.T
+    # Now raw is (2, n_trials)
+    x_c = raw[0]
+    y_c = raw[1]
     ref_angle = np.arctan2(0, 5)
     i_sacc_angle = (np.degrees(np.arctan2(y_c, x_c) - ref_angle) + 360) % 360
 
