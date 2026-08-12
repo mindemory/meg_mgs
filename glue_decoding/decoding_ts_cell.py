@@ -254,7 +254,7 @@ def _get_trial_idx(subjID, lockType, voxRes, bids_root, rois, n_trials):
 
 
 def run_cell(subjID, bands, voxRes, bids_root, rois, conditions,
-             win_ms, n_shuffle, alpha, outdir=None):
+             win_ms, n_shuffle, alpha, outdir=None, force=False):
 
     lockType = 'stim'   # stim-locked only
     trial_idx_cache = {}   # lazily computed once per band (n_trials can differ across bands)
@@ -272,7 +272,7 @@ def run_cell(subjID, bands, voxRes, bids_root, rois, conditions,
             for roi in rois:
                 out_path = output_path(bids_root, subjID, band, roi,
                                         condition, voxRes, outdir)
-                if os.path.exists(out_path):
+                if os.path.exists(out_path) and not force:
                     print(f'SKIP (exists): {out_path}')
                     continue
 
@@ -375,17 +375,21 @@ def main():
     parser.add_argument('--alpha',       type=float, default=RIDGE_ALPHA,
                         help=f'Ridge regularisation alpha (default {RIDGE_ALPHA}).')
     parser.add_argument('--outdir',      default=None)
+    parser.add_argument('--force',       action='store_true',
+                        help='Overwrite existing .npz outputs instead of skipping them '
+                             '(default: skip cells whose output file already exists).')
     args = parser.parse_args()
 
     bids_root = get_bids_root()
     print(f'decoding_ts_cell | sub-{args.subjID:02d} | bands={args.bands} | '
           f'{args.voxRes} | conditions={args.conditions} | rois={args.rois} | '
-          f'win_ms={args.win_ms} | n_shuffle={args.n_shuffle} | alpha={args.alpha}',
+          f'win_ms={args.win_ms} | n_shuffle={args.n_shuffle} | alpha={args.alpha} | '
+          f'force={args.force}',
           flush=True)
 
     run_cell(args.subjID, list(args.bands), args.voxRes, bids_root,
              list(args.rois), list(args.conditions),
-             args.win_ms, args.n_shuffle, args.alpha, args.outdir)
+             args.win_ms, args.n_shuffle, args.alpha, args.outdir, args.force)
 
 
 if __name__ == '__main__':

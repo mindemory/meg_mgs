@@ -9,11 +9,12 @@
 # create figures.
 #
 # Usage:
-#   bash run_decoding_ts.sh [voxRes] [max_parallel] [win_ms] [n_shuffle]
+#   bash run_decoding_ts.sh [voxRes] [max_parallel] [win_ms] [n_shuffle] [force]
 #
 # Examples:
-#   bash run_decoding_ts.sh                # 8mm, max 10 parallel jobs
-#   bash run_decoding_ts.sh 8mm 10 50 100  # explicit parameters
+#   bash run_decoding_ts.sh                     # 8mm, max 10 parallel jobs
+#   bash run_decoding_ts.sh 8mm 10 50 100       # explicit parameters
+#   bash run_decoding_ts.sh 8mm 21 50 100 true  # 21-way parallel, overwrite existing .npz
 
 set -euo pipefail
 
@@ -24,6 +25,17 @@ WIN_MS="${3:-50}"
 # shuffle shortcut (see its module docstring), so n_shuffle=100 is cheap --
 # matches decoding_ts_cell.py's own DEFAULT_N_SHUFFLE.
 N_SHUFFLE="${4:-100}"
+# Any of true/1/yes (case-insensitive) forces decoding_ts_cell.py to
+# overwrite existing .npz outputs instead of skipping them.
+FORCE_RAW="${5:-false}"
+FORCE_FLAG=()
+# Portable case-insensitive match (avoids bash 4+ ${VAR,,} lowercasing,
+# which macOS's default /bin/bash 3.2 doesn't support).
+case "${FORCE_RAW}" in
+    [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss])
+        FORCE_FLAG=(--force)
+        ;;
+esac
 
 SUBJ_LIST=(01 02 03 04 05 06 07 09 10 12 13 15 17 18 19 23 24 25 29 31 32)
 BANDS=(theta alpha beta lowgamma)
@@ -48,6 +60,7 @@ echo " VoxRes       : ${VOX_RES}"
 echo " Max Parallel : ${MAX_PARALLEL}"
 echo " Window (ms)  : ±${WIN_MS} ms"
 echo " N Shuffle    : ${N_SHUFFLE}"
+echo " Force        : ${FORCE_RAW}"
 echo " Subjects     : ${SUBJ_LIST[*]}"
 echo " Bands        : ${BANDS[*]}"
 echo " Conditions   : ${CONDITIONS[*]}"
@@ -70,6 +83,7 @@ for subjID in "${SUBJ_LIST[@]}"; do
           --conditions "${CONDITIONS[@]}" \
           --win_ms "${WIN_MS}" \
           --n_shuffle "${N_SHUFFLE}" \
+          ${FORCE_FLAG[@]+"${FORCE_FLAG[@]}"} \
     ) > "${log_file}" 2>&1 &
 
     count=$((count + 1))
