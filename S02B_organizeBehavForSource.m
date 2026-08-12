@@ -101,15 +101,12 @@ if ~isempty(badTrials)
         fieldName = allFields{i};
         if ~strcmp(fieldName, 'params')
             % Get valid trial indices (excluding bad trials)
-            validTrials = setdiff(1:length(ii_sess.(fieldName)), badTrials);
-            ii_sess.(fieldName) = ii_sess.(fieldName)(validTrials);
-            
-            % Check dimensions and convert row vectors to column vectors
-            if ~iscell(ii_sess.(fieldName)) && isvector(ii_sess.(fieldName))
-                if size(ii_sess.(fieldName), 1) == 1 % Row vector
-                    ii_sess.(fieldName) = ii_sess.(fieldName)'; % Convert to column
-                end
-            end
+            % Use length of first field to determine n_trials (not this field,
+            % since i_sacc_raw is 2D and length() returns the larger dimension).
+            n = size(ii_sess.(fieldName), 1);
+            validTrials = setdiff(1:n, badTrials);
+            % Row-index to handle both vectors (n,1) and matrices (n,2)
+            ii_sess.(fieldName) = ii_sess.(fieldName)(validTrials, :);
         end
     end
 else
@@ -142,7 +139,8 @@ allFields = fieldnames(ii_sess);
 for i = 1:length(allFields)
     fieldName = allFields{i};
     if ~strcmp(fieldName, 'params')
-        ii_sess_forSource.(fieldName) = ii_sess.(fieldName)(valid_trials_all);
+        % Row-index to handle both vectors (n,1) and matrices (n,2) like i_sacc_raw
+        ii_sess_forSource.(fieldName) = ii_sess.(fieldName)(valid_trials_all, :);
     end
 end
 
@@ -178,12 +176,13 @@ ii_sess_left = ii_sess_forSource;
 ii_sess_right = ii_sess_forSource;
 
 % Split all fields (except params) into left and right
+% Row-index to handle both vectors (n,1) and matrices (n,2) like i_sacc_raw
 allFields = fieldnames(ii_sess_forSource);
 for i = 1:length(allFields)
     fieldName = allFields{i};
     if ~strcmp(fieldName, 'params')
-        ii_sess_left.(fieldName) = ii_sess_forSource.(fieldName)(valid_trialsLeft);
-        ii_sess_right.(fieldName) = ii_sess_forSource.(fieldName)(valid_trialsRight);
+        ii_sess_left.(fieldName) = ii_sess_forSource.(fieldName)(valid_trialsLeft, :);
+        ii_sess_right.(fieldName) = ii_sess_forSource.(fieldName)(valid_trialsRight, :);
     end
 end
 
