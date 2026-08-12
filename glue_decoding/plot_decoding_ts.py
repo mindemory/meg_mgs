@@ -76,6 +76,7 @@ BAND_LABELS = {
     'alpha':     'Alpha\n(8-12 Hz)',
     'beta':      'Beta\n(13-30 Hz)',
     'lowgamma':  'Low gamma\n(30-80 Hz)',
+    'highgamma': 'High gamma\n(80-150 Hz)',
 }
 
 # Event flags: (time_s, label, label_y_frac)
@@ -177,11 +178,41 @@ def load_all_subjects(subjects, bids_root, voxRes, bands, rois, conditions, outd
 def aggregate_timeseries(all_data, band, roi, condition):
     """
     Returns (tv, mean_err, sem_err, mean_shuf, sem_shuf) or Nones.
-    err/shuf are trial-averaged per subject, then subject-averaged.
+
+    Real error is now computed the way megScripts/plotDecodBehav.py computes
+    "decoding error" (its top-row scatter is unweighted circmean with no
+    SEM; this ports the fuller version its own quantile/bottom-row uses,
+    which is the same operation plus proper across-subject stats):
+      1. Per trial, per timepoint: SIGNED circular error
+         ((pred - true + 180) % 360) - 180, in [-180, 180] -- NOT
+         glue_decoding's original per-trial UNSIGNED circular_dist.
+      2. Per subject, per timepoint: circular mean of that signed error
+         across trials (scipy.stats.circmean), then abs(). This lets
+         same-magnitude opposite-direction trial errors partially cancel
+         before the abs() is taken, instead of every trial contributing its
+         full unsigned distance regardless of direction. Under chance-level
+         decoding this quantity is ~Uniform[0, 180] with mean 90 -- the same
+         chance level as the unsigned-distance metric it replaces (a
+         resultant vector with no real angular signal points in an
+         essentially random direction, and abs() folds that uniformly onto
+         [0, 180]).
+      3. Arithmetic mean/SEM of that per-subject quantity across subjects
+         (unchanged from before).
+
+    Shuffle baseline is method-matched to the real-error statistic above:
+    decoding_ts_cell.py now saves shuffle_signed_circmean (n_shuffle, T) --
+    the signed circular mean across trials for each label-permutation --
+    and here we take abs() then average over permutations, i.e. the same
+    "signed circmean over trials, then abs" statistic evaluated under the
+    permuted-label null. Falls back to the old per-trial unsigned
+    circular_dist shuffle_errors (arithmetic trial mean) for any cached
+    .npz predating this field -- not method-matched, but same ~90 deg
+    chance level, so still a valid approximate reference.
     """
-    errors_list  = []
-    shuffle_list = []
-    tv           = None
+    subj_err_list = []
+    shuffle_list  = []
+    tv            = None
+    warned_legacy_shuffle = False
 
     for d in all_data:
         if d is None:
@@ -190,15 +221,29 @@ def aggregate_timeseries(all_data, band, roi, condition):
         if k not in d:
             continue
         npz = d[k]
-        errors_list.append(npz['errors'].mean(axis=0))        # (T,)
-        shuffle_list.append(npz['shuffle_errors'].mean(axis=0))
+        pred_angles = npz['pred_angles']            # (N, T) deg
+        true_angles = npz['true_angles']             # (N,) deg
+        signed_err  = ((pred_angles - true_angles[:, None] + 180) % 360) - 180
+        subj_signed_mean = stats.circmean(signed_err, high=180, low=-180, axis=0)  # (T,)
+        subj_err_list.append(np.abs(subj_signed_mean))
+
+        if 'shuffle_signed_circmean' in npz:
+            shuffle_list.append(np.abs(npz['shuffle_signed_circmean']).mean(axis=0))  # (T,)
+        else:
+            if not warned_legacy_shuffle:
+                print(f'  NOTE: {band}/{roi}/{condition}: cached .npz predates '
+                      f'shuffle_signed_circmean -- using legacy unsigned-distance '
+                      f'shuffle baseline (not method-matched). Re-run with --force '
+                      f'to regenerate.', flush=True)
+                warned_legacy_shuffle = True
+            shuffle_list.append(npz['shuffle_errors'].mean(axis=0))
         if tv is None:
             tv = npz['time_vector']
 
-    if not errors_list:
+    if not subj_err_list:
         return None, None, None, None, None
 
-    err  = np.stack(errors_list)   # (n_subj, T)
+    err  = np.stack(subj_err_list)   # (n_subj, T)
     shuf = np.stack(shuffle_list)
     n    = err.shape[0]
 
@@ -470,7 +515,60 @@ def plot_timeseries_panel(ax, tv, mean_err, sem_err, mean_shuf, sem_shuf,
     ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.0f'))
 
 
-def plot_bar_panel(ax, epoch_quartiles, roi):
+def _quartile_panel_values(epoch_quartiles):
+    """
+    Collect every value plot_bar_panel would actually draw for one
+    (band, roi, condition) cell -- bar heights +/- SEM, subject scatter
+    dots, and shuffle ticks -- so a shared y-range can be computed across
+    cells/conditions before any panel is drawn.
+    """
+    vals = []
+    for ep_name in EPOCH_WINDOWS:
+        ep_stats = epoch_quartiles[ep_name]
+        q_means, q_sems = ep_stats['q_means'], ep_stats['q_sems']
+        for v, s in zip(q_means, q_sems):
+            if np.isnan(v):
+                continue
+            s = 0.0 if np.isnan(s) else s
+            vals.append(v - s)
+            vals.append(v + s)
+        for subj_vals in ep_stats['q_subj']:
+            vals.extend(float(x) for x in subj_vals)
+        vals.extend(v for v in ep_stats['shuf_means'] if not np.isnan(v))
+    return vals
+
+
+def compute_shared_bar_ylims(all_data, bands, rois, conditions):
+    """
+    One y-axis range per (band, roi), shared across BOTH conditions'
+    quartile figures -- so the same panel position (e.g. beta/visual) uses
+    an identical y-scale whether it's drawn on the ampOnly or the ampPhase
+    figure, and the two are directly comparable by eye.
+
+    Narrow, data-driven range around the actual bars/scatter/shuffle
+    values (min..max +/- a small pad), rather than the previous per-panel
+    0-to-(1.55x max) clamp, which forced every bar to share a zero
+    baseline and made the (usually small) real differences between
+    quartiles hard to see.
+    """
+    ylims = {}
+    for band in bands:
+        for roi in rois:
+            vals = []
+            for condition in conditions:
+                epoch_quartiles = compute_epoch_quartiles(all_data, band, roi, condition)
+                if epoch_quartiles:
+                    vals.extend(_quartile_panel_values(epoch_quartiles))
+            if vals:
+                lo, hi = min(vals), max(vals)
+                pad = max(1.5, (hi - lo) * 0.15)
+                ylims[(band, roi)] = (max(0, lo - pad), min(180, hi + pad))
+            else:
+                ylims[(band, roi)] = (0, 180)
+    return ylims
+
+
+def plot_bar_panel(ax, epoch_quartiles, roi, ylim):
     """
     Draw quartile bar strip below timeseries.
     Two groups (stim | delay), N_QUANTILES bars each.
@@ -480,6 +578,9 @@ def plot_bar_panel(ax, epoch_quartiles, roi):
     Text: per-subject linear trend of error vs. quartile rank (slope +
     Pearson r), tested against 0 -- this asks whether error tracks
     performance, which is more informative than a chance-level test.
+
+    ylim: (lo, hi) shared across conditions for this (band, roi) -- see
+    compute_shared_bar_ylims.
     """
     q_cols  = quartile_colours(roi, N_QUANTILES)
     bar_w   = 0.6
@@ -489,7 +590,11 @@ def plot_bar_panel(ax, epoch_quartiles, roi):
     group_offsets = {'stim': 0, 'delay': N_QUANTILES + gap}
     rng = np.random.default_rng(42)
 
-    all_vals = []
+    # Bars are grounded at ylim's floor, not 0 -- with a narrow, non-zero-based
+    # range (see compute_shared_bar_ylims) a 0-baseline bar would mostly sit
+    # off-screen below the visible panel.
+    bar_bottom = ylim[0]
+
     for ep_name in EPOCH_WINDOWS:
         ep_stats   = epoch_quartiles[ep_name]
         q_means    = ep_stats['q_means']
@@ -503,7 +608,8 @@ def plot_bar_panel(ax, epoch_quartiles, roi):
             s = q_sems[q]
             c = q_cols[q]
             if not np.isnan(v):
-                ax.bar(x, v, width=bar_w, color=c, alpha=0.85, zorder=3,
+                ax.bar(x, v - bar_bottom, bottom=bar_bottom, width=bar_w,
+                        color=c, alpha=0.85, zorder=3,
                         linewidth=0, align='center')
                 ax.errorbar(x, v, yerr=s, fmt='none', ecolor=_FG,
                              elinewidth=1.0, capsize=2, zorder=4)
@@ -514,15 +620,12 @@ def plot_bar_panel(ax, epoch_quartiles, roi):
                     ax.scatter(x + jitter, subj_vals,
                                 s=6, color='white', alpha=0.55,
                                 edgecolors='none', zorder=5)
-                    all_vals.extend(subj_vals.tolist())
-            all_vals.append(v)
 
             # Matched-trial shuffle baseline for this quartile
             sv = shuf_means[q]
             if not np.isnan(sv):
                 ax.hlines(sv, x - bar_w / 2, x + bar_w / 2,
                            color=_FG, lw=1.1, ls='--', alpha=0.7, zorder=6)
-                all_vals.append(sv)
 
         # Trend annotation: per-subject slope (deg/quartile rank) + Pearson r,
         # group-tested against 0.
@@ -545,10 +648,10 @@ def plot_bar_panel(ax, epoch_quartiles, roi):
                 ha='center', va='top', fontsize=6.5, color=_FG)
 
     ax.set_xlim(-0.6, max(group_offsets.values()) + N_QUANTILES - 0.4)
-    y_max = max((v for v in all_vals if not np.isnan(v)), default=90)
-    # Extra headroom (vs. 1.35 previously) so the trend annotation text
-    # clears the tallest bar/errorbar instead of touching it.
-    ax.set_ylim(0, y_max * 1.55)
+    # Shared across both conditions' figures for this (band, roi) -- see
+    # compute_shared_bar_ylims -- so the same panel position is directly
+    # comparable between the ampOnly and ampPhase quartile figures.
+    ax.set_ylim(*ylim)
     ax.set_xticks([])
 
     # No y-label here: it shares units/scale with the timeseries panel
@@ -637,11 +740,15 @@ def make_timeseries_figure(all_data, bands, rois, condition, voxRes, outdir_fig)
     return fpath
 
 
-def make_quartile_figure(all_data, bands, rois, condition, voxRes, outdir_fig):
+def make_quartile_figure(all_data, bands, rois, condition, voxRes, outdir_fig, ylims):
     """Build and save the quartile bar figure (error vs. performance quartile),
     as its own figure separate from the timeseries -- previously this was
     squeezed into a 20%-height strip under each timeseries panel, which left
-    no room for the shuffle ticks / trend annotation without crowding."""
+    no room for the shuffle ticks / trend annotation without crowding.
+
+    ylims: dict (band, roi) -> (lo, hi), shared across conditions -- see
+    compute_shared_bar_ylims -- so this figure and the other condition's
+    figure use identical y-scales panel-for-panel."""
 
     n_bands = len(bands)
     n_rois  = len(rois)
@@ -658,7 +765,7 @@ def make_quartile_figure(all_data, bands, rois, condition, voxRes, outdir_fig):
             show_title = (r_idx == 0)
 
             if epoch_quartiles:
-                plot_bar_panel(ax_bar, epoch_quartiles, roi)
+                plot_bar_panel(ax_bar, epoch_quartiles, roi, ylims[(band, roi)])
             else:
                 ax_bar.text(0.5, 0.5, 'No data', ha='center', va='center',
                              transform=ax_bar.transAxes, color=_FG, fontsize=9)
@@ -698,7 +805,7 @@ def main():
                         default=[1,2,3,4,5,6,7,9,10,12,13,15,17,18,19,
                                   23,24,25,29,31,32])
     parser.add_argument('--bands',       nargs='+',
-                        default=['theta', 'alpha', 'beta', 'lowgamma'])
+                        default=['theta', 'alpha', 'beta', 'lowgamma', 'highgamma'])
     parser.add_argument('--rois',        nargs='+', default=list(ROI_NAMES))
     parser.add_argument('--conditions',  nargs='+', default=['ampOnly', 'ampPhase'])
     parser.add_argument('--outdir',      default=None,
@@ -723,12 +830,16 @@ def main():
     n_loaded = sum(1 for d in all_data if d)
     print(f'Loaded data for {n_loaded}/{len(args.subjects)} subjects.')
 
+    # Computed once across ALL conditions so the quartile bar figures share
+    # an identical y-scale panel-for-panel (see compute_shared_bar_ylims).
+    bar_ylims = compute_shared_bar_ylims(all_data, args.bands, args.rois, args.conditions)
+
     for condition in args.conditions:
         print(f'\n-- Plotting condition: {condition} --')
         make_timeseries_figure(all_data, args.bands, args.rois, condition,
                                  args.voxRes, figdir)
         make_quartile_figure(all_data, args.bands, args.rois, condition,
-                               args.voxRes, figdir)
+                               args.voxRes, figdir, bar_ylims)
 
     print('\nAll figures saved.')
 

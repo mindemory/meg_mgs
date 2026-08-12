@@ -23,7 +23,12 @@ For each (band x condition x ROI):
     per-timepoint A_inv/hat-matrix; per-permutation circular error is
     computed BEFORE averaging (averaging sin/cos across permutations first
     would collapse toward a near-arbitrary angle instead of the expected
-    ~90 deg chance level).
+    ~90 deg chance level). Two shuffle statistics are saved per permutation:
+    the original per-trial unsigned circular_dist (shuffle_errors, used by
+    plot_decoding_ts.py's quartile figure) and a signed-circmean-across-trials
+    version (shuffle_signed_circmean, the method-matched null for
+    plot_decoding_ts.py's timeseries figure, which ports its real-error
+    statistic from megScripts/plotDecodBehav.py's convention).
   - Saves one .npz per (subject, band, roi, condition).
 
 Complexity: O(bands x T x N^2 x F + bands x T x n_shuffle x N x F)
@@ -47,6 +52,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
+from scipy.stats import circmean
 
 from align import g04_orig_row_index
 from constants import AMP_ONLY_BANDS, AMP_PHASE_BANDS, ANGLE_MAPPING, ROI_NAMES, get_bids_root
@@ -128,6 +134,21 @@ def ridge_loocv_timeseries(X, true_angles_deg, alpha=RIDGE_ALPHA,
     errors         : (N, T) float32  circular error in degrees  [0, 180]
     shuffle_errors : (N, T) float32  mean circular error over n_shuffle
                                       permutations
+    shuffle_signed_circmean : (n_shuffle, T) float32  per-permutation signed
+                                      circular mean of (perm_pred - true)
+                                      across trials, in [-180, 180]. This is
+                                      the method-matched null for
+                                      plot_decoding_ts.py's
+                                      abs(circmean(signed_error)) real-error
+                                      statistic (ported from
+                                      megScripts/plotDecodBehav.py) --
+                                      shuffle_errors above is NOT
+                                      method-matched to that statistic (it's
+                                      unsigned circular_dist averaged over
+                                      permutations at the per-trial level,
+                                      the null for the OLD per-trial
+                                      unsigned-distance real-error metric,
+                                      still used by the quartile figure).
     """
     n_trials, n_times, n_feat = X.shape
 
@@ -138,6 +159,7 @@ def ridge_loocv_timeseries(X, true_angles_deg, alpha=RIDGE_ALPHA,
     pred_sin = np.zeros((n_trials, n_times), dtype=np.float32)
     pred_cos = np.zeros((n_trials, n_times), dtype=np.float32)
     shuffle_errors = np.zeros((n_trials, n_times), dtype=np.float32)
+    shuffle_signed_circmean = np.zeros((n_shuffle, n_times), dtype=np.float32)
 
     rng   = np.random.default_rng(seed)
     perms = [rng.permutation(n_trials) for _ in range(n_shuffle)]
@@ -189,6 +211,11 @@ def ridge_loocv_timeseries(X, true_angles_deg, alpha=RIDGE_ALPHA,
                 p_cos = _loo(cos_y[perm])
                 perm_angles = np.degrees(np.mod(np.arctan2(p_sin, p_cos), 2 * np.pi))
                 perm_errors[k] = circular_dist(perm_angles, true_angles_deg)
+                # Method-matched null for the signed-circmean real-error stat
+                # (see docstring) -- signed error per trial, THEN circular
+                # mean across trials for this one permutation/timepoint.
+                signed_err_k = ((perm_angles - true_angles_deg + 180) % 360) - 180
+                shuffle_signed_circmean[k, t] = circmean(signed_err_k, high=180, low=-180)
             shuffle_errors[:, t] = perm_errors.mean(axis=0).astype(np.float32)
 
     # ── Convert real predictions to angles / errors ──────────────────────────
@@ -198,7 +225,7 @@ def ridge_loocv_timeseries(X, true_angles_deg, alpha=RIDGE_ALPHA,
     ).astype(np.float32)
     errors = circular_dist(pred_angles, true_angles_deg[:, None]).astype(np.float32)
 
-    return pred_angles, errors, shuffle_errors
+    return pred_angles, errors, shuffle_errors, shuffle_signed_circmean
 
 
 # ── Output path ───────────────────────────────────────────────────────────────
@@ -319,15 +346,16 @@ def run_cell(subjID, bands, voxRes, bids_root, rois, conditions,
                           f'fsample={fsample:.0f}Hz | win=±{win_ms:.0f}ms | '
                           f'n_shuffle={n_shuffle} | alpha={alpha}', flush=True)
 
-                    pred_angles, errors, shuffle_errors = ridge_loocv_timeseries(
-                        X_win, true_angles_deg,
-                        alpha=alpha, n_shuffle=n_shuffle)
+                    pred_angles, errors, shuffle_errors, shuffle_signed_circmean = \
+                        ridge_loocv_timeseries(X_win, true_angles_deg,
+                                                alpha=alpha, n_shuffle=n_shuffle)
 
                     np.savez_compressed(
                         out_path,
                         pred_angles    = pred_angles,                        # (N, T) deg
                         errors         = errors,                             # (N, T) deg [0,180]
                         shuffle_errors = shuffle_errors,                     # (N, T) deg
+                        shuffle_signed_circmean = shuffle_signed_circmean,   # (n_shuffle, T) deg [-180,180]
                         true_angles    = true_angles_deg.astype(np.float32), # (N,) deg
                         target_labels  = target_labels.astype(np.int32),     # (N,)
                         trial_idx      = trial_idx.astype(np.int64),         # (N,) orig row idx
