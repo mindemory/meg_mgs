@@ -177,42 +177,48 @@ def load_all_subjects(subjects, bids_root, voxRes, bands, rois, conditions, outd
 
 def aggregate_timeseries(all_data, band, roi, condition):
     """
-    Returns (tv, mean_err, sem_err, mean_shuf, sem_shuf) or Nones.
+    Returns (tv, mean_err, mean_shuf) or (None, None, None).
 
-    Real error is now computed the way megScripts/plotDecodBehav.py computes
-    "decoding error" (its top-row scatter is unweighted circmean with no
-    SEM; this ports the fuller version its own quantile/bottom-row uses,
-    which is the same operation plus proper across-subject stats):
+    Exactly matches megScripts/plotDecodBehav.py's method for its top-row
+    scatter (lines 90-91, 126-127) -- no more, no less:
       1. Per trial, per timepoint: SIGNED circular error
          ((pred - true + 180) % 360) - 180, in [-180, 180] -- NOT
          glue_decoding's original per-trial UNSIGNED circular_dist.
       2. Per subject, per timepoint: circular mean of that signed error
-         across trials (scipy.stats.circmean), then abs(). This lets
-         same-magnitude opposite-direction trial errors partially cancel
-         before the abs() is taken, instead of every trial contributing its
-         full unsigned distance regardless of direction. Under chance-level
-         decoding this quantity is ~Uniform[0, 180] with mean 90 -- the same
-         chance level as the unsigned-distance metric it replaces (a
-         resultant vector with no real angular signal points in an
-         essentially random direction, and abs() folds that uniformly onto
-         [0, 180]).
-      3. Arithmetic mean/SEM of that per-subject quantity across subjects
-         (unchanged from before).
+         across trials (scipy.stats.circmean) -- SIGNED, no abs() yet.
+      3. Across subjects, per timepoint: circular mean AGAIN of those
+         per-subject signed means -- still signed.
+      4. abs() applied exactly ONCE, on this final grand-mean curve.
 
-    Shuffle baseline is method-matched to the real-error statistic above:
-    decoding_ts_cell.py now saves shuffle_signed_circmean (n_shuffle, T) --
-    the signed circular mean across trials for each label-permutation --
-    and here we take abs() then average over permutations, i.e. the same
-    "signed circmean over trials, then abs" statistic evaluated under the
-    permuted-label null. Falls back to the old per-trial unsigned
-    circular_dist shuffle_errors (arithmetic trial mean) for any cached
-    .npz predating this field -- not method-matched, but same ~90 deg
-    chance level, so still a valid approximate reference.
+    This nested-circmean-then-abs-once order matters: taking abs() at step 2
+    (per subject, as an earlier version of this function did) creates a kink
+    everywhere that subject's signed mean crosses zero, and with ~21
+    subjects kinking at different timepoints the aggregate curve looks
+    jagged. Deferring abs() to the very end keeps everything signed (and
+    thus smooth) through both averaging steps, matching megScripts' output.
+
+    No SEM/error band: megScripts' own scatter plot doesn't have one either
+    -- a stderr around a doubly-circmean'd, abs'd quantity isn't a
+    meaningful linear stat -- so the 90 deg chance line is the reference
+    instead.
+
+    Shuffle baseline mirrors the same structure. decoding_ts_cell.py saves
+    shuffle_signed_circmean (n_shuffle, T) -- the signed circular mean
+    across trials for each label-permutation. Per subject we circmean
+    across permutations (signed) to collapse that to one shuffle curve per
+    subject, then circmean across subjects (signed), abs() once -- same
+    order as the real-error line above, so the two are directly comparable.
+    If ANY cell's cache predates that field, the whole shuffle baseline
+    falls back to the old per-trial unsigned circular_dist shuffle_errors
+    (arithmetic mean across trials, then across subjects -- not circular,
+    since it's already a non-negative magnitude) -- not method-matched, but
+    same ~90 deg chance level, so still a valid approximate reference.
     """
-    subj_err_list = []
-    shuffle_list  = []
-    tv            = None
-    warned_legacy_shuffle = False
+    subj_err_list       = []
+    subj_shuf_signed     = []
+    subj_shuf_legacy     = []
+    tv                    = None
+    have_signed_shuffle   = True
 
     for d in all_data:
         if d is None:
@@ -224,32 +230,36 @@ def aggregate_timeseries(all_data, band, roi, condition):
         pred_angles = npz['pred_angles']            # (N, T) deg
         true_angles = npz['true_angles']             # (N,) deg
         signed_err  = ((pred_angles - true_angles[:, None] + 180) % 360) - 180
-        subj_signed_mean = stats.circmean(signed_err, high=180, low=-180, axis=0)  # (T,)
-        subj_err_list.append(np.abs(subj_signed_mean))
+        subj_err_list.append(stats.circmean(signed_err, high=180, low=-180, axis=0))  # (T,) signed
 
         if 'shuffle_signed_circmean' in npz:
-            shuffle_list.append(np.abs(npz['shuffle_signed_circmean']).mean(axis=0))  # (T,)
+            subj_shuf_signed.append(
+                stats.circmean(npz['shuffle_signed_circmean'], high=180, low=-180, axis=0))  # (T,) signed
         else:
-            if not warned_legacy_shuffle:
-                print(f'  NOTE: {band}/{roi}/{condition}: cached .npz predates '
-                      f'shuffle_signed_circmean -- using legacy unsigned-distance '
-                      f'shuffle baseline (not method-matched). Re-run with --force '
-                      f'to regenerate.', flush=True)
-                warned_legacy_shuffle = True
-            shuffle_list.append(npz['shuffle_errors'].mean(axis=0))
+            have_signed_shuffle = False
+        subj_shuf_legacy.append(npz['shuffle_errors'].mean(axis=0))  # (T,) magnitude, always available
+
         if tv is None:
             tv = npz['time_vector']
 
     if not subj_err_list:
-        return None, None, None, None, None
+        return None, None, None
 
-    err  = np.stack(subj_err_list)   # (n_subj, T)
-    shuf = np.stack(shuffle_list)
-    n    = err.shape[0]
+    err       = np.stack(subj_err_list)   # (n_subj, T) signed
+    mean_err  = np.abs(stats.circmean(err, high=180, low=-180, axis=0))
 
-    return (tv,
-            err.mean(0),  err.std(0) / np.sqrt(n),
-            shuf.mean(0), shuf.std(0) / np.sqrt(n))
+    if have_signed_shuffle:
+        shuf      = np.stack(subj_shuf_signed)   # (n_subj, T) signed
+        mean_shuf = np.abs(stats.circmean(shuf, high=180, low=-180, axis=0))
+    else:
+        print(f'  NOTE: {band}/{roi}/{condition}: at least one cached .npz predates '
+              f'shuffle_signed_circmean -- using legacy unsigned-distance shuffle '
+              f'baseline (not method-matched). Re-run with --force to regenerate.',
+              flush=True)
+        shuf      = np.stack(subj_shuf_legacy)   # (n_subj, T) magnitude
+        mean_shuf = shuf.mean(0)
+
+    return tv, mean_err, mean_shuf
 
 
 def compute_epoch_quartiles(all_data, band, roi, condition):
@@ -442,10 +452,14 @@ def _style_ax(ax, spine_col='#333333'):
     ax.yaxis.label.set_color(_FG)
 
 
-def plot_timeseries_panel(ax, tv, mean_err, sem_err, mean_shuf, sem_shuf,
+def plot_timeseries_panel(ax, tv, mean_err, mean_shuf,
                            roi, is_bottom_row, is_left_col, show_title, title_str,
                            show_flag_labels=True):
-    """Draw decoding error timeseries + shuffle into ax."""
+    """Draw decoding error timeseries + shuffle into ax.
+
+    No SEM shading -- aggregate_timeseries' abs(circmean(circmean(...)))
+    statistic (matching megScripts/plotDecodBehav.py) doesn't have a
+    meaningful linear error bar, same as megScripts' own scatter plot."""
     col  = ROI_COLOURS[roi]
     t0   = float(tv[0])
     t1   = float(tv[-1])
@@ -454,23 +468,19 @@ def plot_timeseries_panel(ax, tv, mean_err, sem_err, mean_shuf, sem_shuf,
     ax.axhline(90, color=_CHANCE, lw=0.8, ls=':', zorder=1)
 
     # Shuffle baseline (dashed, same colour, dimmer)
-    ax.fill_between(tv, mean_shuf - sem_shuf, mean_shuf + sem_shuf,
-                     alpha=0.15, color=col, zorder=2)
     ax.plot(tv, mean_shuf, color=col, lw=0.9, ls='--', alpha=0.55, zorder=2)
 
     # Real decoding
-    ax.fill_between(tv, mean_err - sem_err, mean_err + sem_err,
-                     alpha=0.30, color=col, zorder=3)
     ax.plot(tv, mean_err, color=col, lw=1.5, zorder=3)
 
     # ylim: no longer a hard 0-180 clamp -- that flattened real effects
     # against the full theoretical range and made everything look like it
-    # hovers at chance. Instead scale to the actual data (err/shuf +/- SEM),
-    # but always keep the 90 deg chance line in view so the effect size is
+    # hovers at chance. Instead scale to the actual data (err/shuf), but
+    # always keep the 90 deg chance line in view so the effect size is
     # still interpretable relative to chance, and clip to the physical
     # [0, 180] range.
-    lo = min(np.nanmin(mean_err - sem_err), np.nanmin(mean_shuf - sem_shuf), 90)
-    hi = max(np.nanmax(mean_err + sem_err), np.nanmax(mean_shuf + sem_shuf), 90)
+    lo = min(np.nanmin(mean_err), np.nanmin(mean_shuf), 90)
+    hi = max(np.nanmax(mean_err), np.nanmax(mean_shuf), 90)
     pad = max(5.0, (hi - lo) * 0.15)
     lo, hi = max(0, lo - pad), min(180, hi + pad)
 
@@ -700,7 +710,7 @@ def make_timeseries_figure(all_data, bands, rois, condition, voxRes, outdir_fig)
         for c_idx, roi in enumerate(rois):
             ax_ts = fig.add_subplot(gs[r_idx, c_idx])
 
-            tv, mean_err, sem_err, mean_shuf, sem_shuf = aggregate_timeseries(
+            tv, mean_err, mean_shuf = aggregate_timeseries(
                 all_data, band, roi, condition)
 
             is_left_col   = (c_idx == 0)
@@ -710,7 +720,7 @@ def make_timeseries_figure(all_data, bands, rois, condition, voxRes, outdir_fig)
 
             if tv is not None:
                 plot_timeseries_panel(
-                    ax_ts, tv, mean_err, sem_err, mean_shuf, sem_shuf,
+                    ax_ts, tv, mean_err, mean_shuf,
                     roi, is_bottom_row, is_left_col, show_title, title_str,
                     show_flag_labels=show_title)
             else:
