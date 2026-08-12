@@ -36,6 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
+from scipy import stats
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -153,17 +154,33 @@ def compute_epoch_quartiles(all_data, band, roi, condition):
     For each epoch (stim / delay):
       - Compute per-trial mean circular error within the epoch window.
       - Bin trials into N_QUANTILES quartiles.
-      - Record the mean error of trials in each quartile.
-    Aggregate across subjects: mean +/- SEM per quartile.
+      - Record the mean error of trials in each quartile, plus the mean
+        shuffle-baseline error (npz['shuffle_errors']) over the SAME trials,
+        so the shuffle level shown per quartile is a matched, not just an
+        overall, control.
+      - Fit a per-subject linear trend (error ~ quartile rank) so we can
+        test whether error tracks performance, rather than just whether it
+        differs from the 90 deg chance level.
+    Aggregate across subjects: mean +/- SEM per quartile, plus group-level
+    (one-sample t-test vs 0) stats on the per-subject slopes/correlations.
 
     Returns:
-        dict: epoch_name -> (q_means, q_sems, q_subj_vals)
-          q_means, q_sems : (N_QUANTILES,)
-          q_subj_vals     : list of length N_QUANTILES, each entry is an
-                            array of subject values for scatter plotting.
+        dict: epoch_name -> dict with keys
+          q_means, q_sems       : (N_QUANTILES,) real error, across subjects
+          q_subj                : list (len N_QUANTILES) of per-subject arrays,
+                                   for scatter plotting
+          shuf_means, shuf_sems : (N_QUANTILES,) matched-trial shuffle baseline
+          slope_mean, slope_p   : mean per-subject slope (deg/quartile rank)
+                                   and one-sample t-test p-value vs 0
+          r_mean, r_p           : mean per-subject Pearson r (error vs
+                                   quartile rank) and one-sample t-test
+                                   p-value vs 0
+          n_complete            : # subjects with all N_QUANTILES bins
+                                   populated (basis for slope/r stats)
     """
-    ep_collector = {ep: [[] for _ in range(N_QUANTILES)]
-                    for ep in EPOCH_WINDOWS}
+    ep_collector      = {ep: [[] for _ in range(N_QUANTILES)] for ep in EPOCH_WINDOWS}
+    ep_shuf_collector = {ep: [[] for _ in range(N_QUANTILES)] for ep in EPOCH_WINDOWS}
+    ep_subj_rows      = {ep: [] for ep in EPOCH_WINDOWS}   # per-subject (N_QUANTILES,) rows, nan where empty
 
     for d in all_data:
         if d is None:
@@ -171,9 +188,10 @@ def compute_epoch_quartiles(all_data, band, roi, condition):
         k = (band, roi, condition)
         if k not in d:
             continue
-        npz = d[k]
-        tv     = npz['time_vector']   # (T,)
-        errors = npz['errors']        # (N, T)
+        npz     = d[k]
+        tv      = npz['time_vector']        # (T,)
+        errors  = npz['errors']             # (N, T)
+        shuffle = npz['shuffle_errors']     # (N, T)
 
         for ep_name, (t0, t1) in EPOCH_WINDOWS.items():
             mask = (tv >= t0) & (tv <= t1)
@@ -181,7 +199,8 @@ def compute_epoch_quartiles(all_data, band, roi, condition):
                 continue
 
             # Per-trial mean circular error in this epoch (N,)
-            trial_err = errors[:, mask].mean(axis=1)
+            trial_err  = errors[:, mask].mean(axis=1)
+            trial_shuf = shuffle[:, mask].mean(axis=1)
 
             # Bin into quartiles (per subject). Lower bound is exclusive
             # except for the first bin, so a trial sitting exactly on an
@@ -189,6 +208,7 @@ def compute_epoch_quartiles(all_data, band, roi, condition):
             # (previously both bounds were inclusive everywhere, so boundary
             # trials were double-counted in two adjacent quartiles).
             q_bounds = np.percentile(trial_err, np.linspace(0, 100, N_QUANTILES + 1))
+            subj_row = np.full(N_QUANTILES, np.nan)
             for q in range(N_QUANTILES):
                 lo = q_bounds[q]
                 hi = q_bounds[q + 1]
@@ -197,15 +217,21 @@ def compute_epoch_quartiles(all_data, band, roi, condition):
                 else:
                     in_bin = (trial_err > lo) & (trial_err <= hi)
                 if in_bin.any():
-                    ep_collector[ep_name][q].append(float(trial_err[in_bin].mean()))
+                    q_real = float(trial_err[in_bin].mean())
+                    ep_collector[ep_name][q].append(q_real)
+                    ep_shuf_collector[ep_name][q].append(float(trial_shuf[in_bin].mean()))
+                    subj_row[q] = q_real
+            ep_subj_rows[ep_name].append(subj_row)
 
-    result = {}
+    x_ranks = np.arange(1, N_QUANTILES + 1)
+    result  = {}
     for ep_name in EPOCH_WINDOWS:
-        q_means   = []
-        q_sems    = []
-        q_subj    = []
+        q_means, q_sems       = [], []
+        shuf_means, shuf_sems = [], []
+        q_subj                = []
         for q in range(N_QUANTILES):
-            vals = np.asarray(ep_collector[ep_name][q])
+            vals  = np.asarray(ep_collector[ep_name][q])
+            svals = np.asarray(ep_shuf_collector[ep_name][q])
             q_subj.append(vals)
             if len(vals) >= 1:
                 q_means.append(vals.mean())
@@ -213,7 +239,41 @@ def compute_epoch_quartiles(all_data, band, roi, condition):
             else:
                 q_means.append(np.nan)
                 q_sems.append(np.nan)
-        result[ep_name] = (np.array(q_means), np.array(q_sems), q_subj)
+            if len(svals) >= 1:
+                shuf_means.append(svals.mean())
+                shuf_sems.append(svals.std() / np.sqrt(len(svals)) if len(svals) > 1 else 0.0)
+            else:
+                shuf_means.append(np.nan)
+                shuf_sems.append(np.nan)
+
+        # Per-subject linear trend of error vs. quartile rank. Restricted to
+        # subjects with all N_QUANTILES bins populated -- a slope fit through
+        # 2-3 points per subject is too noisy to be a meaningful trend.
+        rows = np.array(ep_subj_rows[ep_name]) if ep_subj_rows[ep_name] else np.empty((0, N_QUANTILES))
+        complete = rows[~np.isnan(rows).any(axis=1)] if rows.size else rows
+
+        slopes, rs = [], []
+        for row in complete:
+            lr = stats.linregress(x_ranks, row)
+            slopes.append(lr.slope)
+            rs.append(lr.rvalue)
+        slopes, rs = np.array(slopes), np.array(rs)
+
+        if len(slopes) > 1:
+            slope_mean, slope_p = float(slopes.mean()), float(stats.ttest_1samp(slopes, 0).pvalue)
+            r_mean, r_p         = float(rs.mean()),     float(stats.ttest_1samp(rs, 0).pvalue)
+        elif len(slopes) == 1:
+            slope_mean, slope_p = float(slopes[0]), np.nan
+            r_mean, r_p         = float(rs[0]), np.nan
+        else:
+            slope_mean = slope_p = r_mean = r_p = np.nan
+
+        result[ep_name] = dict(
+            q_means=np.array(q_means), q_sems=np.array(q_sems), q_subj=q_subj,
+            shuf_means=np.array(shuf_means), shuf_sems=np.array(shuf_sems),
+            slope_mean=slope_mean, slope_p=slope_p,
+            r_mean=r_mean, r_p=r_p, n_complete=len(complete),
+        )
 
     return result
 
@@ -254,7 +314,8 @@ def _style_ax(ax, spine_col='#333333'):
 
 
 def plot_timeseries_panel(ax, tv, mean_err, sem_err, mean_shuf, sem_shuf,
-                           roi, is_bottom_row, is_left_col, show_title, title_str):
+                           roi, is_bottom_row, is_left_col, show_title, title_str,
+                           show_flag_labels=True):
     """Draw decoding error timeseries + shuffle into ax."""
     col  = ROI_COLOURS[roi]
     t0   = float(tv[0])
@@ -280,13 +341,17 @@ def plot_timeseries_panel(ax, tv, mean_err, sem_err, mean_shuf, sem_shuf,
     ax.set_xlim(t0, t1)
     ax.set_ylim(0, 180)
 
-    # Event flags
+    # Event flags -- the vertical line is drawn on every row for alignment,
+    # but the text label only on the top row (show_flag_labels), since
+    # repeating it on every band row was a big chunk of the clutter in a
+    # multi-band grid.
     y_lo, y_hi = ax.get_ylim()
     for (t_flag, label, y_frac) in EVENT_FLAGS:
         ax.axvline(t_flag, color=_FLAG_LINE, lw=0.8, ls='--', zorder=4)
-        ax.text(t_flag, y_lo + y_frac * (y_hi - y_lo), label,
-                rotation=90, va='top', ha='right',
-                fontsize=6.5, color=_FLAG_TXT, zorder=5)
+        if show_flag_labels:
+            ax.text(t_flag, y_lo + y_frac * (y_hi - y_lo), label,
+                    rotation=90, va='top', ha='right',
+                    fontsize=6.5, color=_FLAG_TXT, zorder=5)
 
     if is_left_col:
         ax.set_ylabel('Circular error (deg)', fontsize=8, color=_FG)
@@ -296,10 +361,11 @@ def plot_timeseries_panel(ax, tv, mean_err, sem_err, mean_shuf, sem_shuf,
         ax.set_yticklabels([])
 
     ax.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
-    if is_bottom_row:
-        ax.set_xlabel('Time (s)', fontsize=8, color=_FG)
-    else:
+    if not is_bottom_row:
         ax.set_xticklabels([])
+    # 'Time (s)' axis title is drawn once for the whole figure (make_figure)
+    # rather than per-panel -- with the tight ts/bar hspace it collided with
+    # the bar panel right below it, and it was redundant across ROI columns.
 
     ax.grid(True, color=_GRID, lw=0.4, zorder=0)
     _style_ax(ax)
@@ -310,14 +376,17 @@ def plot_timeseries_panel(ax, tv, mean_err, sem_err, mean_shuf, sem_shuf,
     ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.0f'))
 
 
-def plot_bar_panel(ax, epoch_quartiles, roi, show_ylabel):
+def plot_bar_panel(ax, epoch_quartiles, roi):
     """
     Draw quartile bar strip below timeseries.
     Two groups (stim | delay), N_QUANTILES bars each.
     Bars: mean circular error per quartile across subjects.
     Dots: individual subject values.
+    Dashed ticks: matched-trial shuffle baseline per quartile.
+    Text: per-subject linear trend of error vs. quartile rank (slope +
+    Pearson r), tested against 0 -- this asks whether error tracks
+    performance, which is more informative than a chance-level test.
     """
-    col     = ROI_COLOURS[roi]
     q_cols  = quartile_colours(roi, N_QUANTILES)
     bar_w   = 0.6
     gap     = 1.5    # gap between stim and delay groups
@@ -328,7 +397,11 @@ def plot_bar_panel(ax, epoch_quartiles, roi, show_ylabel):
 
     all_vals = []
     for ep_name in EPOCH_WINDOWS:
-        q_means, q_sems, q_subj = epoch_quartiles[ep_name]
+        ep_stats   = epoch_quartiles[ep_name]
+        q_means    = ep_stats['q_means']
+        q_sems     = ep_stats['q_sems']
+        q_subj     = ep_stats['q_subj']
+        shuf_means = ep_stats['shuf_means']
         x0 = group_offsets[ep_name]
         for q in range(N_QUANTILES):
             x = x0 + q
@@ -345,10 +418,30 @@ def plot_bar_panel(ax, epoch_quartiles, roi, show_ylabel):
                 if len(subj_vals):
                     jitter = rng.uniform(-eps, eps, len(subj_vals))
                     ax.scatter(x + jitter, subj_vals,
-                                s=8, color='white', alpha=0.7,
+                                s=6, color='white', alpha=0.55,
                                 edgecolors='none', zorder=5)
                     all_vals.extend(subj_vals.tolist())
             all_vals.append(v)
+
+            # Matched-trial shuffle baseline for this quartile
+            sv = shuf_means[q]
+            if not np.isnan(sv):
+                ax.hlines(sv, x - bar_w / 2, x + bar_w / 2,
+                           color=_FG, lw=1.1, ls='--', alpha=0.7, zorder=6)
+                all_vals.append(sv)
+
+        # Trend annotation: per-subject slope (deg/quartile rank) + Pearson r,
+        # group-tested against 0.
+        slope_mean, slope_p = ep_stats['slope_mean'], ep_stats['slope_p']
+        r_mean, r_p         = ep_stats['r_mean'], ep_stats['r_p']
+        if not np.isnan(slope_mean):
+            sig  = '*' if (not np.isnan(slope_p) and slope_p < 0.05) else ''
+            rsig = '*' if (not np.isnan(r_p) and r_p < 0.05) else ''
+            txt = f'β={slope_mean:+.1f}°/Q{sig}\nr={r_mean:+.2f}{rsig}'
+            ax.text(x0 + (N_QUANTILES - 1) / 2, 0.97, txt,
+                    transform=ax.get_xaxis_transform(),
+                    ha='center', va='top', fontsize=5.8, color=_FG,
+                    linespacing=1.3, zorder=7)
 
     # Group labels
     for ep_name, label in EPOCH_LABELS.items():
@@ -359,11 +452,15 @@ def plot_bar_panel(ax, epoch_quartiles, roi, show_ylabel):
 
     ax.set_xlim(-0.6, max(group_offsets.values()) + N_QUANTILES - 0.4)
     y_max = max((v for v in all_vals if not np.isnan(v)), default=90)
-    ax.set_ylim(0, y_max * 1.25)
+    # Extra headroom (vs. 1.35 previously) so the trend annotation text
+    # clears the tallest bar/errorbar instead of touching it.
+    ax.set_ylim(0, y_max * 1.55)
     ax.set_xticks([])
 
-    if show_ylabel:
-        ax.set_ylabel('Circ. err. (deg)', fontsize=7, color=_FG)
+    # No y-label here: it shares units/scale with the timeseries panel
+    # directly above it, which already labels the axis for the left column.
+    # A second label on the much-shorter bar panel had no room and
+    # collided with it.
     ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=3, integer=True))
     ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.0f'))
     ax.grid(axis='y', color=_GRID, lw=0.4, zorder=0)
@@ -376,35 +473,49 @@ def make_figure(all_data, bands, rois, condition, voxRes, outdir_fig):
     n_bands = len(bands)
     n_rois  = len(rois)
 
-    # Height ratios: for each band row, [4 (timeseries), 1 (bar)]
+    # Height ratio within a band row: [timeseries, bar]. bar_ratio bumped up
+    # from the previous 1 so the shuffle ticks + trend annotation added to
+    # the bar panel have room to breathe instead of overlapping the bars.
     ts_ratio  = 4
-    bar_ratio = 1
-    all_ratios = [ts_ratio if row % 2 == 0 else bar_ratio
-                  for row in range(n_bands * 2)]
+    bar_ratio = 1.4
 
-    fig_w = 3.8 * n_rois
-    # 1.5 in per band-row's combined (timeseries + bar) height -- NOT
-    # squared in n_bands (a previous version had `* n_bands` twice here,
-    # making a 4-band figure ~30in tall instead of the intended ~7.5in).
-    fig_h = 1.5 * n_bands * (ts_ratio + bar_ratio) / ts_ratio
+    fig_w = 4.2 * n_rois
+    # ~1.7in per band row (timeseries + bar together), plus fixed margins
+    # for the suptitle (top) and the shared 'Time (s)' label (bottom) --
+    # independent of n_bands (a previous version accidentally scaled height
+    # by n_bands twice). The top/bottom margins are then expressed as
+    # fractions of fig_h below, so a small n_bands (few rows, short fig_h)
+    # doesn't shrink those fixed-size margins into the row content and
+    # collide the suptitle with the top row's titles.
+    title_margin_in  = 0.45
+    bottom_margin_in = 0.40
+    fig_h = 1.7 * n_bands + title_margin_in + bottom_margin_in
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor=_BG)
 
-    gs = gridspec.GridSpec(
-        n_bands * 2, n_rois,
-        figure       = fig,
-        height_ratios= all_ratios,
-        hspace       = 0.05,
-        wspace       = 0.25,
-        left         = 0.10,
-        right        = 0.97,
-        top          = 0.93,
-        bottom       = 0.07,
+    # Outer grid: one row per band, with a generous hspace so separate bands
+    # are visually distinct groups. Each band row then gets its own nested
+    # 2-row grid (timeseries + bar) with a small internal hspace. Previously
+    # a single flat GridSpec applied the SAME small hspace between every
+    # row -- including between one band's bar panel and the next band's
+    # timeseries -- so adjacent bands visually ran together.
+    outer_gs = gridspec.GridSpec(
+        n_bands, n_rois,
+        figure = fig,
+        hspace = 0.55,
+        wspace = 0.30,
+        left   = 0.11,
+        right  = 0.97,
+        top    = 1 - title_margin_in / fig_h,
+        bottom = bottom_margin_in / fig_h,
     )
 
     for r_idx, band in enumerate(bands):
         for c_idx, roi in enumerate(rois):
-            ax_ts  = fig.add_subplot(gs[r_idx * 2,     c_idx])
-            ax_bar = fig.add_subplot(gs[r_idx * 2 + 1, c_idx])
+            inner_gs = gridspec.GridSpecFromSubplotSpec(
+                2, 1, subplot_spec=outer_gs[r_idx, c_idx],
+                height_ratios=[ts_ratio, bar_ratio], hspace=0.08)
+            ax_ts  = fig.add_subplot(inner_gs[0])
+            ax_bar = fig.add_subplot(inner_gs[1])
 
             tv, mean_err, sem_err, mean_shuf, sem_shuf = aggregate_timeseries(
                 all_data, band, roi, condition)
@@ -419,15 +530,15 @@ def make_figure(all_data, bands, rois, condition, voxRes, outdir_fig):
             if tv is not None:
                 plot_timeseries_panel(
                     ax_ts, tv, mean_err, sem_err, mean_shuf, sem_shuf,
-                    roi, is_bottom_row, is_left_col, show_title, title_str)
+                    roi, is_bottom_row, is_left_col, show_title, title_str,
+                    show_flag_labels=show_title)
             else:
                 ax_ts.text(0.5, 0.5, 'No data', ha='center', va='center',
                             transform=ax_ts.transAxes, color=_FG, fontsize=9)
                 _style_ax(ax_ts)
 
             if epoch_quartiles:
-                plot_bar_panel(ax_bar, epoch_quartiles, roi,
-                                show_ylabel=is_left_col)
+                plot_bar_panel(ax_bar, epoch_quartiles, roi)
             else:
                 _style_ax(ax_bar)
 
@@ -443,6 +554,8 @@ def make_figure(all_data, bands, rois, condition, voxRes, outdir_fig):
                  else 'Amplitude + Phase'
     fig.suptitle(f'Stim-locked Decoding  |  {cond_label}  |  {voxRes}',
                   color=_FG, fontsize=14, fontweight='bold', y=0.97)
+    fig.text(0.5, 0.005, 'Time (s)', ha='center', va='bottom',
+              color=_FG, fontsize=9)
 
     os.makedirs(outdir_fig, exist_ok=True)
     fpath = os.path.join(outdir_fig, f'decoding_ts_{condition}_{voxRes}.png')
@@ -469,13 +582,13 @@ def main():
                         help='Directory containing the per-subject .npz files.')
     parser.add_argument('--figdir',      default=None,
                         help='Directory to save figures (default: same as outdir '
-                             'or BIDS derivatives/decoding_figures).')
+                             'or BIDS derivatives/glueDecoding/decodingTS).')
     args = parser.parse_args()
 
     bids_root = get_bids_root()
     figdir    = args.figdir or (args.outdir if args.outdir else
                                  os.path.join(bids_root, 'derivatives',
-                                              'decoding_figures'))
+                                              'glueDecoding', 'decodingTS'))
 
     print(f'Loading data | {args.voxRes} | subjects={args.subjects} | '
           f'bands={args.bands} | rois={args.rois} | conditions={args.conditions}')
