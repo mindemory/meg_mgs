@@ -2,26 +2,34 @@
 """
 plot_decoding_ts.py
 
-Aggregates per-subject decoding timeseries .npz files and produces
-publication-quality figures.
+Aggregates per-subject decoding timeseries .npz files and produces two
+publication-quality figures per condition (ampOnly / ampPhase), each a
+bands x ROIs grid (rows = theta/alpha/beta/lowgamma, cols = visual/parietal/
+frontal):
 
-Figure layout (one figure per condition: ampOnly / ampPhase):
-  rows = frequency bands  (theta / alpha / beta / lowgamma)
-  cols = ROIs             (visual / parietal / frontal)
+  1) Timeseries figure (make_timeseries_figure):
+       Mean +/- SEM circular decoding error across subjects (lower = better).
+       Dashed line: mean +/- SEM shuffle baseline.
+       Horizontal line at 90 deg: theoretical chance for circular decoding.
+       Event flag lines: Stim at 0.0 s (top), Delay Onset at 0.2 s (mid).
+       Y-axis is data-driven per panel (not a fixed 0-180 clamp), always
+       keeping the 90 deg chance line in view.
 
-  Each cell contains:
-    [Main panel, 80% height]
-      Mean +/- SEM circular decoding error across subjects (lower = better).
-      Dashed line: mean +/- SEM shuffle baseline.
-      Horizontal line at 90 deg: theoretical chance for circular decoding.
-      Event flag lines: Stim at 0.0 s (top), Delay Onset at 0.2 s (mid).
-
-    [Bar panel, 20% height]
-      Trials binned per-subject into 4 quartiles by mean circular error
-      in two epochs: Stim (0.0-0.2 s) | Delay (0.2-1.7 s).
-      Bar = mean +/- SEM across subjects per quartile.
-      Scatter dots = individual-subject mean error per quartile.
-      Quartile colours: ROI colour shaded Q1 (darkest) -> Q4 (lightest).
+  2) Quartile figure (make_quartile_figure):
+       Trials binned per-subject into 4 quartiles of REAL BEHAVIORAL
+       PERFORMANCE (i_sacc_err, the initial-saccade/memory-report error --
+       see get_subject_i_sacc_err/compute_epoch_quartiles), NOT by decoding
+       error itself -- binning trials by an outcome and then showing the
+       bins differ in that outcome would be circular and would look
+       "significant" even for a decoder with zero real signal.
+       Two epochs shown per panel: Stim (0.0-0.2 s) | Delay (0.2-1.7 s).
+       Bar = mean +/- SEM decoding error across subjects per quartile.
+       Scatter dots = individual-subject mean error per quartile.
+       Dashed ticks = matched-trial shuffle baseline per quartile.
+       Text = per-subject slope/correlation of decoding error vs.
+       performance quartile, tested against 0 across subjects.
+       Quartile colours: ROI colour shaded Q1 (best performance, darkest) ->
+       Q4 (worst performance, lightest).
 
 Color scheme mirrors plot_timeseries.py:
   visual  = #FFC629  mango/Bumble
@@ -44,7 +52,9 @@ import matplotlib.gridspec as gridspec
 import matplotlib.ticker as ticker
 from matplotlib.colors import to_rgb
 
+from align import load_behav, verify_alignment, attach_behav
 from constants import get_bids_root, ROI_NAMES
+from io_g03 import load_g03_unfiltered
 
 # ── Design constants (mirror plot_timeseries.py) ──────────────────────────────
 
@@ -82,6 +92,12 @@ EPOCH_LABELS = {'stim': 'Stim\n(0-0.2 s)', 'delay': 'Delay\n(0.2-1.7 s)'}
 
 N_QUANTILES = 4    # quartiles
 
+# Minimum initial-saccade error to count as a valid behavioral trial (matches
+# megScripts/plotDecodBehav.py's errThresh) -- excludes trials whose i_sacc_err
+# is ~0, which tends to indicate missing/invalid saccade data rather than a
+# genuinely perfect response.
+I_SACC_ERR_THRESH = 0.001
+
 # ── I/O helpers ───────────────────────────────────────────────────────────────
 
 def cell_path(bids_root, subjID, band, roi, condition, voxRes, outdir=None):
@@ -93,21 +109,65 @@ def cell_path(bids_root, subjID, band, roi, condition, voxRes, outdir=None):
         f'{subName}_task-mgs_decodingTS_{condition}_{band}_{roi}_{voxRes}.npz')
 
 
+def get_subject_i_sacc_err(subjID, bids_root, voxRes, rois):
+    """
+    Loads this subject's initial-saccade error (i_sacc_err, real behavioral
+    performance) and verifies it's positionally aligned with G04's stim-locked
+    trial order via the same checksum megScripts/align.py already implements
+    (verify_alignment). Returns None if the behavioral file is missing or
+    alignment can't be verified -- callers should then fall back to skipping
+    behavior-based analysis for this subject rather than risk a silent
+    mis-join.
+
+    Note: this attaches behavior at PLOT time using each cell's own saved
+    'trial_idx' (the G04-row -> original-sourcedataCombined-row map), rather
+    than baking i_sacc_err into decoding_ts_cell.py's .npz cache -- avoids
+    having to regenerate the whole per-subject/band/roi cache just to add one
+    field.
+    """
+    behav = load_behav(subjID, bids_root)
+    if behav is None:
+        return None
+    try:
+        g03_meta = load_g03_unfiltered(subjID, 'stim', voxRes, bids_root, roi=rois[0])
+    except (FileNotFoundError, OSError):
+        return None
+    if not verify_alignment(g03_meta['trialinfo_col2'], behav['tarlocCode']):
+        print(f'  WARNING: sub-{subjID:02d}: behavioral alignment check failed '
+              f'-- skipping i_sacc_err for this subject.', flush=True)
+        return None
+    return behav
+
+
 def load_all_subjects(subjects, bids_root, voxRes, bands, rois, conditions, outdir=None):
     """
     Returns list (one entry per subject) of dicts:
         data[(band, roi, condition)] = loaded npz dict or None
+
+    Each loaded cell also gets an 'i_sacc_err' key attached (real behavioral
+    performance, NOT decoding error -- see get_subject_i_sacc_err), row-aligned
+    to that cell's own trial order via its saved 'trial_idx'. NaN where
+    behavior is unavailable/unverified for that subject, so downstream code
+    can just filter NaNs rather than branch on missing behavior.
     """
     all_data = []
     for subjID in subjects:
         d = {}
+        behav = get_subject_i_sacc_err(subjID, bids_root, voxRes, rois)
         for band in bands:
             for roi in rois:
                 for condition in conditions:
                     fp = cell_path(bids_root, subjID, band, roi,
                                     condition, voxRes, outdir)
                     if os.path.exists(fp):
-                        d[(band, roi, condition)] = dict(np.load(fp, allow_pickle=True))
+                        cell = dict(np.load(fp, allow_pickle=True))
+                        n_trials = cell['trial_idx'].shape[0]
+                        if behav is not None:
+                            cell['i_sacc_err'] = attach_behav(
+                                cell['trial_idx'], behav)['i_sacc_err']
+                        else:
+                            cell['i_sacc_err'] = np.full(n_trials, np.nan)
+                        d[(band, roi, condition)] = cell
         all_data.append(d if d else None)
     return all_data
 
@@ -149,18 +209,29 @@ def aggregate_timeseries(all_data, band, roi, condition):
 
 def compute_epoch_quartiles(all_data, band, roi, condition):
     """
-    Per-subject quartile binning of trial-level circular errors.
+    Per-subject quartile binning of trial-level circular errors BY REAL
+    BEHAVIORAL PERFORMANCE (i_sacc_err, initial-saccade/memory-report error --
+    see get_subject_i_sacc_err / align.py), not by the decoding error itself.
 
-    For each epoch (stim / delay):
-      - Compute per-trial mean circular error within the epoch window.
-      - Bin trials into N_QUANTILES quartiles.
-      - Record the mean error of trials in each quartile, plus the mean
-        shuffle-baseline error (npz['shuffle_errors']) over the SAME trials,
-        so the shuffle level shown per quartile is a matched, not just an
-        overall, control.
-      - Fit a per-subject linear trend (error ~ quartile rank) so we can
-        test whether error tracks performance, rather than just whether it
-        differs from the 90 deg chance level.
+    Binning by the decoding error itself would be circular: sorting trials by
+    an outcome and then reporting that the sorted bins differ in that outcome
+    is guaranteed by construction, even for a decoder with zero real signal.
+    Binning by an independent behavioral measure is what actually tests
+    "does decoding error track how well the subject performed."
+
+    Quartile membership is computed ONCE per subject (i_sacc_err doesn't
+    depend on epoch), then the epoch-specific mean decoding error / shuffle
+    error is computed within each behavioral quartile:
+      - Bin trials into N_QUANTILES quartiles of i_sacc_err (NaN and
+        near-zero trials excluded -- see I_SACC_ERR_THRESH).
+      - For each epoch (stim / delay), record the mean decoding error of
+        trials in each quartile, plus the mean shuffle-baseline error
+        (npz['shuffle_errors']) over the SAME trials, so the shuffle level
+        shown per quartile is a matched, not just an overall, control.
+      - Fit a per-subject linear trend (decoding error ~ performance
+        quartile rank) so we can test whether decoding error tracks
+        behavior, rather than just whether it differs from the 90 deg
+        chance level.
     Aggregate across subjects: mean +/- SEM per quartile, plus group-level
     (one-sample t-test vs 0) stats on the per-subject slopes/correlations.
 
@@ -188,10 +259,34 @@ def compute_epoch_quartiles(all_data, band, roi, condition):
         k = (band, roi, condition)
         if k not in d:
             continue
-        npz     = d[k]
-        tv      = npz['time_vector']        # (T,)
-        errors  = npz['errors']             # (N, T)
-        shuffle = npz['shuffle_errors']     # (N, T)
+        npz        = d[k]
+        tv         = npz['time_vector']        # (T,)
+        errors     = npz['errors']             # (N, T)
+        shuffle    = npz['shuffle_errors']     # (N, T)
+        i_sacc_err = npz['i_sacc_err']         # (N,) real behavioral performance, NaN if unavailable
+
+        # Behavioral quartile assignment, computed once per subject (not per
+        # epoch -- i_sacc_err is a single per-trial value, epoch-invariant).
+        # Skip this subject/cell entirely if too few trials have usable
+        # behavior to form N_QUANTILES bins.
+        valid = ~np.isnan(i_sacc_err) & (i_sacc_err > I_SACC_ERR_THRESH)
+        if valid.sum() < N_QUANTILES:
+            continue
+
+        valid_idx = np.where(valid)[0]
+        perf      = i_sacc_err[valid_idx]
+        # Lower bound is exclusive except for the first bin, so a trial
+        # sitting exactly on an internal percentile boundary lands in
+        # exactly one quartile.
+        q_bounds  = np.percentile(perf, np.linspace(0, 100, N_QUANTILES + 1))
+        q_of_trial = np.full(valid_idx.shape[0], -1, dtype=int)
+        for q in range(N_QUANTILES):
+            lo, hi = q_bounds[q], q_bounds[q + 1]
+            if q == 0:
+                in_bin = (perf >= lo) & (perf <= hi)
+            else:
+                in_bin = (perf > lo) & (perf <= hi)
+            q_of_trial[in_bin] = q
 
         for ep_name, (t0, t1) in EPOCH_WINDOWS.items():
             mask = (tv >= t0) & (tv <= t1)
@@ -202,24 +297,13 @@ def compute_epoch_quartiles(all_data, band, roi, condition):
             trial_err  = errors[:, mask].mean(axis=1)
             trial_shuf = shuffle[:, mask].mean(axis=1)
 
-            # Bin into quartiles (per subject). Lower bound is exclusive
-            # except for the first bin, so a trial sitting exactly on an
-            # internal percentile boundary lands in exactly one quartile
-            # (previously both bounds were inclusive everywhere, so boundary
-            # trials were double-counted in two adjacent quartiles).
-            q_bounds = np.percentile(trial_err, np.linspace(0, 100, N_QUANTILES + 1))
             subj_row = np.full(N_QUANTILES, np.nan)
             for q in range(N_QUANTILES):
-                lo = q_bounds[q]
-                hi = q_bounds[q + 1]
-                if q == 0:
-                    in_bin = (trial_err >= lo) & (trial_err <= hi)
-                else:
-                    in_bin = (trial_err > lo) & (trial_err <= hi)
-                if in_bin.any():
-                    q_real = float(trial_err[in_bin].mean())
+                sel = valid_idx[q_of_trial == q]
+                if sel.size:
+                    q_real = float(trial_err[sel].mean())
                     ep_collector[ep_name][q].append(q_real)
-                    ep_shuf_collector[ep_name][q].append(float(trial_shuf[in_bin].mean()))
+                    ep_shuf_collector[ep_name][q].append(float(trial_shuf[sel].mean()))
                     subj_row[q] = q_real
             ep_subj_rows[ep_name].append(subj_row)
 
