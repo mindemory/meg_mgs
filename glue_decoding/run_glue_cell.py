@@ -190,14 +190,30 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('subjID', type=int)
     parser.add_argument('lockType', choices=['stim', 'resp'])
-    parser.add_argument('--voxRes', default='8mm')
-    parser.add_argument('--rois', nargs='+', default=list(ROI_NAMES))
-    parser.add_argument('--conditions', nargs='+', default=['unfiltered', 'ampOnly', 'ampPhase'])
+    parser.add_argument('--voxRes',      default='8mm')
+    parser.add_argument('--rois',        nargs='+', default=list(ROI_NAMES))
+    parser.add_argument('--conditions',  nargs='+',
+                        default=['unfiltered', 'ampOnly', 'ampPhase'])
+    parser.add_argument('--bands',       nargs='+', default=None,
+                        help='Restrict to this subset of bands (applied to both '
+                             'ampOnly and ampPhase).  Default: use all bands '
+                             'defined in constants (AMP_ONLY_BANDS / AMP_PHASE_BANDS).')
     args = parser.parse_args()
 
     bids_root = get_bids_root()
+
+    # Resolve per-condition band lists -- intersect with --bands if supplied.
+    if args.bands is not None:
+        bands_set    = set(args.bands)
+        amp_only_bands  = tuple(b for b in AMP_ONLY_BANDS  if b in bands_set)
+        amp_phase_bands = tuple(b for b in AMP_PHASE_BANDS if b in bands_set)
+    else:
+        amp_only_bands  = AMP_ONLY_BANDS
+        amp_phase_bands = AMP_PHASE_BANDS
+
     print(f'glue_decoding | sub-{args.subjID:02d} | {args.lockType} | {args.voxRes} | '
-          f'conditions={args.conditions} | rois={args.rois}')
+          f'conditions={args.conditions} | rois={args.rois} | '
+          f'ampOnly bands={amp_only_bands} | ampPhase bands={amp_phase_bands}')
 
     behav = load_behav(args.subjID, bids_root)
     if behav is None:
@@ -212,24 +228,27 @@ def main():
     g03_whole = load_g03_unfiltered(args.subjID, args.lockType, args.voxRes, bids_root) \
         if need_whole else None
 
-    # trialinfo_col2 (per-trial metadata, identical across ROI caches -- only the
-    # source axis differs) is needed for G04's row alignment regardless of which
-    # ROIs are requested; grab it from whichever G03 load is cheapest.
-    g03_trialinfo_col2 = (g03_whole['trialinfo_col2'] if need_whole else
-                           load_g03_unfiltered(args.subjID, args.lockType, args.voxRes,
-                                                bids_root, roi=args.rois[0])['trialinfo_col2'])
+    # trialinfo_col2 needed for G04 row alignment even when 'unfiltered' is
+    # skipped -- grab it from whichever G03 load is cheapest.
+    need_trialinfo = ('ampOnly' in args.conditions or 'ampPhase' in args.conditions)
+    if need_trialinfo:
+        g03_trialinfo_col2 = (g03_whole['trialinfo_col2'] if need_whole else
+                               load_g03_unfiltered(args.subjID, args.lockType, args.voxRes,
+                                                    bids_root, roi=args.rois[0])['trialinfo_col2'])
+    else:
+        g03_trialinfo_col2 = None
 
     if 'unfiltered' in args.conditions:
         run_unfiltered(args.subjID, args.lockType, args.voxRes, bids_root,
                         args.rois, behav, g03_whole=g03_whole)
 
-    if 'ampOnly' in args.conditions:
+    if 'ampOnly' in args.conditions and amp_only_bands:
         run_g04_condition(args.subjID, args.lockType, args.voxRes, bids_root,
-                           args.rois, behav, 'ampOnly', AMP_ONLY_BANDS, g03_trialinfo_col2)
+                           args.rois, behav, 'ampOnly', amp_only_bands, g03_trialinfo_col2)
 
-    if 'ampPhase' in args.conditions:
+    if 'ampPhase' in args.conditions and amp_phase_bands:
         run_g04_condition(args.subjID, args.lockType, args.voxRes, bids_root,
-                           args.rois, behav, 'ampPhase', AMP_PHASE_BANDS, g03_trialinfo_col2)
+                           args.rois, behav, 'ampPhase', amp_phase_bands, g03_trialinfo_col2)
 
     print(f'Done | sub-{args.subjID:02d} | {args.lockType}')
 

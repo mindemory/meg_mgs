@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import matplotlib
 matplotlib.use('Agg')
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
@@ -83,12 +84,21 @@ ROI_COLOURS = {
     'whole':    '#E76F51',   # coral
 }
 
-# Epoch bar colours: reuse mango (stim) and violet (delay) from ROI palette
-# so the two sets of figures share a coherent visual language.
-EPOCH_COLOURS = {
-    'stim':  '#FFC629',   # mango
-    'delay': '#A78BFA',   # soft violet
-}
+def epoch_shades(roi_name):
+    """
+    Returns (stim_colour, delay_colour): two shades of the SAME hue as
+    ROI_COLOURS[roi_name] -- stim is the ROI's own colour at full
+    saturation, delay is a lighter/desaturated variant of that same hue.
+    Keeps every panel visually tied to its own ROI colour (matching
+    plot_timeseries.py) while still distinguishing the two epoch bars
+    within a panel, instead of a fixed stim/delay colour pair that was the
+    same regardless of which ROI's panel it was drawn in.
+    """
+    base = ROI_COLOURS.get(roi_name, '#ffffff')
+    h, s, v = mcolors.rgb_to_hsv(mcolors.to_rgb(base))
+    stim_colour  = base
+    delay_colour = mcolors.hsv_to_rgb((h, s * 0.4, min(1.0, v * 1.15 + 0.1)))
+    return stim_colour, delay_colour
 
 AMP_BAND_ORDER = ['theta', 'alpha', 'beta', 'lowgamma', 'highgamma']
 BAND_LABELS = {
@@ -264,6 +274,9 @@ def plot_epoch_figure(all_results, rois_all, bands, voxRes, outdir,
             if row_ylim[band] is not None:
                 ax.set_ylim(*row_ylim[band])
 
+            stim_colour, delay_colour = epoch_shades(roi)
+            epoch_colour = {'stim': stim_colour, 'delay': delay_colour}
+
             has_data = False
             for ep in EPOCH_ORDER:
                 mean, sem, n_subj = aggregate_epoch(
@@ -272,7 +285,7 @@ def plot_epoch_figure(all_results, rois_all, bands, voxRes, outdir,
                     continue
                 has_data = True
 
-                colour = EPOCH_COLOURS[ep]
+                colour = epoch_colour[ep]
                 xc     = x_pos + offsets[ep]
 
                 # Bar
@@ -323,11 +336,14 @@ def plot_epoch_figure(all_results, rois_all, bands, voxRes, outdir,
                              ha='right', va='center',
                              rotation=90, fontweight='bold')
 
-            # Legend in top-right panel only
+            # Legend in top-right panel only -- shows that panel's own ROI
+            # shades (stim = full colour, delay = lighter variant); the same
+            # dark/light convention applies in every column, just in that
+            # column's own hue.
             if r_idx == 0 and c_idx == n_cols - 1:
                 handles = [
                     plt.Rectangle((0, 0), 1, 1,
-                                  color=EPOCH_COLOURS[ep], alpha=0.75)
+                                  color=epoch_colour[ep], alpha=0.75)
                     for ep in EPOCH_ORDER
                 ]
                 labels = [EPOCH_LABELS[ep] for ep in EPOCH_ORDER]
