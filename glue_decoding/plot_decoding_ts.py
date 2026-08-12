@@ -334,12 +334,22 @@ def plot_timeseries_panel(ax, tv, mean_err, sem_err, mean_shuf, sem_shuf,
                      alpha=0.30, color=col, zorder=3)
     ax.plot(tv, mean_err, color=col, lw=1.5, zorder=3)
 
+    # ylim: no longer a hard 0-180 clamp -- that flattened real effects
+    # against the full theoretical range and made everything look like it
+    # hovers at chance. Instead scale to the actual data (err/shuf +/- SEM),
+    # but always keep the 90 deg chance line in view so the effect size is
+    # still interpretable relative to chance, and clip to the physical
+    # [0, 180] range.
+    lo = min(np.nanmin(mean_err - sem_err), np.nanmin(mean_shuf - sem_shuf), 90)
+    hi = max(np.nanmax(mean_err + sem_err), np.nanmax(mean_shuf + sem_shuf), 90)
+    pad = max(5.0, (hi - lo) * 0.15)
+    lo, hi = max(0, lo - pad), min(180, hi + pad)
+
     # xlim/ylim must be set BEFORE reading ax.get_ylim() for flag placement --
     # otherwise the flags are positioned against matplotlib's autoscaled
-    # limits (whatever they were before set_ylim(0, 180) below), not the
-    # actual [0, 180] range the panel ends up with.
+    # limits, not the actual range the panel ends up with.
     ax.set_xlim(t0, t1)
-    ax.set_ylim(0, 180)
+    ax.set_ylim(lo, hi)
 
     # Event flags -- the vertical line is drawn on every row for alignment,
     # but the text label only on the top row (show_flag_labels), since
@@ -353,19 +363,19 @@ def plot_timeseries_panel(ax, tv, mean_err, sem_err, mean_shuf, sem_shuf,
                     rotation=90, va='top', ha='right',
                     fontsize=6.5, color=_FLAG_TXT, zorder=5)
 
+    # Each panel now has its own data-driven range (no longer a shared
+    # 0-180 scale), so tick labels are shown on every column, not just the
+    # left one -- hiding them would hide real information now.
     if is_left_col:
         ax.set_ylabel('Circular error (deg)', fontsize=8, color=_FG)
-        ax.yaxis.set_major_locator(ticker.MultipleLocator(45))
-    else:
-        ax.yaxis.set_major_locator(ticker.MultipleLocator(45))
-        ax.set_yticklabels([])
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=4))
 
     ax.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
     if not is_bottom_row:
         ax.set_xticklabels([])
-    # 'Time (s)' axis title is drawn once for the whole figure (make_figure)
-    # rather than per-panel -- with the tight ts/bar hspace it collided with
-    # the bar panel right below it, and it was redundant across ROI columns.
+    # 'Time (s)' axis title is drawn once for the whole figure
+    # (make_timeseries_figure) rather than per-panel, since it was
+    # redundant across ROI columns.
 
     ax.grid(True, color=_GRID, lw=0.4, zorder=0)
     _style_ax(ax)
@@ -467,59 +477,43 @@ def plot_bar_panel(ax, epoch_quartiles, roi):
     _style_ax(ax)
 
 
-def make_figure(all_data, bands, rois, condition, voxRes, outdir_fig):
-    """Build and save one figure for a given condition."""
-
-    n_bands = len(bands)
-    n_rois  = len(rois)
-
-    # Height ratio within a band row: [timeseries, bar]. bar_ratio bumped up
-    # from the previous 1 so the shuffle ticks + trend annotation added to
-    # the bar panel have room to breathe instead of overlapping the bars.
-    ts_ratio  = 4
-    bar_ratio = 1.4
-
-    fig_w = 4.2 * n_rois
-    # ~1.7in per band row (timeseries + bar together), plus fixed margins
-    # for the suptitle (top) and the shared 'Time (s)' label (bottom) --
-    # independent of n_bands (a previous version accidentally scaled height
-    # by n_bands twice). The top/bottom margins are then expressed as
-    # fractions of fig_h below, so a small n_bands (few rows, short fig_h)
-    # doesn't shrink those fixed-size margins into the row content and
-    # collide the suptitle with the top row's titles.
-    title_margin_in  = 0.45
-    bottom_margin_in = 0.40
-    fig_h = 1.7 * n_bands + title_margin_in + bottom_margin_in
+def _band_row_grid(n_bands, n_rois, row_h_in, fig_w_per_roi=4.2,
+                    hspace=0.45, title_margin_in=0.65, bottom_margin_in=0.15):
+    """
+    Shared figure/GridSpec setup for a flat bands x rois grid: fixed
+    inch-based top/bottom margins (independent of n_bands) so the suptitle
+    doesn't collide with the top row for small n_bands, plus a generous
+    hspace so band rows read as distinct groups.
+    """
+    fig_w = fig_w_per_roi * n_rois
+    fig_h = row_h_in * n_bands + title_margin_in + bottom_margin_in
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor=_BG)
-
-    # Outer grid: one row per band, with a generous hspace so separate bands
-    # are visually distinct groups. Each band row then gets its own nested
-    # 2-row grid (timeseries + bar) with a small internal hspace. Previously
-    # a single flat GridSpec applied the SAME small hspace between every
-    # row -- including between one band's bar panel and the next band's
-    # timeseries -- so adjacent bands visually ran together.
-    outer_gs = gridspec.GridSpec(
+    gs = gridspec.GridSpec(
         n_bands, n_rois,
         figure = fig,
-        hspace = 0.55,
+        hspace = hspace,
         wspace = 0.30,
         left   = 0.11,
         right  = 0.97,
         top    = 1 - title_margin_in / fig_h,
         bottom = bottom_margin_in / fig_h,
     )
+    return fig, gs
+
+
+def make_timeseries_figure(all_data, bands, rois, condition, voxRes, outdir_fig):
+    """Build and save the timeseries figure (mean +/- SEM error/shuffle vs. time)."""
+
+    n_bands = len(bands)
+    n_rois  = len(rois)
+    fig, gs = _band_row_grid(n_bands, n_rois, row_h_in=1.3,
+                              bottom_margin_in=0.40)
 
     for r_idx, band in enumerate(bands):
         for c_idx, roi in enumerate(rois):
-            inner_gs = gridspec.GridSpecFromSubplotSpec(
-                2, 1, subplot_spec=outer_gs[r_idx, c_idx],
-                height_ratios=[ts_ratio, bar_ratio], hspace=0.08)
-            ax_ts  = fig.add_subplot(inner_gs[0])
-            ax_bar = fig.add_subplot(inner_gs[1])
+            ax_ts = fig.add_subplot(gs[r_idx, c_idx])
 
             tv, mean_err, sem_err, mean_shuf, sem_shuf = aggregate_timeseries(
-                all_data, band, roi, condition)
-            epoch_quartiles = compute_epoch_quartiles(
                 all_data, band, roi, condition)
 
             is_left_col   = (c_idx == 0)
@@ -537,12 +531,6 @@ def make_figure(all_data, bands, rois, condition, voxRes, outdir_fig):
                             transform=ax_ts.transAxes, color=_FG, fontsize=9)
                 _style_ax(ax_ts)
 
-            if epoch_quartiles:
-                plot_bar_panel(ax_bar, epoch_quartiles, roi)
-            else:
-                _style_ax(ax_bar)
-
-            # Band label on left edge
             if c_idx == 0:
                 ax_ts.annotate(BAND_LABELS.get(band, band),
                                 xy=(-0.38, 0.5), xycoords='axes fraction',
@@ -559,6 +547,57 @@ def make_figure(all_data, bands, rois, condition, voxRes, outdir_fig):
 
     os.makedirs(outdir_fig, exist_ok=True)
     fpath = os.path.join(outdir_fig, f'decoding_ts_{condition}_{voxRes}.png')
+    fig.savefig(fpath, dpi=150, bbox_inches='tight', facecolor=_BG)
+    plt.close(fig)
+    print(f'Saved: {fpath}')
+    return fpath
+
+
+def make_quartile_figure(all_data, bands, rois, condition, voxRes, outdir_fig):
+    """Build and save the quartile bar figure (error vs. performance quartile),
+    as its own figure separate from the timeseries -- previously this was
+    squeezed into a 20%-height strip under each timeseries panel, which left
+    no room for the shuffle ticks / trend annotation without crowding."""
+
+    n_bands = len(bands)
+    n_rois  = len(rois)
+    fig, gs = _band_row_grid(n_bands, n_rois, row_h_in=1.5,
+                              bottom_margin_in=0.15)
+
+    for r_idx, band in enumerate(bands):
+        for c_idx, roi in enumerate(rois):
+            ax_bar = fig.add_subplot(gs[r_idx, c_idx])
+
+            epoch_quartiles = compute_epoch_quartiles(
+                all_data, band, roi, condition)
+
+            show_title = (r_idx == 0)
+
+            if epoch_quartiles:
+                plot_bar_panel(ax_bar, epoch_quartiles, roi)
+            else:
+                ax_bar.text(0.5, 0.5, 'No data', ha='center', va='center',
+                             transform=ax_bar.transAxes, color=_FG, fontsize=9)
+                _style_ax(ax_bar)
+
+            if show_title:
+                ax_bar.set_title(roi.capitalize(), color=_FG, fontsize=10,
+                                   fontweight='bold', pad=4)
+
+            if c_idx == 0:
+                ax_bar.annotate(BAND_LABELS.get(band, band),
+                                 xy=(-0.38, 0.5), xycoords='axes fraction',
+                                 fontsize=9, color=_FG,
+                                 ha='right', va='center',
+                                 rotation=90, fontweight='bold')
+
+    cond_label = 'Amplitude only' if condition == 'ampOnly' \
+                 else 'Amplitude + Phase'
+    fig.suptitle(f'Decoding by Performance Quartile  |  {cond_label}  |  {voxRes}',
+                  color=_FG, fontsize=14, fontweight='bold', y=0.97)
+
+    os.makedirs(outdir_fig, exist_ok=True)
+    fpath = os.path.join(outdir_fig, f'decoding_quartiles_{condition}_{voxRes}.png')
     fig.savefig(fpath, dpi=150, bbox_inches='tight', facecolor=_BG)
     plt.close(fig)
     print(f'Saved: {fpath}')
@@ -602,8 +641,10 @@ def main():
 
     for condition in args.conditions:
         print(f'\n-- Plotting condition: {condition} --')
-        make_figure(all_data, args.bands, args.rois, condition,
-                     args.voxRes, figdir)
+        make_timeseries_figure(all_data, args.bands, args.rois, condition,
+                                 args.voxRes, figdir)
+        make_quartile_figure(all_data, args.bands, args.rois, condition,
+                               args.voxRes, figdir)
 
     print('\nAll figures saved.')
 
