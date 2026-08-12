@@ -51,25 +51,33 @@ def load_behav(subjID, bids_root):
         f.close()
 
     # Saccade angle from (x,y), matching megScripts/temporalGeneralizationDecoding.py's main().
-    # MATLAB stores i_sacc_raw as (n_trials, 2); HDF5 transposes to (2, n_trials).
-    # Guard against edge cases:
-    #   - 1D shape (2,): single trial [x, y] -- reshape to (2, 1)
-    #   - (n_trials, 2) stored without transposition (n_trials != 2): transpose
-    #   - canonical (2, n_trials): use rows directly
+    # MATLAB stores i_sacc_raw as (n_trials, 2); HDF5/h5py transposes to (2, n_trials).
+    # Use i_sacc_err (already correctly flattened) to know n_trials, then orient raw.
+    n_trials = len(i_sacc_err)
     raw = i_sacc_raw
+    print(f'  [align] sub-{subjID:02d}: i_sacc_raw.shape={raw.shape}, n_trials={n_trials}',
+          flush=True)
     if raw.ndim == 1:
-        # Single trial stored as [x, y]
+        # Edge case: single trial stored as flat [x, y] by MATLAB squeeze
         raw = raw.reshape(2, 1)
-    elif raw.shape[0] != 2:
-        # (n_trials, 2) -- transpose to (2, n_trials)
+    elif raw.shape[1] == 2 and raw.shape[0] == n_trials:
+        # (n_trials, 2) -- not transposed (e.g. loaded without HDF5 flip)
         raw = raw.T
-    # Now raw is (2, n_trials)
-    x_c = raw[0]
-    y_c = raw[1]
-    ref_angle = np.arctan2(0, 5)
-    i_sacc_angle = (np.degrees(np.arctan2(y_c, x_c) - ref_angle) + 360) % 360
+    # else: already (2, n_trials) -- use as-is
+    # Sanity check
+    if raw.shape != (2, n_trials):
+        print(f'  [align] WARNING sub-{subjID:02d}: i_sacc_raw shape mismatch '
+              f'after reshape: got {raw.shape}, expected (2, {n_trials}). '
+              f'i_sacc_angle will be NaN for this subject.', flush=True)
+        i_sacc_angle = np.full(n_trials, np.nan)
+    else:
+        x_c = raw[0]
+        y_c = raw[1]
+        ref_angle = np.arctan2(0, 5)
+        i_sacc_angle = (np.degrees(np.arctan2(y_c, x_c) - ref_angle) + 360) % 360
 
     return {'tarlocCode': tarlocCode, 'i_sacc_err': i_sacc_err, 'i_sacc_angle': i_sacc_angle}
+
 
 
 def verify_alignment(g03_trialinfo_col2, behav_tarlocCode):
