@@ -3,7 +3,8 @@
 aggregate_glue_capacity.py
 
 Cross-subject aggregation + plotting for manifold_capacity.py's per-subject
-CSVs (glue_capacity_sub-XX_{lockType}_{voxRes}.csv, produced by
+CSVs (derivatives/sub-XX/sourceRecon/glueFits/sub-XX_task-mgs_glueFits_
+{lockType}_{voxRes}.csv -- see constants.glue_fits_csv_path -- produced by
 run_glue_capacity.sh). For each metric x epoch, builds a bands x rois grid
 of grouped bar panels (Real vs Shuffle, mean +/- SEM across subjects, with
 individual-subject dots), the same visual convention as
@@ -22,8 +23,7 @@ Usage:
                                        [--bands theta alpha beta lowgamma highgamma]
                                        [--rois visual parietal frontal]
                                        [--epochs stim delay]
-                                       [--indir <bids_root>/derivatives/glueDecoding/capacity]
-                                       [--outdir <indir>/figures]
+                                       [--outdir <bids_root>/derivatives/glueDecoding/glueFits]
 """
 
 import os
@@ -41,7 +41,7 @@ import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 
-from constants import SUBJECT_LIST, ROI_NAMES, get_bids_root
+from constants import SUBJECT_LIST, ROI_NAMES, get_bids_root, glue_fits_csv_path
 
 # -- Visual design (mirrors intrinsic_dim_epochs.py / plot_timeseries.py) -----
 
@@ -94,13 +94,14 @@ def state_shades(roi_name):
 
 # -- Loading -------------------------------------------------------------------
 
-def load_all_subjects(subjects, lockType, voxRes, indir):
-    """Loads + concatenates every subject's glue_capacity CSV that exists.
-    Returns one long DataFrame with subjID/band/roi/epoch/shuffle/seed as
-    plain columns (index reset), or an empty DataFrame if none are found."""
+def load_all_subjects(subjects, lockType, voxRes, bids_root):
+    """Loads + concatenates every subject's glueFits CSV that exists (see
+    constants.glue_fits_csv_path for the per-subject sourceRecon/glueFits
+    layout). Returns one long DataFrame with subjID/band/roi/epoch/shuffle/
+    seed as plain columns, or an empty DataFrame if none are found."""
     dfs = []
     for subjID in subjects:
-        fpath = os.path.join(indir, f'glue_capacity_sub-{subjID:02d}_{lockType}_{voxRes}.csv')
+        fpath = glue_fits_csv_path(bids_root, subjID, lockType, voxRes)
         if not os.path.exists(fpath):
             print(f'  missing: {fpath}')
             continue
@@ -262,23 +263,20 @@ def main():
     parser.add_argument('--rois',     nargs='+', default=list(ROI_NAMES))
     parser.add_argument('--epochs',   nargs='+', default=['stim', 'delay'])
     parser.add_argument('--metrics',  nargs='+', default=METRICS)
-    parser.add_argument('--indir',    default=None,
-                         help='Directory containing per-subject glue_capacity CSVs. '
-                              'Default: <bids_root>/derivatives/glueDecoding/capacity')
     parser.add_argument('--outdir',   default=None,
-                         help='Directory for figures. Default: <indir>/figures')
+                         help='Directory for figures. '
+                              'Default: <bids_root>/derivatives/glueDecoding/glueFits')
     args = parser.parse_args()
 
     bids_root = get_bids_root()
-    indir  = args.indir or os.path.join(bids_root, 'derivatives', 'glueDecoding', 'capacity')
-    outdir = args.outdir or os.path.join(indir, 'figures')
+    outdir = args.outdir or os.path.join(bids_root, 'derivatives', 'glueDecoding', 'glueFits')
 
     print(f'aggregate_glue_capacity | voxRes={args.voxRes} | lockType={args.lockType} | '
           f'subjects={args.subjects} | bands={args.bands} | rois={args.rois} | '
           f'epochs={args.epochs} | metrics={args.metrics}')
-    print(f'Loading from: {indir}')
+    print(f'Loading per-subject glueFits CSVs from: {bids_root}/derivatives/sub-XX/sourceRecon/glueFits/')
 
-    df = load_all_subjects(args.subjects, args.lockType, args.voxRes, indir)
+    df = load_all_subjects(args.subjects, args.lockType, args.voxRes, bids_root)
     if df.empty:
         print('No per-subject CSVs found -- nothing to plot.')
         return

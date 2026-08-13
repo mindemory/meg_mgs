@@ -46,6 +46,24 @@ def resolution_tag(voxRes):
     return int(voxRes[:-2]) if voxRes.endswith('mm') else int(voxRes)
 
 
+def glue_fits_csv_path(bids_root, subjID, lockType, voxRes, outdir=None):
+    """
+    Path for manifold_capacity.py's per-subject glue-capacity results CSV
+    (derivatives/sub-XX/sourceRecon/glueFits/, matching run_glue_cell.py's
+    decodingGlue / decoding_ts_cell.py's decodingTS per-subject layout).
+
+    Shared here (rather than living in manifold_capacity.py itself) so
+    aggregate_glue_capacity.py can build the exact same path without
+    importing manifold_capacity.py, which would trigger its module-level
+    `glue` package import check even though aggregation only needs pandas.
+    """
+    subName = f'sub-{subjID:02d}'
+    out_dir = outdir if outdir else os.path.join(
+        bids_root, 'derivatives', subName, 'sourceRecon', 'glueFits')
+    fname = f'{subName}_task-mgs_glueFits_{lockType}_{voxRes}.csv'
+    return os.path.join(out_dir, fname)
+
+
 def get_bids_root():
     """Host-aware BIDS root, matching megScripts/temporalGeneralizationDecoding.py."""
     h = socket.gethostname()

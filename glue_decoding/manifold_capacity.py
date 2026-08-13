@@ -43,6 +43,13 @@ For each (band, roi, epoch):
     6. Run glue_analysis_dataframe(shuffle=True) so each cell reports both
        the real dichotomy geometry and a shuffled-points null in one call.
 
+Output: one CSV per subject at derivatives/sub-XX/sourceRecon/glueFits/
+sub-XX_task-mgs_glueFits_{lockType}_{voxRes}.csv (see constants.glue_fits_csv_path),
+matching run_glue_cell.py's decodingGlue / decoding_ts_cell.py's decodingTS
+per-subject layout. No dedicated log file -- prints only, same as every
+other glue_decoding script; run_glue_capacity.sh redirects stdout into
+logs_glue_capacity_<voxRes>/ in the code's own working directory.
+
 Requires the `glue` package (github.com/cnchou/glue, distinct from PyPI
 `glue-core`/glueviz), which is NOT part of this repo's normal Python
 environment -- only installed in a separate env on vader. Run this with
@@ -81,7 +88,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 import pandas as pd
 
-from constants import AMP_ONLY_BANDS, ANGLE_MAPPING, ROI_NAMES, get_bids_root
+from constants import AMP_ONLY_BANDS, ANGLE_MAPPING, ROI_NAMES, get_bids_root, glue_fits_csv_path
 from io_g04 import load_g04_band
 
 try:
@@ -167,29 +174,28 @@ def main():
     parser.add_argument('--no_shuffle', action='store_true',
                          help='Skip the shuffled-manifolds null (glue_analysis_dataframe shuffle=False).')
     parser.add_argument('--outdir', default=None,
-                         help='Directory for the log + results CSV. '
-                              'Default: <bids_root>/derivatives/glueDecoding/capacity')
+                         help='Directory for the results CSV, overriding the default '
+                              'per-subject layout (<bids_root>/derivatives/sub-XX/'
+                              'sourceRecon/glueFits/).')
     parser.add_argument('--force', action='store_true',
                          help='Overwrite an existing results CSV instead of skipping.')
     args = parser.parse_args()
 
     bids_root = get_bids_root()
-    outdir = args.outdir or os.path.join(bids_root, 'derivatives', 'glueDecoding', 'capacity')
-    os.makedirs(outdir, exist_ok=True)
-
-    tag = f'sub-{args.subjID:02d}_{args.lockType}_{args.voxRes}'
-    log_path = os.path.join(outdir, f'glue_capacity_{tag}.log')
-    csv_path = os.path.join(outdir, f'glue_capacity_{tag}.csv')
+    csv_path = glue_fits_csv_path(bids_root, args.subjID, args.lockType, args.voxRes,
+                                   outdir=args.outdir)
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
 
     if os.path.exists(csv_path) and not args.force:
         print(f'SKIP (exists): {csv_path} -- pass --force to overwrite.')
         return
 
-    log_fh = open(log_path, 'w')
-
-    def log(msg=''):
-        print(msg)
-        print(msg, file=log_fh, flush=True)
+    # No dedicated log file here -- matches every other glue_decoding script
+    # (run_glue_cell.py, decoding_ts_cell.py, intrinsic_dim_epochs.py, ...),
+    # none of which write their own log; they just print() and rely on the
+    # launcher shell script (run_glue_capacity.sh) to redirect stdout into
+    # logs_glue_capacity_<voxRes>/ in the code's own working directory.
+    log = print
 
     log(f'manifold_capacity | sub-{args.subjID:02d} | {args.lockType} | {args.voxRes} | '
         f'bands={args.bands} | rois={args.rois} | epochs={args.epochs} | '
@@ -257,9 +263,6 @@ def main():
         log(f'\nSaved combined results ({len(df_all)} rows): {csv_path}')
     else:
         log('\nNo results produced -- nothing to save.')
-
-    log(f'Log saved: {log_path}')
-    log_fh.close()
 
 
 if __name__ == '__main__':
