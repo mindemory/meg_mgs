@@ -2,19 +2,30 @@
 """
 manifold_capacity.py
 
-Feasibility runner for glue's manifold-capacity analysis
-(glue.contrib.glue_analysis_dataframe) on this project's stim-locked G04
-amplitude features. NOT part of the glue_decoding TGM pipeline (run_glue_cell.py
-et al.) -- "glue" here refers to the separate manifold-capacity-theory package
-(github.com/cnchou/glue), installed only where noted below; the name collision
-with this directory is coincidental.
+Runs glue's manifold-capacity analysis (glue.contrib.glue_analysis_dataframe)
+on this project's stim-locked G04 amplitude features, for ONE subject across
+all (band, roi, epoch) combinations. NOT part of the glue_decoding TGM
+pipeline (run_glue_cell.py et al.) -- "glue" here refers to the separate
+manifold-capacity-theory package (github.com/cnchou/glue), installed only
+where noted below; the name collision with this directory is coincidental.
 
-For each (band, roi):
+For each (band, roi, epoch):
     1. Load stim-locked G04 amplitude for one subject (want_phase=False --
-       amplitude only, matches build_features's 'ampOnly' condition).
-    2. Slice the stimulus epoch [--epoch_start, --epoch_end] (default
-       0.0-0.2 s, matching intrinsic_dim_epochs.py's 'stim' epoch) and
-       average over time -> (n_trials, n_sources).
+       amplitude only, matches build_features's 'ampOnly' condition). Loaded
+       once per (band, roi), shared across both epochs.
+    2. Slice the epoch window (EPOCHS below -- stim=[0.0,0.2], delay=
+       [0.2,1.7], matching intrinsic_dim_epochs.py) and average over time
+       -> (n_trials, n_sources). NOTE: this time-averaging is a deliberate
+       choice, not a glue requirement -- it means total points per cell is
+       capped at n_trials (~154 for a full subject), which is LESS than
+       every ROI's raw source count (179/501/597). glue_analysis internally
+       QR-rotates onto the subspace spanned by the data, whose rank can
+       never exceed min(n_features, total_points) -- so with time-averaged
+       features, every ROI's EFFECTIVE dimensionality collapses to the same
+       ~n_trials-dim space regardless of its raw source count. (Switching to
+       per-timepoint, non-averaged points would let each ROI use its own
+       full dimensionality, at the cost of many more -- autocorrelated --
+       points and much slower QP solves; not done here, see chat history.)
     3. Z-score each source (feature) across trials (optional, default on --
        glue only mean-centers the global manifold origin internally, it
        doesn't rescale features, so leaving very different-magnitude
@@ -30,8 +41,7 @@ For each (band, roi):
        expects (n_neurons, n_points), the TRANSPOSE of every other array
        shape convention used in glue_decoding (which is (n_trials, ...)).
     6. Run glue_analysis_dataframe(shuffle=True) so each cell reports both
-       the real dichotomy geometry and a shuffled-points null in one call
-       (mirrors the (name, shuffle, seed) MultiIndex shown in the plan).
+       the real dichotomy geometry and a shuffled-points null in one call.
 
 Requires the `glue` package (github.com/cnchou/glue, distinct from PyPI
 `glue-core`/glueviz), which is NOT part of this repo's normal Python
@@ -44,11 +54,15 @@ Usage:
     python manifold_capacity.py [--subjID 1] [--lockType stim] [--voxRes 8mm]
                                  [--bands theta alpha beta lowgamma highgamma]
                                  [--rois visual parietal frontal]
-                                 [--epoch_start 0.0] [--epoch_end 0.2]
+                                 [--epochs stim delay]
                                  [--analysis_type ONE_VERSUS_REST]
                                  [--n_hyperplanes 200] [--seed 42]
                                  [--min_trials_per_class 2] [--no_zscore]
-                                 [--no_shuffle] [--outdir <path>]
+                                 [--no_shuffle] [--outdir <path>] [--force]
+
+Meant to be launched as one background job per subject by
+run_glue_capacity.sh (parallel across subjects, default concurrency =
+n_subjects), the same pattern as run_decoding_ts.sh / run_glue_decoding.sh.
 """
 
 import os
@@ -82,6 +96,13 @@ except ImportError as e:
 
 
 TARGET_LABELS = sorted(ANGLE_MAPPING)   # [1, 2, ..., 10]
+
+# Epoch windows (stim-locked only) -- matches intrinsic_dim_epochs.py exactly,
+# so results from the two scripts stay directly comparable.
+EPOCHS = {
+    'stim':  (0.0, 0.2),
+    'delay': (0.2, 1.7),
+}
 
 
 # ── Manifold construction ──────────────────────────────────────────────────
@@ -128,15 +149,15 @@ def build_manifolds(amp, tv, target_labels, t0, t1, zscore=True,
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Feasibility run of glue manifold-capacity analysis on '
-                     'stim-locked G04 amplitude features.')
+        description='glue manifold-capacity analysis on stim-locked G04 '
+                     'amplitude features, one subject x all bands x rois x epochs.')
     parser.add_argument('--subjID',   type=int, default=1)
     parser.add_argument('--lockType', default='stim', choices=['stim', 'resp'])
     parser.add_argument('--voxRes',   default='8mm')
     parser.add_argument('--bands',    nargs='+', default=list(AMP_ONLY_BANDS))
     parser.add_argument('--rois',     nargs='+', default=list(ROI_NAMES))
-    parser.add_argument('--epoch_start', type=float, default=0.0)
-    parser.add_argument('--epoch_end',   type=float, default=0.2)
+    parser.add_argument('--epochs',   nargs='+', default=list(EPOCHS),
+                         choices=list(EPOCHS))
     parser.add_argument('--analysis_type', default='ONE_VERSUS_REST')
     parser.add_argument('--n_hyperplanes', type=int, default=200)
     parser.add_argument('--seed', type=int, default=42)
@@ -148,6 +169,8 @@ def main():
     parser.add_argument('--outdir', default=None,
                          help='Directory for the log + results CSV. '
                               'Default: <bids_root>/derivatives/glueDecoding/capacity')
+    parser.add_argument('--force', action='store_true',
+                         help='Overwrite an existing results CSV instead of skipping.')
     args = parser.parse_args()
 
     bids_root = get_bids_root()
@@ -158,6 +181,10 @@ def main():
     log_path = os.path.join(outdir, f'glue_capacity_{tag}.log')
     csv_path = os.path.join(outdir, f'glue_capacity_{tag}.csv')
 
+    if os.path.exists(csv_path) and not args.force:
+        print(f'SKIP (exists): {csv_path} -- pass --force to overwrite.')
+        return
+
     log_fh = open(log_path, 'w')
 
     def log(msg=''):
@@ -165,7 +192,7 @@ def main():
         print(msg, file=log_fh, flush=True)
 
     log(f'manifold_capacity | sub-{args.subjID:02d} | {args.lockType} | {args.voxRes} | '
-        f'bands={args.bands} | rois={args.rois} | epoch=[{args.epoch_start}, {args.epoch_end}] | '
+        f'bands={args.bands} | rois={args.rois} | epochs={args.epochs} | '
         f'analysis_type={args.analysis_type} | n_hyperplanes={args.n_hyperplanes} | '
         f'seed={args.seed} | shuffle={not args.no_shuffle} | zscore={not args.no_zscore}')
 
@@ -188,37 +215,41 @@ def main():
             log(f'  loaded: {amp.shape[0]} trials, {amp.shape[1]} timepoints, '
                 f'{amp.shape[2]} sources')
 
-            manifolds, kept_labels = build_manifolds(
-                amp, tv, target_labels, args.epoch_start, args.epoch_end,
-                zscore=not args.no_zscore,
-                min_trials_per_class=args.min_trials_per_class, log=log)
+            for epoch in args.epochs:
+                t0, t1 = EPOCHS[epoch]
+                log(f'  epoch={epoch} [{t0}, {t1}]')
 
-            if len(manifolds) < 2:
-                log(f'  SKIP: only {len(manifolds)} usable manifold(s) '
-                    f'(need >= 2 for a dichotomy).')
-                continue
+                manifolds, kept_labels = build_manifolds(
+                    amp, tv, target_labels, t0, t1,
+                    zscore=not args.no_zscore,
+                    min_trials_per_class=args.min_trials_per_class, log=log)
 
-            log(f'  manifolds: P={len(manifolds)} labels={kept_labels}, '
-                f'points per manifold={[m.shape[1] for m in manifolds]}, '
-                f'n_features={manifolds[0].shape[0]}')
+                if len(manifolds) < 2:
+                    log(f'    SKIP: only {len(manifolds)} usable manifold(s) '
+                        f'(need >= 2 for a dichotomy).')
+                    continue
 
-            try:
-                ret = glue_analysis_dataframe(
-                    manifolds,
-                    indices=(args.subjID, band, roi),
-                    indices_name=['subjID', 'band', 'roi'],
-                    analysis_type=args.analysis_type,
-                    n_hyperplanes=args.n_hyperplanes,
-                    shuffle=not args.no_shuffle,
-                    seed=args.seed,
-                )
-            except Exception:
-                log(f'  FAILED glue_analysis_dataframe for band={band} roi={roi}:')
-                log(traceback.format_exc())
-                continue
+                log(f'    manifolds: P={len(manifolds)} labels={kept_labels}, '
+                    f'points per manifold={[m.shape[1] for m in manifolds]}, '
+                    f'n_features={manifolds[0].shape[0]}')
 
-            log(ret.to_string())
-            df_list.append(ret)
+                try:
+                    ret = glue_analysis_dataframe(
+                        manifolds,
+                        indices=(args.subjID, band, roi, epoch),
+                        indices_name=['subjID', 'band', 'roi', 'epoch'],
+                        analysis_type=args.analysis_type,
+                        n_hyperplanes=args.n_hyperplanes,
+                        shuffle=not args.no_shuffle,
+                        seed=args.seed,
+                    )
+                except Exception:
+                    log(f'    FAILED glue_analysis_dataframe for band={band} roi={roi} epoch={epoch}:')
+                    log(traceback.format_exc())
+                    continue
+
+                log(ret.to_string())
+                df_list.append(ret)
 
     if df_list:
         df_all = pd.concat(df_list)
