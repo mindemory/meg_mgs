@@ -16,9 +16,15 @@
 #   bash run_representational_distance_ts.sh [voxRes] [max_parallel] [n_perm] [seed] [force] [points_per_category] [schemes]
 #
 # Examples:
-#   bash run_representational_distance_ts.sh                          # 8mm, max parallel = n_subjects, n_perm=1000, schemes=2 4 6 10
+#   bash run_representational_distance_ts.sh                          # 8mm, max parallel = n_subjects, n_perm=1000, schemes=2 4 6 10, auto-balanced
 #   bash run_representational_distance_ts.sh 8mm 21 1000 0 true        # overwrite existing per-cell .npz
-#   bash run_representational_distance_ts.sh 8mm 21 1000 0 false 10 "2 10"   # only schemes 2 and 10
+#   bash run_representational_distance_ts.sh 8mm 21 1000 0 false 10 "2 10"   # fixed 10 pts/category, schemes 2 and 10 only
+#
+# points_per_category: leave empty/unset (default) for auto -- each (subject,
+# scheme) is balanced to that subject's own smallest category count for that
+# scheme, NOT a fixed value shared across schemes (see
+# representational_distance_ts_cell.py's module docstring). Pass an integer
+# to force a fixed cap instead.
 
 set -euo pipefail
 
@@ -32,7 +38,11 @@ case "${FORCE_RAW}" in
         FORCE_FLAG=(--force)
         ;;
 esac
-POINTS_PER_CATEGORY="${6:-10}"
+POINTS_PER_CATEGORY="${6:-}"
+PPC_FLAG=()
+if [ -n "${POINTS_PER_CATEGORY}" ]; then
+    PPC_FLAG=(--points_per_category "${POINTS_PER_CATEGORY}")
+fi
 SCHEMES_RAW="${7:-2 4 6 10}"
 SCHEMES=(${SCHEMES_RAW})
 
@@ -68,7 +78,7 @@ echo " Bands        : ${BANDS[*]}"
 echo " ROIs         : ${ROIS[*]}"
 echo " Conditions   : ${CONDITIONS[*]}"
 echo " Schemes      : ${SCHEMES[*]}"
-echo " Pts/category : ${POINTS_PER_CATEGORY}"
+echo " Pts/category : ${POINTS_PER_CATEGORY:-auto (per subject/scheme)}"
 echo " Jobs         : ${#SUBJ_LIST[@]} (one per subject)"
 echo " Logging to   : ${LOG_DIR}/"
 echo "========================================================"
@@ -87,7 +97,7 @@ for subjID in "${SUBJ_LIST[@]}"; do
           --rois "${ROIS[@]}" \
           --conditions "${CONDITIONS[@]}" \
           --schemes "${SCHEMES[@]}" \
-          --points_per_category "${POINTS_PER_CATEGORY}" \
+          ${PPC_FLAG[@]+"${PPC_FLAG[@]}"} \
           --n_perm "${N_PERM}" \
           --seed "${SEED}" \
           ${FORCE_FLAG[@]+"${FORCE_FLAG[@]}"} \

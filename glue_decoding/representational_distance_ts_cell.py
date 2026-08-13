@@ -27,22 +27,37 @@ Method, per (band, roi, condition, scheme), for one subject:
        (constants.CATEGORY_SCHEMES -- 2=left/right hemifield, 4=quadrants
        excluding the 2 axis locations, 6=quadrants + the 2 axis locations
        as singletons, 10=every raw location, no grouping), then randomly
-       balance every category down to exactly --points_per_category points
-       (constants.balance_categories) so schemes with different category
-       counts stay apples-to-apples -- a difference in the within/between
-       gap across schemes then reflects genuine granularity-dependent
-       separability, not just different per-category sample sizes.
+       balance every category down to the SAME size WITHIN this (subject,
+       scheme) -- points_per_category defaults to None, which auto-computes
+       that size as this subject's own smallest category count for this
+       scheme (constants.balance_categories), rather than a fixed constant
+       shared across every scheme. An earlier version used a fixed constant
+       (e.g. 10) so scheme 2's much larger categories (~75 trials each,
+       vs. scheme 10's ~13-16) would be capped to match scheme 10 -- but
+       that's not actually necessary for a fair comparison: each scheme's
+       real gap is tested against its OWN label-permutation null built from
+       the exact same data (see step 2c), so the null already reflects that
+       scheme's true sample size: a fixed cross-scheme cap only threw away
+       usable data. Balancing WITHIN a scheme still matters (so one
+       oversized category doesn't dominate the pooled within/between
+       average), just not to a size matched across schemes. Pass
+       --points_per_category explicitly to override with a fixed value.
     1. Load stim-locked G04 features (build_features, shared with
        run_glue_cell.py/decoding_ts_cell.py) and apply the SAME +-win_ms
        moving-window average as decoding_ts_cell.py (imported, not
        duplicated, so the two timeseries are directly comparable).
     2. At each timepoint t, independently:
-       a. Optionally z-score each source across trials at this timepoint
-          (default OFF -- matches manifold_capacity.py's reasoning: GLUE's
-          own preprocessing only mean-centers, and per-source amplitude
-          variance is plausibly real signal, not a units artifact. Kept as
-          an option since comparing z-scored vs. unscored gaps also
-          empirically informs that same open question for manifold_capacity.py).
+       a. Z-score each source across trials at this timepoint (default ON
+          -- both actual decoders in this repo, svr_tgm.py's SVR and
+          decoding_ts_cell.py's ridge, z-score features per timepoint
+          before fitting; an initial version of this script defaulted to
+          OFF to match manifold_capacity.py's raw-magnitude-sensitive GLUE
+          geometry, but a handful of high-magnitude, low-information
+          sources can dominate a raw Euclidean distance and mask a real but
+          comparatively small-amplitude signal that z-scored decoders can
+          see fine -- matching the decoders' own preprocessing is the more
+          apt default for a distance-based diagnostic. Pass --no_zscore to
+          go back to the raw/GLUE-matched version.).
        b. Compute the (n_trials, n_trials) pairwise Euclidean distance
           matrix, then split its upper-triangle pairs into "within"
           (same target location, different trials) and "between"
@@ -71,7 +86,7 @@ Usage:
         [--bands theta alpha beta lowgamma highgamma]
         [--voxRes 8mm] [--rois visual parietal frontal]
         [--conditions ampOnly] [--schemes 2 4 6 10]
-        [--points_per_category 10] [--win_ms 50] [--n_perm 1000] [--zscore]
+        [--points_per_category N] [--win_ms 50] [--n_perm 1000] [--no_zscore]
         [--seed 0] [--outdir <path>] [--force]
 """
 
@@ -97,7 +112,11 @@ from features import build_features
 from io_g04 import load_g04_band
 
 DEFAULT_N_PERM = 1000
-DEFAULT_POINTS_PER_CATEGORY = 10
+# None = auto: balance each (subject, scheme) to that subject's own smallest
+# category count for that scheme, rather than a fixed constant shared across
+# every scheme -- see module docstring step 0 for why. Pass an int to
+# override with a fixed value instead.
+DEFAULT_POINTS_PER_CATEGORY = None
 
 # ── Output path ─────────────────────────────────────────────────────────────
 
@@ -266,8 +285,15 @@ def run_cell(subjID, bands, voxRes, bids_root, rois, conditions, schemes,
                     try:
                         group_labels, keep_mask = category_labels_for_scheme(
                             raw_target_labels, scheme)
-                        balance_mask = balance_categories(
-                            group_labels, points_per_category, seed=seed)
+
+                        if points_per_category is None:
+                            # Auto: this subject's own smallest category count
+                            # for this scheme -- see module docstring step 0.
+                            _, counts = np.unique(group_labels, return_counts=True)
+                            ppc_used = int(counts.min())
+                        else:
+                            ppc_used = points_per_category
+                        balance_mask = balance_categories(group_labels, ppc_used, seed=seed)
 
                         X_win_scheme  = X_win[keep_mask][balance_mask]
                         labels_scheme = group_labels[balance_mask]
@@ -277,7 +303,9 @@ def run_cell(subjID, bands, voxRes, bids_root, rois, conditions, schemes,
                         print(f'  scheme={scheme}: shape=({n_trials},{n_times},{n_feat}) | '
                               f'fsample={fsample:.0f}Hz | win=+-{win_ms:.0f}ms | n_perm={n_perm} | '
                               f'zscore={zscore} | {n_categories} categories x '
-                              f'{points_per_category} pts', flush=True)
+                              f'{ppc_used} pts (points_per_category='
+                              f'{"auto" if points_per_category is None else points_per_category})',
+                              flush=True)
 
                         result = representational_distance_timeseries(
                             X_win_scheme, labels_scheme, n_perm=n_perm, zscore=zscore, seed=seed)
@@ -298,7 +326,7 @@ def run_cell(subjID, bands, voxRes, bids_root, rois, conditions, schemes,
                             roi          = np.array([roi]),
                             scheme       = np.array([scheme]),
                             n_categories = np.array([n_categories]),
-                            points_per_category = np.array([points_per_category]),
+                            points_per_category = np.array([ppc_used]),   # actual value used
                             win_ms       = np.array([win_ms]),
                             n_perm       = np.array([n_perm]),
                             zscore       = np.array([zscore]),
@@ -331,15 +359,16 @@ def main():
                          help='Category-grouping schemes to test (see constants.CATEGORY_SCHEMES): '
                               '2=left/right, 4=quadrants, 6=quadrants+axis, 10=every raw location.')
     parser.add_argument('--points_per_category', type=int, default=DEFAULT_POINTS_PER_CATEGORY,
-                         help=f'Every category (in every scheme) is balanced down to exactly this '
-                              f'many points (default {DEFAULT_POINTS_PER_CATEGORY}) -- see module docstring.')
+                         help='Fixed points-per-category, applied identically across every scheme. '
+                              'Default: None (auto -- balance each scheme to that subject\'s own '
+                              'smallest category count for THAT scheme; see module docstring step 0).')
     parser.add_argument('--win_ms',   type=float, default=DEFAULT_WIN_MS,
                          help=f'One-sided moving-window half-width in ms '
                               f'(default {DEFAULT_WIN_MS}, same as decoding_ts_cell.py).')
     parser.add_argument('--n_perm',   type=int, default=DEFAULT_N_PERM)
-    parser.add_argument('--zscore',   action='store_true',
-                         help='Z-score each source across trials at each timepoint before '
-                              'computing distances (default OFF -- see module docstring).')
+    parser.add_argument('--no_zscore', action='store_false', dest='zscore',
+                         help='Skip z-scoring each source across trials at each timepoint before '
+                              'computing distances (default: z-score IS applied -- see module docstring).')
     parser.add_argument('--seed',     type=int, default=0)
     parser.add_argument('--outdir',   default=None)
     parser.add_argument('--force',    action='store_true',
