@@ -13,11 +13,12 @@
 # aggregate results and create figures.
 #
 # Usage:
-#   bash run_representational_distance_ts.sh [voxRes] [max_parallel] [n_perm] [seed] [force]
+#   bash run_representational_distance_ts.sh [voxRes] [max_parallel] [n_perm] [seed] [force] [points_per_category] [schemes]
 #
 # Examples:
-#   bash run_representational_distance_ts.sh                       # 8mm, max parallel = n_subjects, n_perm=1000
-#   bash run_representational_distance_ts.sh 8mm 21 1000 0 true     # overwrite existing per-cell .npz
+#   bash run_representational_distance_ts.sh                          # 8mm, max parallel = n_subjects, n_perm=1000, schemes=2 4 6 10
+#   bash run_representational_distance_ts.sh 8mm 21 1000 0 true        # overwrite existing per-cell .npz
+#   bash run_representational_distance_ts.sh 8mm 21 1000 0 false 10 "2 10"   # only schemes 2 and 10
 
 set -euo pipefail
 
@@ -31,6 +32,9 @@ case "${FORCE_RAW}" in
         FORCE_FLAG=(--force)
         ;;
 esac
+POINTS_PER_CATEGORY="${6:-10}"
+SCHEMES_RAW="${7:-2 4 6 10}"
+SCHEMES=(${SCHEMES_RAW})
 
 SUBJ_LIST=(01 02 03 04 05 06 07 09 10 12 13 15 17 18 19 23 24 25 29 31 32)
 BANDS=(theta alpha beta lowgamma highgamma)
@@ -63,6 +67,8 @@ echo " Subjects     : ${SUBJ_LIST[*]}"
 echo " Bands        : ${BANDS[*]}"
 echo " ROIs         : ${ROIS[*]}"
 echo " Conditions   : ${CONDITIONS[*]}"
+echo " Schemes      : ${SCHEMES[*]}"
+echo " Pts/category : ${POINTS_PER_CATEGORY}"
 echo " Jobs         : ${#SUBJ_LIST[@]} (one per subject)"
 echo " Logging to   : ${LOG_DIR}/"
 echo "========================================================"
@@ -80,6 +86,8 @@ for subjID in "${SUBJ_LIST[@]}"; do
           --bands "${BANDS[@]}" \
           --rois "${ROIS[@]}" \
           --conditions "${CONDITIONS[@]}" \
+          --schemes "${SCHEMES[@]}" \
+          --points_per_category "${POINTS_PER_CATEGORY}" \
           --n_perm "${N_PERM}" \
           --seed "${SEED}" \
           ${FORCE_FLAG[@]+"${FORCE_FLAG[@]}"} \
@@ -108,6 +116,7 @@ python3 "${PLOT_SCRIPT}" \
     --bands "${BANDS[@]}" \
     --rois "${ROIS[@]}" \
     --conditions "${CONDITIONS[@]}" \
+    --schemes "${SCHEMES[@]}" \
     > "${LOG_DIR}/plotter.log" 2>&1
 
 echo "[$(date '+%H:%M:%S')] Plotter finished. Log: ${LOG_DIR}/plotter.log"

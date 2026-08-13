@@ -22,7 +22,16 @@ same-location trials sit reliably closer together in raw feature space than
 different-location trials, real spatial structure exists regardless of
 what any downstream method concludes about it.
 
-Method, per (band, roi, condition), for one subject:
+Method, per (band, roi, condition, scheme), for one subject:
+    0. Map the 10 raw target locations to this scheme's coarser categories
+       (constants.CATEGORY_SCHEMES -- 2=left/right hemifield, 4=quadrants
+       excluding the 2 axis locations, 6=quadrants + the 2 axis locations
+       as singletons, 10=every raw location, no grouping), then randomly
+       balance every category down to exactly --points_per_category points
+       (constants.balance_categories) so schemes with different category
+       counts stay apples-to-apples -- a difference in the within/between
+       gap across schemes then reflects genuine granularity-dependent
+       separability, not just different per-category sample sizes.
     1. Load stim-locked G04 features (build_features, shared with
        run_glue_cell.py/decoding_ts_cell.py) and apply the SAME +-win_ms
        moving-window average as decoding_ts_cell.py (imported, not
@@ -49,9 +58,10 @@ Method, per (band, roi, condition), for one subject:
           Saves null_mean/null_std/p_value (right-tailed: fraction of null
           gaps >= the real gap) per timepoint.
 
-Output: one .npz per (subject, band, roi, condition) at
+Output: one .npz per (subject, band, roi, condition, scheme) at
 derivatives/sub-XX/sourceRecon/repDistTS/sub-XX_task-mgs_repDistTS_
-{condition}_{band}_{roi}_{voxRes}.npz (mirrors decodingTS's per-cell layout).
+{condition}_{band}_{roi}_{voxRes}_scheme{scheme}.npz (mirrors decodingTS's
+per-cell layout).
 
 Does NOT require the `glue` package -- pure numpy/scipy, runs in this
 repo's normal Python environment (no special vader conda env needed).
@@ -60,7 +70,8 @@ Usage:
     python representational_distance_ts_cell.py <subjID>
         [--bands theta alpha beta lowgamma highgamma]
         [--voxRes 8mm] [--rois visual parietal frontal]
-        [--conditions ampOnly] [--win_ms 50] [--n_perm 1000] [--zscore]
+        [--conditions ampOnly] [--schemes 2 4 6 10]
+        [--points_per_category 10] [--win_ms 50] [--n_perm 1000] [--zscore]
         [--seed 0] [--outdir <path>] [--force]
 """
 
@@ -79,21 +90,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 
-from constants import AMP_ONLY_BANDS, AMP_PHASE_BANDS, ROI_NAMES, get_bids_root
+from constants import (AMP_ONLY_BANDS, AMP_PHASE_BANDS, ROI_NAMES, get_bids_root,
+                        CATEGORY_SCHEMES, category_labels_for_scheme, balance_categories)
 from decoding_ts_cell import DEFAULT_WIN_MS, moving_window_mean
 from features import build_features
 from io_g04 import load_g04_band
 
 DEFAULT_N_PERM = 1000
+DEFAULT_POINTS_PER_CATEGORY = 10
 
 # ── Output path ─────────────────────────────────────────────────────────────
 
-def output_path(bids_root, subjID, band, roi, condition, voxRes, outdir=None):
+def output_path(bids_root, subjID, band, roi, condition, voxRes, scheme, outdir=None):
     subName = f'sub-{subjID:02d}'
     base = outdir if outdir else os.path.join(
         bids_root, 'derivatives', subName, 'sourceRecon', 'repDistTS')
     os.makedirs(base, exist_ok=True)
-    fname = f'{subName}_task-mgs_repDistTS_{condition}_{band}_{roi}_{voxRes}.npz'
+    fname = f'{subName}_task-mgs_repDistTS_{condition}_{band}_{roi}_{voxRes}_scheme{scheme}.npz'
     return os.path.join(base, fname)
 
 
@@ -199,8 +212,8 @@ def representational_distance_timeseries(X_win, target_labels, n_perm=DEFAULT_N_
 
 # ── Per-subject cell runner ─────────────────────────────────────────────────
 
-def run_cell(subjID, bands, voxRes, bids_root, rois, conditions,
-             win_ms, n_perm, zscore, seed, outdir=None, force=False):
+def run_cell(subjID, bands, voxRes, bids_root, rois, conditions, schemes,
+             points_per_category, win_ms, n_perm, zscore, seed, outdir=None, force=False):
     lockType = 'stim'   # stim-locked only, matches decoding_ts_cell.py
 
     for band in bands:
@@ -212,60 +225,93 @@ def run_cell(subjID, bands, voxRes, bids_root, rois, conditions,
                 continue
 
             for roi in rois:
-                out_path = output_path(bids_root, subjID, band, roi, condition, voxRes, outdir)
-                if os.path.exists(out_path) and not force:
-                    print(f'SKIP (exists): {out_path}')
+                # Cell here = (band, condition, roi) -- loaded/windowed ONCE,
+                # shared across every scheme below (scheme only changes the
+                # label grouping/subsampling, not the underlying features).
+                # Skip the load entirely if every scheme's output already exists.
+                out_paths = {scheme: output_path(bids_root, subjID, band, roi, condition,
+                                                  voxRes, scheme, outdir) for scheme in schemes}
+                pending_schemes = [s for s in schemes if force or not os.path.exists(out_paths[s])]
+                for s in schemes:
+                    if s not in pending_schemes:
+                        print(f'SKIP (exists): {out_paths[s]}')
+                if not pending_schemes:
                     continue
 
-                print(f'\nsub-{subjID:02d} | {band} | {condition} | {roi}', flush=True)
+                print(f'\nsub-{subjID:02d} | {band} | {condition} | {roi} | '
+                      f'schemes={pending_schemes}', flush=True)
                 try:
                     g04 = load_g04_band(subjID, lockType, band, voxRes, bids_root,
                                          want_phase=want_phase, roi=roi)
-
-                    amp           = g04['amp']
-                    phase         = g04['phase'] if want_phase else None
-                    tv            = g04['time_vector']
-                    fsample       = float(g04['actualRate'])
-                    target_labels = g04['target_labels'].astype(np.int64)
+                    amp     = g04['amp']
+                    phase   = g04['phase'] if want_phase else None
+                    tv      = g04['time_vector']
+                    fsample = float(g04['actualRate'])
+                    raw_target_labels = g04['target_labels'].astype(np.int64)
 
                     X = build_features(condition, amp, phase)
                     X_win = moving_window_mean(X, fsample, win_ms)
                     del X
-
-                    n_trials, n_times, n_feat = X_win.shape
-                    print(f'  shape=({n_trials},{n_times},{n_feat}) | fsample={fsample:.0f}Hz | '
-                          f'win=+-{win_ms:.0f}ms | n_perm={n_perm} | zscore={zscore}', flush=True)
-
-                    result = representational_distance_timeseries(
-                        X_win, target_labels, n_perm=n_perm, zscore=zscore, seed=seed)
-
-                    np.savez_compressed(
-                        out_path,
-                        gap          = result['gap'].astype(np.float32),           # (T,)
-                        within_mean  = result['within_mean'].astype(np.float32),   # (T,)
-                        between_mean = result['between_mean'].astype(np.float32),  # (T,)
-                        null_mean    = result['null_mean'].astype(np.float32),     # (T,)
-                        null_std     = result['null_std'].astype(np.float32),      # (T,)
-                        p_value      = result['p_value'].astype(np.float32),       # (T,)
-                        time_vector  = tv.astype(np.float32),
-                        target_labels = target_labels.astype(np.int32),
-                        subjID       = np.array([subjID]),
-                        band         = np.array([band]),
-                        condition    = np.array([condition]),
-                        roi          = np.array([roi]),
-                        win_ms       = np.array([win_ms]),
-                        n_perm       = np.array([n_perm]),
-                        zscore       = np.array([zscore]),
-                        seed         = np.array([seed]),
-                        fsample      = np.array([fsample]),
-                    )
-                    print(f'  Saved: {out_path}')
                 except (FileNotFoundError, ValueError) as e:
                     print(f'  SKIP: {e}')
+                    continue
                 except Exception:
-                    print(f'  FAILED sub-{subjID:02d} {band}/{condition}/{roi} '
-                          f'(skipping this cell only):', flush=True)
+                    print(f'  FAILED sub-{subjID:02d} {band}/{condition}/{roi} loading '
+                          f'(skipping this cell entirely):', flush=True)
                     traceback.print_exc()
+                    continue
+
+                for scheme in pending_schemes:
+                    out_path = out_paths[scheme]
+                    try:
+                        group_labels, keep_mask = category_labels_for_scheme(
+                            raw_target_labels, scheme)
+                        balance_mask = balance_categories(
+                            group_labels, points_per_category, seed=seed)
+
+                        X_win_scheme  = X_win[keep_mask][balance_mask]
+                        labels_scheme = group_labels[balance_mask]
+
+                        n_trials, n_times, n_feat = X_win_scheme.shape
+                        n_categories = len(CATEGORY_SCHEMES[scheme]['groups'])
+                        print(f'  scheme={scheme}: shape=({n_trials},{n_times},{n_feat}) | '
+                              f'fsample={fsample:.0f}Hz | win=+-{win_ms:.0f}ms | n_perm={n_perm} | '
+                              f'zscore={zscore} | {n_categories} categories x '
+                              f'{points_per_category} pts', flush=True)
+
+                        result = representational_distance_timeseries(
+                            X_win_scheme, labels_scheme, n_perm=n_perm, zscore=zscore, seed=seed)
+
+                        np.savez_compressed(
+                            out_path,
+                            gap          = result['gap'].astype(np.float32),           # (T,)
+                            within_mean  = result['within_mean'].astype(np.float32),   # (T,)
+                            between_mean = result['between_mean'].astype(np.float32),  # (T,)
+                            null_mean    = result['null_mean'].astype(np.float32),     # (T,)
+                            null_std     = result['null_std'].astype(np.float32),      # (T,)
+                            p_value      = result['p_value'].astype(np.float32),       # (T,)
+                            time_vector  = tv.astype(np.float32),
+                            group_labels = labels_scheme,
+                            subjID       = np.array([subjID]),
+                            band         = np.array([band]),
+                            condition    = np.array([condition]),
+                            roi          = np.array([roi]),
+                            scheme       = np.array([scheme]),
+                            n_categories = np.array([n_categories]),
+                            points_per_category = np.array([points_per_category]),
+                            win_ms       = np.array([win_ms]),
+                            n_perm       = np.array([n_perm]),
+                            zscore       = np.array([zscore]),
+                            seed         = np.array([seed]),
+                            fsample      = np.array([fsample]),
+                        )
+                        print(f'  Saved: {out_path}')
+                    except ValueError as e:
+                        print(f'  SKIP scheme={scheme}: {e}')
+                    except Exception:
+                        print(f'  FAILED sub-{subjID:02d} {band}/{condition}/{roi}/scheme{scheme} '
+                              f'(skipping this scheme only):', flush=True)
+                        traceback.print_exc()
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -280,6 +326,13 @@ def main():
     parser.add_argument('--conditions', nargs='+', default=['ampOnly'],
                          help="Feature conditions (default: ['ampOnly'], matching "
                               "manifold_capacity.py's current scope; pass ampPhase too if needed).")
+    parser.add_argument('--schemes',  nargs='+', type=int, default=sorted(CATEGORY_SCHEMES),
+                         choices=sorted(CATEGORY_SCHEMES),
+                         help='Category-grouping schemes to test (see constants.CATEGORY_SCHEMES): '
+                              '2=left/right, 4=quadrants, 6=quadrants+axis, 10=every raw location.')
+    parser.add_argument('--points_per_category', type=int, default=DEFAULT_POINTS_PER_CATEGORY,
+                         help=f'Every category (in every scheme) is balanced down to exactly this '
+                              f'many points (default {DEFAULT_POINTS_PER_CATEGORY}) -- see module docstring.')
     parser.add_argument('--win_ms',   type=float, default=DEFAULT_WIN_MS,
                          help=f'One-sided moving-window half-width in ms '
                               f'(default {DEFAULT_WIN_MS}, same as decoding_ts_cell.py).')
@@ -296,12 +349,13 @@ def main():
     bids_root = get_bids_root()
     print(f'representational_distance_ts_cell | sub-{args.subjID:02d} | bands={args.bands} | '
           f'{args.voxRes} | conditions={args.conditions} | rois={args.rois} | '
+          f'schemes={args.schemes} | points_per_category={args.points_per_category} | '
           f'win_ms={args.win_ms} | n_perm={args.n_perm} | zscore={args.zscore} | '
           f'seed={args.seed} | force={args.force}', flush=True)
 
     run_cell(args.subjID, list(args.bands), args.voxRes, bids_root,
-              list(args.rois), list(args.conditions),
-              args.win_ms, args.n_perm, args.zscore, args.seed,
+              list(args.rois), list(args.conditions), list(args.schemes),
+              args.points_per_category, args.win_ms, args.n_perm, args.zscore, args.seed,
               outdir=args.outdir, force=args.force)
 
     print(f'Done | sub-{args.subjID:02d}')

@@ -17,6 +17,7 @@ import time
 from shutil import copyfile
 
 import h5py
+import numpy as np
 
 # Retries for transient NFS read failures (soft-mount short reads / stale
 # filehandles under concurrent load) surfacing as h5py "file signature not
@@ -39,6 +40,108 @@ ROI_NAMES = ('visual', 'parietal', 'frontal')
 # this list is only used to enumerate which bands/conditions to run.
 AMP_ONLY_BANDS = ('theta', 'alpha', 'beta', 'lowgamma', 'highgamma')
 AMP_PHASE_BANDS = ('theta', 'alpha', 'beta')
+
+# ── Category-grouping schemes ────────────────────────────────────────────────
+#
+# Coarser-than-10-location groupings for separability tests
+# (linear_decoding_categories_cell.py, representational_distance_ts_cell.py's
+# --schemes). Motivation: the decoders actually used elsewhere in this repo
+# (svr_tgm.py, decoding_ts_cell.py) do continuous circular regression --
+# sin/cos of angle -- and never treat the 10 locations as discrete unordered
+# categories, so it was unclear whether raw location-level responses are even
+# linearly separable as such, or whether that framing (also GLUE's
+# ONE_VERSUS_REST assumption in manifold_capacity.py) is simply too
+# fine-grained for a smooth circular code. These let both scripts test
+# separability at several granularities before assuming 10-way is the right
+# unit of analysis.
+#
+# Angles from ANGLE_MAPPING: {1:0, 2:25, 3:50, 4:130, 5:155, 6:180, 7:205,
+#                              8:230, 9:310, 10:335}
+CATEGORY_SCHEMES = {
+    2: {   # left vs right hemifield (cos(angle) sign)
+        'name': 'left_right',
+        'groups': {
+            'right': (1, 2, 3, 9, 10),    # angles in (-90, 90):  0, 25, 50, 310, 335
+            'left':  (4, 5, 6, 7, 8),     # angles in (90, 270):  130, 155, 180, 205, 230
+        },
+    },
+    4: {   # four quadrants -- excludes the two axis-aligned locations (0 deg, 180 deg),
+           # which sit exactly on the quadrant boundary and don't belong to any one quadrant
+        'name': 'quadrant4',
+        'groups': {
+            'Q1_upper_right': (2, 3),     # 25, 50
+            'Q2_upper_left':  (4, 5),     # 130, 155
+            'Q3_lower_left':  (7, 8),     # 205, 230
+            'Q4_lower_right': (9, 10),    # 310, 335
+        },
+    },
+    6: {   # four quadrants + the two axis locations as their own singleton categories
+           # (same quadrant groups as scheme 4, but nothing is excluded)
+        'name': 'quadrant6',
+        'groups': {
+            'Q1_upper_right': (2, 3),
+            'Q2_upper_left':  (4, 5),
+            'Q3_lower_left':  (7, 8),
+            'Q4_lower_right': (9, 10),
+            'right_axis':     (1,),       # 0 deg
+            'left_axis':      (6,),       # 180 deg
+        },
+    },
+    10: {  # every raw location its own category (no grouping) -- current
+           # manifold_capacity.py / decoding_ts_cell.py granularity
+        'name': 'location10',
+        'groups': {str(loc): (loc,) for loc in sorted(ANGLE_MAPPING)},
+    },
+}
+
+
+def category_labels_for_scheme(target_labels, scheme):
+    """
+    Maps raw 1-10 target_labels (any int array) to this scheme's group-name
+    labels.
+
+    Returns (group_labels, keep_mask):
+      keep_mask   : (n_trials,) bool -- False for trials whose raw location
+                    isn't assigned to any group in this scheme (e.g. scheme=4
+                    drops locations 1 and 6).
+      group_labels: (keep_mask.sum(),) string array, group_labels[i]
+                    corresponds to target_labels[keep_mask][i].
+    """
+    if scheme not in CATEGORY_SCHEMES:
+        raise ValueError(f'Unknown scheme {scheme!r}, expected one of {sorted(CATEGORY_SCHEMES)}')
+    groups = CATEGORY_SCHEMES[scheme]['groups']
+    loc_to_group = {loc: name for name, locs in groups.items() for loc in locs}
+
+    target_labels = np.asarray(target_labels).astype(int)
+    keep_mask = np.array([loc in loc_to_group for loc in target_labels])
+    group_labels = np.array([loc_to_group[loc] for loc in target_labels[keep_mask]])
+    return group_labels, keep_mask
+
+
+def balance_categories(group_labels, points_per_category, seed=0):
+    """
+    Randomly subsamples (without replacement, fixed seed) each category down
+    to exactly points_per_category points, so every category -- and every
+    scheme, if called with the same points_per_category -- contributes the
+    same amount of data. This is what makes cross-scheme (2 vs 4 vs 6 vs 10
+    category) comparisons apples-to-apples rather than confounded by
+    different per-category sample sizes.
+
+    Returns a bool mask (same length as group_labels) selecting the kept
+    points. Raises ValueError if any category has fewer than
+    points_per_category points (caller should catch this and skip/log --
+    a genuinely too-small category, not a bug).
+    """
+    rng = np.random.default_rng(seed)
+    keep = np.zeros(group_labels.shape[0], dtype=bool)
+    for g in np.unique(group_labels):
+        idx = np.where(group_labels == g)[0]
+        if idx.size < points_per_category:
+            raise ValueError(
+                f'category {g!r} has only {idx.size} points, need >= {points_per_category}')
+        chosen = rng.choice(idx, size=points_per_category, replace=False)
+        keep[chosen] = True
+    return keep
 
 
 def resolution_tag(voxRes):

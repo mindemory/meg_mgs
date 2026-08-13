@@ -1,31 +1,29 @@
 #!/usr/bin/env python3
 """
-plot_representational_distance_ts.py
+plot_linear_decoding_categories.py
 
-Aggregates representational_distance_ts_cell.py's per-subject .npz files and
-plots the same-location-vs-different-location distance gap over time,
-bands x rois grid (mirrors plot_decoding_ts.py's make_timeseries_figure
-layout/styling exactly, so the two are visually and temporally comparable).
+Aggregates linear_decoding_categories_cell.py's per-subject .npz files and
+plots LOO (or k-fold) SVM one-vs-rest classification accuracy over time,
+bands x rois grid, one figure per (condition, scheme) -- mirrors
+plot_decoding_ts.py / plot_representational_distance_ts.py's layout/styling
+so all three are visually and temporally comparable.
 
-Gap = mean(between-location distance) - mean(within-location distance) at
-each timepoint. Positive = same-location trials sit closer together than
-different-location trials (real spatial structure). Zero = no structure,
-matching the null's expected center.
-
-Real line: mean +/- SEM of the per-subject gap across subjects.
-Reference band: mean(null_mean) +/- mean(null_std) across subjects --
-the cross-subject average of each subject's own label-permutation null
-(NOT a cross-subject SEM of the null center -- see aggregate_repdist
-docstring for why that distinction matters).
-Horizontal line at 0: theoretical no-structure reference.
+Real line: mean +/- SEM of the per-subject accuracy across subjects.
+Chance line: 1/n_categories (theoretical), always shown.
+Empirical null band (only if the cells were run with --n_shuffle > 0):
+mean(shuffle_acc_mean) +/- mean(shuffle_acc_std) across subjects -- same
+"typical single-subject null" caveat as plot_representational_distance_ts.py
+(NOT a formal group-level null; read the real accuracy's SEM/CI relative to
+the theoretical chance line for group-level inference instead).
 
 Usage:
-    python plot_representational_distance_ts.py [--voxRes 8mm]
-                                                  [--bands theta alpha beta lowgamma highgamma]
-                                                  [--rois visual parietal frontal]
-                                                  [--conditions ampOnly]
-                                                  [--subjects 1 2 ...]
-                                                  [--outdir <path>] [--figdir <path>]
+    python plot_linear_decoding_categories.py [--voxRes 8mm]
+                                               [--bands theta alpha beta lowgamma highgamma]
+                                               [--rois visual parietal frontal]
+                                               [--conditions ampOnly]
+                                               [--schemes 2 4 6 10]
+                                               [--subjects 1 2 ...]
+                                               [--outdir <path>] [--figdir <path>]
 """
 
 import os, sys, argparse
@@ -41,18 +39,18 @@ import matplotlib.gridspec as gridspec
 import matplotlib.ticker as ticker
 
 from constants import SUBJECT_LIST, ROI_NAMES, CATEGORY_SCHEMES, get_bids_root
-from representational_distance_ts_cell import output_path
+from linear_decoding_categories_cell import output_path
 
 SCHEME_LABELS = {s: f"{CATEGORY_SCHEMES[s]['name']} ({s} categories)" for s in CATEGORY_SCHEMES}
 
-# ── Design constants (mirrors plot_decoding_ts.py) ─────────────────────────────
+# ── Design constants (mirrors plot_decoding_ts.py / plot_representational_distance_ts.py) ──
 
 _BG        = '#000000'
 _FG        = '#e0e0e0'
 _GRID      = '#1c1c1c'
 _FLAG_LINE = '#777777'
 _FLAG_TXT  = '#cccccc'
-_ZERO      = '#444444'     # horizontal no-structure line
+_CHANCE    = '#444444'
 
 ROI_COLOURS = {
     'visual':   '#FFC629',
@@ -93,24 +91,23 @@ def load_all_subjects(subjects, bids_root, voxRes, bands, rois, conditions, sche
 
 # ── Aggregation ───────────────────────────────────────────────────────────────
 
-def aggregate_repdist(all_data, band, roi, condition, scheme):
+def aggregate_lindecode(all_data, band, roi, condition, scheme):
     """
-    Returns (tv, mean_gap, sem_gap, mean_null, mean_null_std) or Nones.
+    Returns (tv, mean_acc, sem_acc, chance_level, mean_shuf, mean_shuf_std,
+    has_shuffle) or (None,)*7.
 
-    mean_gap/sem_gap: arithmetic mean/SEM across subjects of each subject's
-    real gap(t) -- standard cross-subject inference on the statistic itself.
-
-    mean_null/mean_null_std: arithmetic mean across subjects of each
-    subject's OWN null_mean(t)/null_std(t) (each subject's label-permutation
-    null, computed independently per subject in representational_distance_ts_cell.py).
-    This is deliberately NOT a cross-subject SEM of the null center -- it's
-    a representative "typical single-subject null" reference band, the same
-    role plot_decoding_ts.py's shuffle line plays, not a formal group-level
-    null itself. Read significance from the real gap's SEM/CI relative to
-    zero (or from the per-subject p_value field), not from this band alone.
+    mean_acc/sem_acc: arithmetic mean/SEM across subjects of each subject's
+    real LOO/k-fold accuracy(t).
+    chance_level: 1/n_categories (identical across subjects for the same
+    scheme, just read from the first available cell).
+    mean_shuf/mean_shuf_std: same "typical single-subject null" caveat as
+    plot_representational_distance_ts.py's aggregate_repdist -- only
+    meaningful if cells were run with --n_shuffle > 0 (all-NaN otherwise,
+    has_shuffle=False).
     """
-    gap_list, null_mean_list, null_std_list = [], [], []
+    acc_list, shuf_mean_list, shuf_std_list = [], [], []
     tv = None
+    chance_level = None
     for d in all_data:
         if d is None:
             continue
@@ -118,23 +115,27 @@ def aggregate_repdist(all_data, band, roi, condition, scheme):
         if k not in d:
             continue
         npz = d[k]
-        gap_list.append(npz['gap'])
-        null_mean_list.append(npz['null_mean'])
-        null_std_list.append(npz['null_std'])
+        acc_list.append(npz['accuracy'])
+        shuf_mean_list.append(npz['shuffle_acc_mean'])
+        shuf_std_list.append(npz['shuffle_acc_std'])
         if tv is None:
-            tv = npz['time_vector']
+            tv = npz['eval_time_vector']
+            chance_level = float(npz['chance_level'][0])
 
-    if not gap_list:
-        return None, None, None, None, None
+    if not acc_list:
+        return None, None, None, None, None, None, False
 
-    gap  = np.stack(gap_list)         # (n_subj, T)
-    nmu  = np.stack(null_mean_list)   # (n_subj, T)
-    nsd  = np.stack(null_std_list)    # (n_subj, T)
-    n    = gap.shape[0]
+    acc  = np.stack(acc_list)          # (n_subj, T)
+    smu  = np.stack(shuf_mean_list)    # (n_subj, T)
+    ssd  = np.stack(shuf_std_list)     # (n_subj, T)
+    n    = acc.shape[0]
 
-    return (tv,
-            gap.mean(0), gap.std(0) / np.sqrt(n),
-            nmu.mean(0), nsd.mean(0))
+    has_shuffle = not np.all(np.isnan(smu))
+    mean_shuf     = np.nanmean(smu, axis=0) if has_shuffle else None
+    mean_shuf_std = np.nanmean(ssd, axis=0) if has_shuffle else None
+
+    return (tv, acc.mean(0), acc.std(0) / np.sqrt(n), chance_level,
+            mean_shuf, mean_shuf_std, has_shuffle)
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
@@ -148,28 +149,31 @@ def _style_ax(ax, spine_col='#333333'):
     ax.yaxis.label.set_color(_FG)
 
 
-def plot_repdist_panel(ax, tv, mean_gap, sem_gap, mean_null, mean_null_std,
-                        roi, is_bottom_row, is_left_col, show_title, title_str,
-                        show_flag_labels=True):
+def plot_lindecode_panel(ax, tv, mean_acc, sem_acc, chance_level, mean_shuf, mean_shuf_std,
+                          roi, is_bottom_row, is_left_col, show_title, title_str,
+                          show_flag_labels=True):
     col = ROI_COLOURS[roi]
     t0, t1 = float(tv[0]), float(tv[-1])
 
-    ax.axhline(0, color=_ZERO, lw=0.8, ls=':', zorder=1)
+    ax.axhline(chance_level, color=_CHANCE, lw=0.8, ls=':', zorder=1)
 
-    # Null reference band (see aggregate_repdist docstring)
-    ax.fill_between(tv, mean_null - mean_null_std, mean_null + mean_null_std,
-                     alpha=0.15, color=col, zorder=2)
-    ax.plot(tv, mean_null, color=col, lw=0.9, ls='--', alpha=0.55, zorder=2)
+    if mean_shuf is not None:
+        ax.fill_between(tv, mean_shuf - mean_shuf_std, mean_shuf + mean_shuf_std,
+                         alpha=0.15, color=col, zorder=2)
+        ax.plot(tv, mean_shuf, color=col, lw=0.9, ls='--', alpha=0.55, zorder=2)
 
-    # Real gap
-    ax.fill_between(tv, mean_gap - sem_gap, mean_gap + sem_gap,
+    ax.fill_between(tv, mean_acc - sem_acc, mean_acc + sem_acc,
                      alpha=0.30, color=col, zorder=3)
-    ax.plot(tv, mean_gap, color=col, lw=1.5, zorder=3)
+    ax.plot(tv, mean_acc, color=col, lw=1.5, zorder=3)
 
-    lo = min(np.nanmin(mean_gap - sem_gap), np.nanmin(mean_null - mean_null_std), 0)
-    hi = max(np.nanmax(mean_gap + sem_gap), np.nanmax(mean_null + mean_null_std), 0)
+    lo_candidates = [np.nanmin(mean_acc - sem_acc), chance_level]
+    hi_candidates = [np.nanmax(mean_acc + sem_acc), chance_level]
+    if mean_shuf is not None:
+        lo_candidates.append(np.nanmin(mean_shuf - mean_shuf_std))
+        hi_candidates.append(np.nanmax(mean_shuf + mean_shuf_std))
+    lo, hi = min(lo_candidates), max(hi_candidates)
     pad = max(1e-6, (hi - lo) * 0.15)
-    lo, hi = lo - pad, hi + pad
+    lo, hi = max(0.0, lo - pad), min(1.0, hi + pad)
 
     ax.set_xlim(t0, t1)
     ax.set_ylim(lo, hi)
@@ -183,7 +187,7 @@ def plot_repdist_panel(ax, tv, mean_gap, sem_gap, mean_null, mean_null_std,
                     fontsize=6.5, color=_FLAG_TXT, zorder=5)
 
     if is_left_col:
-        ax.set_ylabel('Between - Within\ndistance', fontsize=8, color=_FG)
+        ax.set_ylabel('LOO accuracy', fontsize=8, color=_FG)
     ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=4))
 
     ax.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
@@ -196,7 +200,7 @@ def plot_repdist_panel(ax, tv, mean_gap, sem_gap, mean_null, mean_null_std,
     if show_title:
         ax.set_title(title_str, color=_FG, fontsize=10, fontweight='bold', pad=4)
 
-    ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2g'))
+    ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
 
 
 def _band_row_grid(n_bands, n_rois, row_h_in, fig_w_per_roi=4.2,
@@ -220,7 +224,8 @@ def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, out
         for c_idx, roi in enumerate(rois):
             ax_ts = fig.add_subplot(gs[r_idx, c_idx])
 
-            tv, mean_gap, sem_gap, mean_null, mean_null_std = aggregate_repdist(
+            (tv, mean_acc, sem_acc, chance_level,
+             mean_shuf, mean_shuf_std, has_shuffle) = aggregate_lindecode(
                 all_data, band, roi, condition, scheme)
 
             is_left_col   = (c_idx == 0)
@@ -229,8 +234,8 @@ def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, out
             title_str     = roi.capitalize()
 
             if tv is not None:
-                plot_repdist_panel(
-                    ax_ts, tv, mean_gap, sem_gap, mean_null, mean_null_std,
+                plot_lindecode_panel(
+                    ax_ts, tv, mean_acc, sem_acc, chance_level, mean_shuf, mean_shuf_std,
                     roi, is_bottom_row, is_left_col, show_title, title_str,
                     show_flag_labels=show_title)
             else:
@@ -246,13 +251,13 @@ def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, out
 
     cond_label   = 'Amplitude only' if condition == 'ampOnly' else 'Amplitude + Phase'
     scheme_label = SCHEME_LABELS.get(scheme, str(scheme))
-    fig.suptitle(f'Representational Distance (Between - Within)  |  {cond_label}  |  '
+    fig.suptitle(f'Linear (SVM, OvR, LOO) Decoding Accuracy  |  {cond_label}  |  '
                  f'{scheme_label}  |  {voxRes}',
                  color=_FG, fontsize=14, fontweight='bold', y=0.97)
     fig.text(0.5, 0.005, 'Time (s)', ha='center', va='bottom', color=_FG, fontsize=9)
 
     os.makedirs(outdir_fig, exist_ok=True)
-    fpath = os.path.join(outdir_fig, f'repdist_ts_{condition}_scheme{scheme}_{voxRes}.png')
+    fpath = os.path.join(outdir_fig, f'lindecode_cat_{condition}_scheme{scheme}_{voxRes}.png')
     fig.savefig(fpath, dpi=150, bbox_inches='tight', facecolor=_BG)
     plt.close(fig)
     print(f'Saved: {fpath}')
@@ -263,7 +268,7 @@ def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, out
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Aggregate and plot representational-distance timeseries across subjects.')
+        description='Aggregate and plot linear decoding-by-category accuracy timeseries across subjects.')
     parser.add_argument('--voxRes',     default='8mm')
     parser.add_argument('--subjects',   nargs='+', type=int, default=SUBJECT_LIST)
     parser.add_argument('--bands',      nargs='+',
@@ -276,12 +281,12 @@ def main():
                         help='Directory containing the per-subject .npz files.')
     parser.add_argument('--figdir',     default=None,
                         help='Directory to save figures (default: same as outdir '
-                             'or BIDS derivatives/glueDecoding/repDistTS).')
+                             'or BIDS derivatives/glueDecoding/linDecodeCat).')
     args = parser.parse_args()
 
     bids_root = get_bids_root()
     figdir = args.figdir or (args.outdir if args.outdir else
-                              os.path.join(bids_root, 'derivatives', 'glueDecoding', 'repDistTS'))
+                              os.path.join(bids_root, 'derivatives', 'glueDecoding', 'linDecodeCat'))
 
     print(f'Loading data | {args.voxRes} | subjects={args.subjects} | '
           f'bands={args.bands} | rois={args.rois} | conditions={args.conditions} | '
