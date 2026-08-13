@@ -14,30 +14,46 @@ For each (band, roi, epoch):
        amplitude only, matches build_features's 'ampOnly' condition). Loaded
        once per (band, roi), shared across both epochs.
     2. Slice the epoch window (EPOCHS below -- stim=[0.0,0.2], delay=
-       [0.2,1.7], matching intrinsic_dim_epochs.py) and average over time
-       -> (n_trials, n_sources). NOTE: this time-averaging is a deliberate
-       choice, not a glue requirement -- it means total points per cell is
-       capped at n_trials (~154 for a full subject), which is LESS than
-       every ROI's raw source count (179/501/597). glue_analysis internally
-       QR-rotates onto the subspace spanned by the data, whose rank can
-       never exceed min(n_features, total_points) -- so with time-averaged
-       features, every ROI's EFFECTIVE dimensionality collapses to the same
-       ~n_trials-dim space regardless of its raw source count. (Switching to
-       per-timepoint, non-averaged points would let each ROI use its own
-       full dimensionality, at the cost of many more -- autocorrelated --
-       points and much slower QP solves; not done here, see chat history.)
-    3. Z-score each source (feature) across trials (optional, default on --
-       glue only mean-centers the global manifold origin internally, it
-       doesn't rescale features, so leaving very different-magnitude
-       sources unscaled can dominate the QR-rotated feature space).
-    4. Split trials into one manifold per target location (1-10, see
-       ANGLE_MAPPING in constants.py) -- glue's ONE_VERSUS_REST dichotomy
-       set then tests each location against the rest of the "concept" set,
-       matching the classic manifold-capacity-theory setup (P object
-       manifolds in shared neural feature space). Locations with fewer
-       than --min_trials_per_class trials in this epoch are dropped (with
-       a warning) rather than passed in as a near-empty manifold.
-    5. manifolds are (n_features, n_trials_for_that_target) arrays -- glue
+       [0.2,1.7], matching intrinsic_dim_epochs.py) and treat EVERY
+       timepoint in that window as its own point (no time-averaging) --
+       each trial contributes n_epoch_timepoints points instead of 1. G04
+       stores everything at a shared 200 Hz (TARGET_RATE in
+       G04_BandAmplitudePhaseInSource.m, ~5ms spacing), so stim (~41
+       timepoints/trial) and especially delay (~301 timepoints/trial) can
+       generate a LOT of points -- e.g. ~6.3k points for stim and ~46k for
+       delay at n_trials=154. This matters because glue_analysis's QR
+       rotation caps effective ambient dimension at min(n_features,
+       total_points); with time-averaging (n_trials points only, the
+       previous version of this script) that cap was BELOW every ROI's raw
+       source count, silently collapsing all ROIs to the same effective
+       dimensionality regardless of ROI size -- per-timepoint points fixes
+       that (total_points now comfortably exceeds every ROI's source count),
+       at the cost of many more -- autocorrelated, since adjacent timepoints
+       within a trial are highly correlated, not independent samples -- and
+       much slower QP solves (cvxopt scales badly with point count). Use
+       --points_per_trial to evenly subsample each trial's epoch window
+       down to a manageable point count per epoch (recommended for delay
+       especially); default is "use every timepoint" (no subsampling).
+    3. Z-score each source (feature) across all (trial, timepoint) samples
+       in the epoch (optional, default OFF). glue's own preprocessing
+       (reallocate_origin) only mean-centers, never rescales -- its
+       implicit assumption is that raw feature magnitude is meaningful.
+       For source-space amplitude, per-voxel variance differences plausibly
+       ARE real signal (proximity to true source, genuine task modulation),
+       not an arbitrary-units artifact -- z-scoring would equalize a
+       near-zero-variance noise voxel with a genuinely informative one.
+       Pass --zscore to opt back in.
+    4. Split (trial, timepoint) points into one manifold per target
+       location (1-10, see ANGLE_MAPPING in constants.py) -- glue's
+       ONE_VERSUS_REST dichotomy set then tests each location against the
+       rest of the "concept" set, matching the classic
+       manifold-capacity-theory setup (P object manifolds in shared neural
+       feature space). Locations with fewer than --min_trials_per_class
+       DISTINCT TRIALS in this epoch are dropped (with a warning) -- trial
+       count, not point count, since a class with 2 trials x 40 timepoints
+       is still only 2 independent samples repeated with heavy
+       autocorrelation, not a genuinely diverse 80-point manifold.
+    5. manifolds are (n_features, n_points_for_that_target) arrays -- glue
        expects (n_neurons, n_points), the TRANSPOSE of every other array
        shape convention used in glue_decoding (which is (n_trials, ...)).
     6. Run glue_analysis_dataframe(shuffle=True) so each cell reports both
@@ -62,9 +78,10 @@ Usage:
                                  [--bands theta alpha beta lowgamma highgamma]
                                  [--rois visual parietal frontal]
                                  [--epochs stim delay]
+                                 [--points_per_trial N] [--zscore]
                                  [--analysis_type ONE_VERSUS_REST]
                                  [--n_hyperplanes 200] [--seed 42]
-                                 [--min_trials_per_class 2] [--no_zscore]
+                                 [--min_trials_per_class 2]
                                  [--no_shuffle] [--outdir <path>] [--force]
 
 Meant to be launched as one background job per subject by
@@ -114,42 +131,57 @@ EPOCHS = {
 
 # ── Manifold construction ──────────────────────────────────────────────────
 
-def build_manifolds(amp, tv, target_labels, t0, t1, zscore=True,
-                     min_trials_per_class=2, log=print):
+def build_manifolds(amp, tv, target_labels, t0, t1, zscore=False,
+                     points_per_trial=None, min_trials_per_class=2, log=print):
     """
     amp: (n_trials, n_times, n_sources); tv: (n_times,);
     target_labels: (n_trials,) values in ANGLE_MAPPING's keys.
 
-    Returns (manifolds, kept_labels) where manifolds is a list of
-    (n_sources, n_trials_for_that_label) arrays -- glue's expected
+    Every timepoint in [t0, t1] becomes its own point (no time-averaging) --
+    each trial contributes n_epoch_timepoints points. points_per_trial, if
+    given, evenly subsamples each trial's epoch window down to that many
+    timepoints (spanning the full window, not just its start) before
+    building manifolds -- see module docstring for why this matters (G04's
+    200Hz storage rate means the delay epoch alone is ~301 timepoints/trial).
+
+    Returns (manifolds, kept_labels, n_epoch_timepoints) where manifolds is
+    a list of (n_sources, n_points_for_that_label) arrays -- glue's expected
     (n_neurons, n_points) convention, the transpose of this repo's usual
-    (n_trials, n_features) convention -- one per label in kept_labels
-    (labels with < min_trials_per_class trials in this epoch are dropped).
+    (n_trials, n_features) convention -- one per label in kept_labels.
+    Labels with < min_trials_per_class DISTINCT TRIALS in this epoch are
+    dropped (trial count, not point count -- see module docstring).
     """
-    mask = (tv >= t0) & (tv <= t1)
-    if not mask.any():
+    epoch_idx = np.where((tv >= t0) & (tv <= t1))[0]
+    if epoch_idx.size == 0:
         raise ValueError(f'Epoch [{t0}, {t1}] has no timepoints in this time_vector.')
 
-    X = amp[:, mask, :].mean(axis=1)   # (n_trials, n_sources)
+    if points_per_trial is not None and points_per_trial < epoch_idx.size:
+        sub = np.linspace(0, epoch_idx.size - 1, points_per_trial).round().astype(int)
+        epoch_idx = epoch_idx[sub]
+
+    X = amp[:, epoch_idx, :]   # (n_trials, n_epoch_pts, n_sources)
+    n_epoch_pts = X.shape[1]
 
     if zscore:
-        mu = X.mean(axis=0, keepdims=True)
-        sd = X.std(axis=0, keepdims=True)
+        flat = X.reshape(-1, X.shape[2])
+        mu = flat.mean(axis=0)
+        sd = flat.std(axis=0)
         sd[sd < 1e-10] = 1.0
         X = (X - mu) / sd
 
     manifolds, kept_labels = [], []
     for label in TARGET_LABELS:
         sel = target_labels == label
-        n = int(sel.sum())
-        if n < min_trials_per_class:
-            log(f'    NOTE: target {label} has only {n} trial(s) in this epoch '
+        n_trials_label = int(sel.sum())
+        if n_trials_label < min_trials_per_class:
+            log(f'    NOTE: target {label} has only {n_trials_label} trial(s) in this epoch '
                 f'(< min_trials_per_class={min_trials_per_class}) -- dropping this manifold.')
             continue
-        manifolds.append(X[sel].T)   # (n_sources, n) -- glue's convention
+        pts = X[sel].reshape(-1, X.shape[2])   # (n_trials_label * n_epoch_pts, n_sources)
+        manifolds.append(pts.T)                # (n_sources, n_points) -- glue's convention
         kept_labels.append(label)
 
-    return manifolds, kept_labels
+    return manifolds, kept_labels, n_epoch_pts
 
 
 # ── Main ──────────────────────────────────────────────────────────────────
@@ -169,8 +201,13 @@ def main():
     parser.add_argument('--n_hyperplanes', type=int, default=200)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--min_trials_per_class', type=int, default=2)
-    parser.add_argument('--no_zscore', action='store_true',
-                         help='Skip per-source z-scoring before building manifolds.')
+    parser.add_argument('--points_per_trial', type=int, default=None,
+                         help='Evenly subsample each trial epoch window to this many '
+                              'timepoints (default: use every timepoint -- see module '
+                              'docstring for point-count cost, especially for delay).')
+    parser.add_argument('--zscore', action='store_true',
+                         help='Z-score each source across (trial, timepoint) samples '
+                              'before building manifolds (default OFF -- see module docstring).')
     parser.add_argument('--no_shuffle', action='store_true',
                          help='Skip the shuffled-manifolds null (glue_analysis_dataframe shuffle=False).')
     parser.add_argument('--outdir', default=None,
@@ -200,7 +237,8 @@ def main():
     log(f'manifold_capacity | sub-{args.subjID:02d} | {args.lockType} | {args.voxRes} | '
         f'bands={args.bands} | rois={args.rois} | epochs={args.epochs} | '
         f'analysis_type={args.analysis_type} | n_hyperplanes={args.n_hyperplanes} | '
-        f'seed={args.seed} | shuffle={not args.no_shuffle} | zscore={not args.no_zscore}')
+        f'seed={args.seed} | shuffle={not args.no_shuffle} | zscore={args.zscore} | '
+        f'points_per_trial={args.points_per_trial or "all"}')
 
     df_list = []
 
@@ -225,10 +263,14 @@ def main():
                 t0, t1 = EPOCHS[epoch]
                 log(f'  epoch={epoch} [{t0}, {t1}]')
 
-                manifolds, kept_labels = build_manifolds(
+                manifolds, kept_labels, n_epoch_pts = build_manifolds(
                     amp, tv, target_labels, t0, t1,
-                    zscore=not args.no_zscore,
+                    zscore=args.zscore, points_per_trial=args.points_per_trial,
                     min_trials_per_class=args.min_trials_per_class, log=log)
+
+                total_points = sum(m.shape[1] for m in manifolds)
+                log(f'    {n_epoch_pts} timepoints/trial in this epoch -> '
+                    f'{total_points} total points across {len(manifolds)} manifolds')
 
                 if len(manifolds) < 2:
                     log(f'    SKIP: only {len(manifolds)} usable manifold(s) '

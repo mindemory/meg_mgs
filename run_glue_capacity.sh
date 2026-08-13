@@ -15,11 +15,12 @@
 # cross-subject bar-plot figures.
 #
 # Usage:
-#   bash run_glue_capacity.sh [voxRes] [max_parallel] [n_hyperplanes] [seed] [force]
+#   bash run_glue_capacity.sh [voxRes] [max_parallel] [n_hyperplanes] [seed] [force] [epochs]
 #
 # Examples:
-#   bash run_glue_capacity.sh                       # 8mm, max parallel = n_subjects, n_hyperplanes=200
-#   bash run_glue_capacity.sh 8mm 21 200 42 true     # overwrite existing per-subject CSVs
+#   bash run_glue_capacity.sh                            # 8mm, max parallel = n_subjects, n_hyperplanes=200, stim+delay
+#   bash run_glue_capacity.sh 8mm 21 200 42 true          # overwrite existing per-subject CSVs, stim+delay
+#   bash run_glue_capacity.sh 8mm 21 200 42 true stim     # force, stim epoch only (skip delay's ~46k-point cells)
 
 set -euo pipefail
 
@@ -39,7 +40,10 @@ esac
 SUBJ_LIST=(01 02 03 04 05 06 07 09 10 12 13 15 17 18 19 23 24 25 29 31 32)
 BANDS=(theta alpha beta lowgamma highgamma)
 ROIS=(visual parietal frontal)
-EPOCHS=(stim delay)
+# arg 6: space-separated epoch list, e.g. "stim" to skip delay's much larger
+# per-timepoint point count (see manifold_capacity.py's module docstring).
+EPOCHS_RAW="${6:-stim delay}"
+EPOCHS=(${EPOCHS_RAW})
 
 # Default max parallel = number of subjects. Override with arg 2.
 MAX_PARALLEL="${2:-${#SUBJ_LIST[@]}}"
