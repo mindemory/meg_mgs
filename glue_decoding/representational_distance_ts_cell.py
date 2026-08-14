@@ -61,17 +61,29 @@ Method, per (band, roi, condition, scheme), for one subject:
        b. Compute the (n_trials, n_trials) pairwise Euclidean distance
           matrix, then split its upper-triangle pairs into "within"
           (same target location, different trials) and "between"
-          (different target locations), and record
-          gap = mean(between) - mean(within). Positive gap = same-location
-          trials are more similar than different-location trials.
+          (different target locations), and record the NORMALIZED gap
+          gap = (mean(between) - mean(within)) / (mean(between) + mean(within)),
+          bounded in [-1, 1]. Positive = same-location trials are more
+          similar than different-location trials. Normalized (rather than
+          the raw mean(between)-mean(within) difference an earlier version
+          used) so the statistic is comparable across timepoints/bands/ROIs
+          whose raw distance scale differs for reasons unrelated to
+          discriminability (e.g. post-stimulus evoked variance inflating
+          absolute distances regardless of location structure, or different
+          amplitude scales/feature counts across bands/ROIs) -- this is
+          effectively a modulation/discriminability index, not a raw
+          distance.
        c. Build a null distribution for that same gap statistic via label
           permutation (shuffle target labels across trials, n_perm times,
           recompute the gap on the SAME distance matrix each time -- cheap,
           since only which pairs count as "within" changes, not the
-          distances themselves). This deliberately mirrors GLUE's own
-          shuffle-null logic, so it's a conceptually consistent reference.
-          Saves null_mean/null_std/p_value (right-tailed: fraction of null
-          gaps >= the real gap) per timepoint.
+          distances themselves). Saves null_mean/null_std/p_value per
+          timepoint, but these are NOT used for group-level significance
+          (see plot_representational_distance_ts.py -- group significance
+          is a Wilcoxon signed-rank test of the real per-subject gap(t)
+          against 0, FDR-corrected across timepoints; the permutation null
+          here is single-subject spread, not a group-level null, and is
+          kept only as an unused-by-default diagnostic/sanity-check field).
 
 Output: one .npz per (subject, band, roi, condition, scheme) at
 derivatives/sub-XX/sourceRecon/repDistTS/sub-XX_task-mgs_repDistTS_
@@ -169,8 +181,11 @@ def representational_distance_timeseries(X_win, target_labels, n_perm=DEFAULT_N_
     X_win: (n_trials, n_times, n_feat) already moving-window-averaged.
     target_labels: (n_trials,) int.
 
-    Returns dict with (n_times,) arrays: gap, within_mean, between_mean,
-    null_mean, null_std, p_value.
+    Returns dict with (n_times,) arrays: gap (normalized, bounded [-1, 1] --
+    see module docstring step 2b), within_mean, between_mean (raw distance
+    units, for diagnostics), null_mean, null_std, p_value (single-subject
+    permutation-null fields, NOT used for group-level significance -- see
+    module docstring step 2c).
     """
     n_trials, n_times, n_feat = X_win.shape
 
@@ -205,19 +220,24 @@ def representational_distance_timeseries(X_win, target_labels, n_perm=DEFAULT_N_
         d_vec = np.sqrt(d2[iu, ju])                                    # (M,) upper-triangle distances
         total_sum = d_vec.sum()
 
-        # Real gap
+        # Real gap -- normalized: (between - within) / (between + within),
+        # bounded [-1, 1] (see module docstring step 2b). Denominator is a
+        # sum of two non-negative distance means, only ~0 in the degenerate
+        # case of all points coinciding -- guarded rather than assumed away.
         within_sum_real = same_real_f @ d_vec
         w_real = within_sum_real / n_within_real
         b_real = (total_sum - within_sum_real) / n_between_real
         within_mean[t]  = w_real
         between_mean[t] = b_real
-        gap[t] = b_real - w_real
+        denom_real = b_real + w_real
+        gap[t] = (b_real - w_real) / denom_real if denom_real > 1e-12 else 0.0
 
         # Permutation null (reuses d_vec -- only label->pair membership changes)
         within_sum_perm = same_perm_f @ d_vec                          # (n_perm,)
         w_perm = within_sum_perm / n_within_perm
         b_perm = (total_sum - within_sum_perm) / n_between_perm
-        gap_perm = b_perm - w_perm
+        denom_perm = b_perm + w_perm
+        gap_perm = np.where(denom_perm > 1e-12, (b_perm - w_perm) / denom_perm, 0.0)
 
         null_mean[t] = gap_perm.mean()
         null_std[t]  = gap_perm.std()

@@ -3,21 +3,26 @@
 plot_representational_distance_ts.py
 
 Aggregates representational_distance_ts_cell.py's per-subject .npz files and
-plots the same-location-vs-different-location distance gap over time,
-bands x rois grid (mirrors plot_decoding_ts.py's make_timeseries_figure
-layout/styling exactly, so the two are visually and temporally comparable).
+plots the same-location-vs-different-location NORMALIZED distance gap
+(between-within)/(between+within), bounded [-1, 1], over time, bands x rois
+grid (mirrors plot_decoding_ts.py's make_timeseries_figure layout/styling
+exactly, so the two are visually and temporally comparable).
 
-Gap = mean(between-location distance) - mean(within-location distance) at
-each timepoint. Positive = same-location trials sit closer together than
-different-location trials (real spatial structure). Zero = no structure,
-matching the null's expected center.
+Positive gap = same-category trials sit closer together than
+different-category trials (real spatial structure). Zero = no structure.
 
 Real line: mean +/- SEM of the per-subject gap across subjects.
-Reference band: mean(null_mean) +/- mean(null_std) across subjects --
-the cross-subject average of each subject's own label-permutation null
-(NOT a cross-subject SEM of the null center -- see aggregate_repdist
-docstring for why that distinction matters).
 Horizontal line at 0: theoretical no-structure reference.
+Significance: two-sided Wilcoxon signed-rank test of the per-subject
+gap(t) against 0 across subjects, FDR (Benjamini-Hochberg) corrected across
+this PANEL's own timepoints (i.e. per band/roi/scheme/condition -- not
+corrected across panels), marked as a dot row under each panel where
+significant. This is the group-level test that actually matters here --
+NOT the per-subject label-permutation null saved in each .npz (null_mean/
+null_std/p_value), which reflects single-subject permutation spread, a
+different and not directly comparable quantity to cross-subject SEM/CI (see
+chat history) -- those fields are loaded/computed by
+representational_distance_ts_cell.py but intentionally not plotted here.
 
 Usage:
     python plot_representational_distance_ts.py [--voxRes 8mm]
@@ -25,6 +30,7 @@ Usage:
                                                   [--rois visual parietal frontal]
                                                   [--conditions ampOnly]
                                                   [--subjects 1 2 ...]
+                                                  [--alpha 0.05]
                                                   [--outdir <path>] [--figdir <path>]
 """
 
@@ -34,6 +40,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
+from scipy import stats
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -53,6 +60,7 @@ _GRID      = '#1c1c1c'
 _FLAG_LINE = '#777777'
 _FLAG_TXT  = '#cccccc'
 _ZERO      = '#444444'     # horizontal no-structure line
+_SIG       = '#ffffff'     # significance marker dots
 
 ROI_COLOURS = {
     'visual':   '#FFC629',
@@ -95,21 +103,15 @@ def load_all_subjects(subjects, bids_root, voxRes, bands, rois, conditions, sche
 
 def aggregate_repdist(all_data, band, roi, condition, scheme):
     """
-    Returns (tv, mean_gap, sem_gap, mean_null, mean_null_std) or Nones.
+    Returns (tv, gap_matrix, mean_gap, sem_gap) or (None, None, None, None).
 
-    mean_gap/sem_gap: arithmetic mean/SEM across subjects of each subject's
-    real gap(t) -- standard cross-subject inference on the statistic itself.
-
-    mean_null/mean_null_std: arithmetic mean across subjects of each
-    subject's OWN null_mean(t)/null_std(t) (each subject's label-permutation
-    null, computed independently per subject in representational_distance_ts_cell.py).
-    This is deliberately NOT a cross-subject SEM of the null center -- it's
-    a representative "typical single-subject null" reference band, the same
-    role plot_decoding_ts.py's shuffle line plays, not a formal group-level
-    null itself. Read significance from the real gap's SEM/CI relative to
-    zero (or from the per-subject p_value field), not from this band alone.
+    gap_matrix: (n_subj, T) raw per-subject gap(t), returned (not just its
+    mean/SEM) so compute_significance can run the actual across-subject test
+    on it rather than a lossy summary.
+    mean_gap/sem_gap: arithmetic mean/SEM across subjects -- standard
+    cross-subject inference on the statistic itself.
     """
-    gap_list, null_mean_list, null_std_list = [], [], []
+    gap_list = []
     tv = None
     for d in all_data:
         if d is None:
@@ -119,22 +121,56 @@ def aggregate_repdist(all_data, band, roi, condition, scheme):
             continue
         npz = d[k]
         gap_list.append(npz['gap'])
-        null_mean_list.append(npz['null_mean'])
-        null_std_list.append(npz['null_std'])
         if tv is None:
             tv = npz['time_vector']
 
     if not gap_list:
-        return None, None, None, None, None
+        return None, None, None, None
 
-    gap  = np.stack(gap_list)         # (n_subj, T)
-    nmu  = np.stack(null_mean_list)   # (n_subj, T)
-    nsd  = np.stack(null_std_list)    # (n_subj, T)
-    n    = gap.shape[0]
+    gap = np.stack(gap_list)   # (n_subj, T)
+    n   = gap.shape[0]
 
-    return (tv,
-            gap.mean(0), gap.std(0) / np.sqrt(n),
-            nmu.mean(0), nsd.mean(0))
+    return tv, gap, gap.mean(0), gap.std(0) / np.sqrt(n)
+
+
+def _fdr_bh(pvals, alpha=0.05):
+    """Benjamini-Hochberg FDR: returns a bool significance mask, same shape as pvals."""
+    p = np.asarray(pvals)
+    n = p.size
+    order = np.argsort(p)
+    ranked = p[order]
+    thresh = alpha * (np.arange(1, n + 1) / n)
+    below = ranked <= thresh
+    sig_sorted = np.zeros(n, dtype=bool)
+    if below.any():
+        sig_sorted[:np.max(np.where(below)) + 1] = True
+    sig = np.zeros(n, dtype=bool)
+    sig[order] = sig_sorted
+    return sig
+
+
+def compute_significance(gap_matrix, alpha=0.05):
+    """
+    Two-sided Wilcoxon signed-rank test of gap(t) against 0 across subjects
+    (gap_matrix: (n_subj, T)), one test per timepoint, FDR (Benjamini-
+    Hochberg) corrected across this array's own T timepoints. Returns a
+    (T,) bool significance mask. A timepoint with < 2 subjects, all-zero
+    differences, or a scipy ValueError (e.g. all-identical values) is
+    treated as p=1 (not significant) rather than raising.
+    """
+    n_subj, n_times = gap_matrix.shape
+    pvals = np.ones(n_times)
+    for t in range(n_times):
+        vals = gap_matrix[:, t]
+        vals = vals[~np.isnan(vals)]
+        if vals.size < 2 or np.allclose(vals, 0):
+            continue
+        try:
+            _, p = stats.wilcoxon(vals)
+            pvals[t] = p
+        except ValueError:
+            pass
+    return _fdr_bh(pvals, alpha=alpha)
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
@@ -148,7 +184,7 @@ def _style_ax(ax, spine_col='#333333'):
     ax.yaxis.label.set_color(_FG)
 
 
-def plot_repdist_panel(ax, tv, mean_gap, sem_gap, mean_null, mean_null_std,
+def plot_repdist_panel(ax, tv, mean_gap, sem_gap, sig_mask,
                         roi, is_bottom_row, is_left_col, show_title, title_str,
                         show_flag_labels=True):
     col = ROI_COLOURS[roi]
@@ -156,20 +192,24 @@ def plot_repdist_panel(ax, tv, mean_gap, sem_gap, mean_null, mean_null_std,
 
     ax.axhline(0, color=_ZERO, lw=0.8, ls=':', zorder=1)
 
-    # Null reference band (see aggregate_repdist docstring)
-    ax.fill_between(tv, mean_null - mean_null_std, mean_null + mean_null_std,
-                     alpha=0.15, color=col, zorder=2)
-    ax.plot(tv, mean_null, color=col, lw=0.9, ls='--', alpha=0.55, zorder=2)
-
-    # Real gap
+    # Real gap: mean +/- SEM across subjects
     ax.fill_between(tv, mean_gap - sem_gap, mean_gap + sem_gap,
                      alpha=0.30, color=col, zorder=3)
     ax.plot(tv, mean_gap, color=col, lw=1.5, zorder=3)
 
-    lo = min(np.nanmin(mean_gap - sem_gap), np.nanmin(mean_null - mean_null_std), 0)
-    hi = max(np.nanmax(mean_gap + sem_gap), np.nanmax(mean_null + mean_null_std), 0)
+    lo = min(np.nanmin(mean_gap - sem_gap), 0)
+    hi = max(np.nanmax(mean_gap + sem_gap), 0)
     pad = max(1e-6, (hi - lo) * 0.15)
     lo, hi = lo - pad, hi + pad
+
+    # Significance dots (Wilcoxon vs 0 across subjects, FDR-corrected --
+    # see compute_significance) along a fixed row near the panel bottom,
+    # rather than shading the line itself, so significant/non-significant
+    # stretches stay legible even when they're brief or scattered.
+    if sig_mask is not None and sig_mask.any():
+        y_sig = lo + 0.06 * (hi - lo)
+        ax.plot(tv[sig_mask], np.full(sig_mask.sum(), y_sig),
+                '.', color=_SIG, ms=3.0, zorder=6)
 
     ax.set_xlim(t0, t1)
     ax.set_ylim(lo, hi)
@@ -183,7 +223,8 @@ def plot_repdist_panel(ax, tv, mean_gap, sem_gap, mean_null, mean_null_std,
                     fontsize=6.5, color=_FLAG_TXT, zorder=5)
 
     if is_left_col:
-        ax.set_ylabel('Between - Within\ndistance', fontsize=8, color=_FG)
+        ax.set_ylabel('Discriminability index\n(between-within)/(between+within)',
+                       fontsize=7, color=_FG)
     ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=4))
 
     ax.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
@@ -212,7 +253,7 @@ def _band_row_grid(n_bands, n_rois, row_h_in, fig_w_per_roi=4.2,
     return fig, gs
 
 
-def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, outdir_fig):
+def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, outdir_fig, alpha=0.05):
     n_bands, n_rois = len(bands), len(rois)
     fig, gs = _band_row_grid(n_bands, n_rois, row_h_in=1.3, bottom_margin_in=0.40)
 
@@ -220,7 +261,7 @@ def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, out
         for c_idx, roi in enumerate(rois):
             ax_ts = fig.add_subplot(gs[r_idx, c_idx])
 
-            tv, mean_gap, sem_gap, mean_null, mean_null_std = aggregate_repdist(
+            tv, gap_matrix, mean_gap, sem_gap = aggregate_repdist(
                 all_data, band, roi, condition, scheme)
 
             is_left_col   = (c_idx == 0)
@@ -229,8 +270,10 @@ def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, out
             title_str     = roi.capitalize()
 
             if tv is not None:
+                sig_mask = compute_significance(gap_matrix, alpha=alpha) \
+                    if gap_matrix.shape[0] >= 2 else None
                 plot_repdist_panel(
-                    ax_ts, tv, mean_gap, sem_gap, mean_null, mean_null_std,
+                    ax_ts, tv, mean_gap, sem_gap, sig_mask,
                     roi, is_bottom_row, is_left_col, show_title, title_str,
                     show_flag_labels=show_title)
             else:
@@ -246,9 +289,9 @@ def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, out
 
     cond_label   = 'Amplitude only' if condition == 'ampOnly' else 'Amplitude + Phase'
     scheme_label = SCHEME_LABELS.get(scheme, str(scheme))
-    fig.suptitle(f'Representational Distance (Between - Within)  |  {cond_label}  |  '
-                 f'{scheme_label}  |  {voxRes}',
-                 color=_FG, fontsize=14, fontweight='bold', y=0.97)
+    fig.suptitle(f'Representational Distance Discriminability  |  {cond_label}  |  '
+                 f'{scheme_label}  |  {voxRes}  |  dots = Wilcoxon vs 0, FDR q<{alpha}',
+                 color=_FG, fontsize=13, fontweight='bold', y=0.97)
     fig.text(0.5, 0.005, 'Time (s)', ha='center', va='bottom', color=_FG, fontsize=9)
 
     os.makedirs(outdir_fig, exist_ok=True)
@@ -272,6 +315,9 @@ def main():
     parser.add_argument('--conditions', nargs='+', default=['ampOnly'])
     parser.add_argument('--schemes',    nargs='+', type=int, default=sorted(CATEGORY_SCHEMES),
                         choices=sorted(CATEGORY_SCHEMES))
+    parser.add_argument('--alpha',      type=float, default=0.05,
+                        help='FDR (Benjamini-Hochberg) significance threshold for the '
+                             'per-timepoint Wilcoxon-vs-0 test (default 0.05).')
     parser.add_argument('--outdir',     default=None,
                         help='Directory containing the per-subject .npz files.')
     parser.add_argument('--figdir',     default=None,
@@ -298,7 +344,7 @@ def main():
         for scheme in args.schemes:
             print(f'\n-- Plotting condition: {condition} | scheme: {scheme} --')
             make_timeseries_figure(all_data, args.bands, args.rois, condition, scheme,
-                                    args.voxRes, figdir)
+                                    args.voxRes, figdir, alpha=args.alpha)
 
     print('\nAll figures saved.')
 
