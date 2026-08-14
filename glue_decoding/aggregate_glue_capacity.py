@@ -13,9 +13,13 @@ intrinsic_dim_epochs.py's plot_epoch_figure.
 Metrics plotted (see glue's ManifoldAnalysisResults / glue_analysis.py):
     capacity, dimension, radius, utility, center_alignment, axis_alignment
 
-Two separate figures per metric (stim vs delay), rather than epoch as a
-within-panel grouping, so the primary Real-vs-Shuffle comparison isn't
-crowded by a second grouping dimension.
+Two separate figures per (metric, epoch, scheme) -- epoch and scheme both
+kept as separate figures rather than within-panel groupings, so the primary
+Real-vs-Shuffle comparison isn't crowded by extra grouping dimensions.
+
+schemes: 2=left/right hemifield, 4=quadrants, 6=quadrants+axis, 10=every
+raw location (the only option before) -- see constants.CATEGORY_SCHEMES,
+manifold_capacity.py's module docstring.
 
 Usage:
     python aggregate_glue_capacity.py [--voxRes 8mm] [--lockType stim]
@@ -23,6 +27,7 @@ Usage:
                                        [--bands theta alpha beta lowgamma highgamma]
                                        [--rois visual parietal frontal]
                                        [--epochs stim delay]
+                                       [--schemes 2 4 6 10]
                                        [--outdir <bids_root>/derivatives/glueDecoding/glueFits]
 """
 
@@ -41,7 +46,9 @@ import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 
-from constants import SUBJECT_LIST, ROI_NAMES, get_bids_root, glue_fits_csv_path
+from constants import SUBJECT_LIST, ROI_NAMES, CATEGORY_SCHEMES, get_bids_root, glue_fits_csv_path
+
+SCHEME_LABELS = {s: f"{CATEGORY_SCHEMES[s]['name']} ({s} categories)" for s in CATEGORY_SCHEMES}
 
 # -- Visual design (mirrors intrinsic_dim_epochs.py / plot_timeseries.py) -----
 
@@ -114,11 +121,12 @@ def load_all_subjects(subjects, lockType, voxRes, bids_root):
 
 # -- Aggregation -----------------------------------------------------------------
 
-def aggregate_cell(df, band, roi, epoch, shuffle_val, metric):
+def aggregate_cell(df, band, roi, epoch, scheme, shuffle_val, metric):
     """Returns (mean, sem, subject_vals) across subjects for one
-    (band, roi, epoch, shuffle) cell, or (None, None, []) if no rows match."""
+    (band, roi, epoch, scheme, shuffle) cell, or (None, None, []) if no rows match."""
     sel = df[(df['band'] == band) & (df['roi'] == roi) &
-             (df['epoch'] == epoch) & (df['shuffle'] == shuffle_val)]
+             (df['epoch'] == epoch) & (df['scheme'] == scheme) &
+             (df['shuffle'] == shuffle_val)]
     vals = sel[metric].dropna().to_numpy()
     if vals.size == 0:
         return None, None, []
@@ -143,8 +151,8 @@ def _apply_black_style(fig, axes_flat):
         ax.set_axisbelow(True)
 
 
-def plot_metric_figure(df, metric, epoch, bands, rois, voxRes, outdir):
-    """Bar/dot plot for one metric x epoch: rows = bands, cols = rois.
+def plot_metric_figure(df, metric, epoch, scheme, bands, rois, voxRes, outdir):
+    """Bar/dot plot for one metric x epoch x scheme: rows = bands, cols = rois.
     Within each panel: Real vs Shuffle grouped bars, mean +/- SEM across
     subjects, individual-subject dots jittered on top."""
     n_rows, n_cols = len(bands), len(rois)
@@ -166,7 +174,7 @@ def plot_metric_figure(df, metric, epoch, bands, rois, voxRes, outdir):
         vmin, vmax = np.inf, -np.inf
         for roi in rois:
             for sh in STATE_ORDER:
-                mean, sem, _ = aggregate_cell(df, band, roi, epoch, sh, metric)
+                mean, sem, _ = aggregate_cell(df, band, roi, epoch, scheme, sh, metric)
                 if mean is not None:
                     vmin = min(vmin, mean - sem)
                     vmax = max(vmax, mean + sem)
@@ -187,7 +195,7 @@ def plot_metric_figure(df, metric, epoch, bands, rois, voxRes, outdir):
 
             has_data = False
             for sh in STATE_ORDER:
-                mean, sem, subj_vals = aggregate_cell(df, band, roi, epoch, sh, metric)
+                mean, sem, subj_vals = aggregate_cell(df, band, roi, epoch, scheme, sh, metric)
                 if mean is None:
                     continue
                 has_data = True
@@ -217,7 +225,7 @@ def plot_metric_figure(df, metric, epoch, bands, rois, voxRes, outdir):
                 roi_lbl = roi.capitalize() if roi != 'whole' else 'Whole brain'
                 n_max = 0
                 for sh in STATE_ORDER:
-                    _, _, subj_vals = aggregate_cell(df, band, roi, epoch, sh, metric)
+                    _, _, subj_vals = aggregate_cell(df, band, roi, epoch, scheme, sh, metric)
                     n_max = max(n_max, len(subj_vals))
                 ax.set_title(f'{roi_lbl}  (n={n_max})', fontsize=14, fontweight='bold', pad=6)
 
@@ -236,14 +244,15 @@ def plot_metric_figure(df, metric, epoch, bands, rois, voxRes, outdir):
                                  framealpha=0.2, edgecolor='#444444', labelcolor=_FG)
                 leg.get_frame().set_facecolor('#1a1a1a')
 
+    scheme_label = SCHEME_LABELS.get(scheme, str(scheme))
     fig.suptitle(
         f'Manifold Capacity -- {METRIC_LABELS.get(metric, metric)}  |  '
-        f'{EPOCH_LABELS.get(epoch, epoch)}  |  {voxRes}',
-        color=_FG, fontsize=17, fontweight='bold', y=1.01)
+        f'{EPOCH_LABELS.get(epoch, epoch)}  |  {scheme_label}  |  {voxRes}',
+        color=_FG, fontsize=16, fontweight='bold', y=1.01)
     fig.tight_layout(rect=[0.07, 0, 1, 1])
 
     os.makedirs(outdir, exist_ok=True)
-    fpath = os.path.join(outdir, f'glue_capacity_{metric}_{epoch}_{voxRes}.png')
+    fpath = os.path.join(outdir, f'glue_capacity_{metric}_{epoch}_scheme{scheme}_{voxRes}.png')
     fig.savefig(fpath, dpi=150, bbox_inches='tight', facecolor=fig.get_facecolor())
     plt.close(fig)
     print(f'Saved: {fpath}')
@@ -262,6 +271,8 @@ def main():
                          default=['theta', 'alpha', 'beta', 'lowgamma', 'highgamma'])
     parser.add_argument('--rois',     nargs='+', default=list(ROI_NAMES))
     parser.add_argument('--epochs',   nargs='+', default=['stim', 'delay'])
+    parser.add_argument('--schemes',  nargs='+', type=int, default=sorted(CATEGORY_SCHEMES),
+                         choices=sorted(CATEGORY_SCHEMES))
     parser.add_argument('--metrics',  nargs='+', default=METRICS)
     parser.add_argument('--outdir',   default=None,
                          help='Directory for figures. '
@@ -273,7 +284,7 @@ def main():
 
     print(f'aggregate_glue_capacity | voxRes={args.voxRes} | lockType={args.lockType} | '
           f'subjects={args.subjects} | bands={args.bands} | rois={args.rois} | '
-          f'epochs={args.epochs} | metrics={args.metrics}')
+          f'epochs={args.epochs} | schemes={args.schemes} | metrics={args.metrics}')
     print(f'Loading per-subject glueFits CSVs from: {bids_root}/derivatives/sub-XX/sourceRecon/glueFits/')
 
     df = load_all_subjects(args.subjects, args.lockType, args.voxRes, bids_root)
@@ -289,7 +300,8 @@ def main():
             print(f'  SKIP metric {metric!r}: not a column in the loaded results.')
             continue
         for epoch in args.epochs:
-            plot_metric_figure(df, metric, epoch, args.bands, args.rois, args.voxRes, outdir)
+            for scheme in args.schemes:
+                plot_metric_figure(df, metric, epoch, scheme, args.bands, args.rois, args.voxRes, outdir)
 
     print('\nDone.')
 

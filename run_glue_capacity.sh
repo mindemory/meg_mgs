@@ -15,12 +15,19 @@
 # cross-subject bar-plot figures.
 #
 # Usage:
-#   bash run_glue_capacity.sh [voxRes] [max_parallel] [n_hyperplanes] [seed] [force] [epochs]
+#   bash run_glue_capacity.sh [voxRes] [max_parallel] [n_hyperplanes] [seed] [force] [epochs] [schemes] [points_per_category]
 #
 # Examples:
-#   bash run_glue_capacity.sh                            # 8mm, max parallel = n_subjects, n_hyperplanes=200, stim+delay
-#   bash run_glue_capacity.sh 8mm 21 200 42 true          # overwrite existing per-subject CSVs, stim+delay
-#   bash run_glue_capacity.sh 8mm 21 200 42 true stim     # force, stim epoch only (skip delay's ~46k-point cells)
+#   bash run_glue_capacity.sh                                  # 8mm, max parallel = n_subjects, n_hyperplanes=200, stim+delay, schemes 2 4 6 10
+#   bash run_glue_capacity.sh 8mm 21 200 42 true                # overwrite existing per-subject CSVs, stim+delay, all schemes
+#   bash run_glue_capacity.sh 8mm 21 200 42 true stim            # force, stim epoch only (skip delay's ~46k-point cells)
+#   bash run_glue_capacity.sh 8mm 21 200 42 true stim "2"         # force, stim only, P=2 (left/right) only
+#
+# schemes: 2=left/right hemifield, 4=quadrants, 6=quadrants+axis, 10=every
+# raw location (the only option before) -- see constants.CATEGORY_SCHEMES.
+# points_per_category: leave empty/unset (default) for auto -- each
+# (subject, scheme) balanced to that subject's own smallest category trial
+# count for that scheme (see manifold_capacity.py's module docstring).
 
 set -euo pipefail
 
@@ -44,6 +51,13 @@ ROIS=(visual parietal frontal)
 # per-timepoint point count (see manifold_capacity.py's module docstring).
 EPOCHS_RAW="${6:-stim delay}"
 EPOCHS=(${EPOCHS_RAW})
+SCHEMES_RAW="${7:-2 4 6 10}"
+SCHEMES=(${SCHEMES_RAW})
+POINTS_PER_CATEGORY="${8:-}"
+PPC_FLAG=()
+if [ -n "${POINTS_PER_CATEGORY}" ]; then
+    PPC_FLAG=(--points_per_category "${POINTS_PER_CATEGORY}")
+fi
 
 # Default max parallel = number of subjects. Override with arg 2.
 MAX_PARALLEL="${2:-${#SUBJ_LIST[@]}}"
@@ -71,6 +85,8 @@ echo " Subjects       : ${SUBJ_LIST[*]}"
 echo " Bands          : ${BANDS[*]}"
 echo " ROIs           : ${ROIS[*]}"
 echo " Epochs         : ${EPOCHS[*]}"
+echo " Schemes        : ${SCHEMES[*]}"
+echo " Pts/category   : ${POINTS_PER_CATEGORY:-auto (per subject/scheme)}"
 echo " Jobs           : ${#SUBJ_LIST[@]} (one per subject)"
 echo " Logging to     : ${LOG_DIR}/"
 echo "========================================================"
@@ -88,6 +104,8 @@ for subjID in "${SUBJ_LIST[@]}"; do
           --bands "${BANDS[@]}" \
           --rois "${ROIS[@]}" \
           --epochs "${EPOCHS[@]}" \
+          --schemes "${SCHEMES[@]}" \
+          ${PPC_FLAG[@]+"${PPC_FLAG[@]}"} \
           --n_hyperplanes "${N_HYPERPLANES}" \
           --seed "${SEED}" \
           ${FORCE_FLAG[@]+"${FORCE_FLAG[@]}"} \
@@ -117,6 +135,7 @@ python3 "${AGG_SCRIPT}" \
     --bands "${BANDS[@]}" \
     --rois "${ROIS[@]}" \
     --epochs "${EPOCHS[@]}" \
+    --schemes "${SCHEMES[@]}" \
     > "${LOG_DIR}/aggregator.log" 2>&1
 
 echo "[$(date '+%H:%M:%S')] Aggregator finished. Log: ${LOG_DIR}/aggregator.log"
