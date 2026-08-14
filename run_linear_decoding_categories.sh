@@ -16,6 +16,15 @@
 # auto-balanced points_per_category + n_shuffle=100 + all 4 schemes runs in
 # well under a minute per subject (validated), not hours.
 #
+# ERP removal (grand trial-average subtracted from every trial, per band/
+# roi/condition cell, before windowing) is ON by default in the cell
+# script -- pass --no_erp_removal there directly if you want it off (no
+# launcher flag for this, to keep the positional arg list from growing).
+#
+# Significance in the plotted figures is now a cluster-based permutation
+# test (sign-flip, Maris & Oostenveld 2007) against chance, NOT FDR --
+# see plot_linear_decoding_categories.py's module docstring.
+#
 # Pure numpy -- does NOT need the `glue` conda env; run with this repo's
 # normal Python environment.
 #

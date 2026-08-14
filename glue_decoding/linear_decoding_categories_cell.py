@@ -280,7 +280,7 @@ def ridge_ovr_timeseries(X_win, labels, tv, fsample, time_stride_ms=DEFAULT_TIME
 
 def run_cell(subjID, bands, voxRes, bids_root, rois, conditions, schemes,
              points_per_category, win_ms, time_stride_ms, n_shuffle,
-             seed, outdir=None, force=False):
+             seed, remove_erp=True, outdir=None, force=False):
     lockType = 'stim'   # stim-locked only, matches decoding_ts_cell.py
 
     for band in bands:
@@ -313,6 +313,17 @@ def run_cell(subjID, bands, voxRes, bids_root, rois, conditions, schemes,
                     raw_target_labels = g04['target_labels'].astype(np.int64)
 
                     X = build_features(condition, amp, phase)
+
+                    # ERP removal: subtract the grand trial-average (native
+                    # time resolution, BEFORE windowing, over ALL trials in
+                    # this band/roi/condition cell -- BEFORE any scheme-
+                    # specific subsetting below, so every scheme sees the
+                    # same ERP-removed data) from every trial. Matches
+                    # decoding_ts_cell.py's identical step.
+                    if remove_erp:
+                        erp = X.mean(axis=0, keepdims=True)   # (1, T, F)
+                        X = X - erp
+
                     X_win = moving_window_mean(X, fsample, win_ms)
                     del X
                 except (FileNotFoundError, ValueError) as e:
@@ -347,7 +358,7 @@ def run_cell(subjID, bands, voxRes, bids_root, rois, conditions, schemes,
                         n_categories = len(CATEGORY_SCHEMES[scheme]['groups'])
                         print(f'  scheme={scheme}: shape=({n_trials},{n_times},{n_feat}) | '
                               f'fsample={fsample:.0f}Hz | win=+-{win_ms:.0f}ms | '
-                              f'time_stride={time_stride_ms:.0f}ms | '
+                              f'time_stride={time_stride_ms:.0f}ms | remove_erp={remove_erp} | '
                               f'n_shuffle={n_shuffle} | {n_categories} categories x '
                               f'{ppc_used} pts (points_per_category='
                               f'{"auto" if points_per_category is None else points_per_category})',
@@ -376,6 +387,7 @@ def run_cell(subjID, bands, voxRes, bids_root, rois, conditions, schemes,
                             points_per_category = np.array([ppc_used]),   # actual value used
                             win_ms       = np.array([win_ms]),
                             time_stride_ms = np.array([time_stride_ms]),
+                            remove_erp   = np.array([remove_erp]),
                             n_shuffle    = np.array([n_shuffle]),
                             seed         = np.array([seed]),
                             fsample      = np.array([fsample]),
@@ -419,6 +431,9 @@ def main():
                               f'module docstring; pass 0 to skip and compare against the '
                               f'theoretical chance_level=1/n_categories instead).')
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--no_erp_removal', action='store_false', dest='remove_erp',
+                         help='Skip ERP (grand trial-average) subtraction before decoding '
+                              '(default: ERP IS subtracted -- matches decoding_ts_cell.py).')
     parser.add_argument('--outdir', default=None)
     parser.add_argument('--force', action='store_true',
                          help='Overwrite existing .npz outputs instead of skipping them.')
@@ -429,13 +444,14 @@ def main():
           f'{args.voxRes} | conditions={args.conditions} | rois={args.rois} | '
           f'schemes={args.schemes} | points_per_category={args.points_per_category} | '
           f'win_ms={args.win_ms} | time_stride_ms={args.time_stride_ms} | '
+          f'remove_erp={args.remove_erp} | '
           f'n_shuffle={args.n_shuffle} | seed={args.seed} | force={args.force}', flush=True)
 
     t0 = time.time()
     run_cell(args.subjID, list(args.bands), args.voxRes, bids_root,
               list(args.rois), list(args.conditions), list(args.schemes),
               args.points_per_category, args.win_ms, args.time_stride_ms,
-              args.n_shuffle, args.seed,
+              args.n_shuffle, args.seed, remove_erp=args.remove_erp,
               outdir=args.outdir, force=args.force)
 
     print(f'Done | sub-{args.subjID:02d} | total {time.time() - t0:.1f}s')

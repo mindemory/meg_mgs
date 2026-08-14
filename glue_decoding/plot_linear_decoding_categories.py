@@ -22,16 +22,19 @@ Two figures per (condition, scheme):
       exact linear rescaling of the raw accuracy line/SEM, so it doesn't
       need re-deriving from the per-subject data.
 
-Both figures share the same significance overlay: two-sided Wilcoxon
-signed-rank test of each subject's (accuracy(t) - chance_level) against 0
-across subjects, FDR (Benjamini-Hochberg) corrected across that panel's own
-timepoints -- mirrors plot_representational_distance_ts.py's fix exactly,
-and is if anything cleaner here since chance_level is a true constant
-across subjects (not a per-subject empirical quantity), shown as a dot row
-under each panel. This REPLACES the empirical shuffle band as the
-group-level significance readout; the shuffle band (when present) is kept
-only as an additional single-subject-null visual reference, same caveat as
-before.
+Both figures share the same significance overlay: a one-sample CLUSTER-BASED
+PERMUTATION test (Maris & Oostenveld, 2007; sign-flipping) of accuracy(t)
+against chance_level across subjects -- replaces an earlier per-timepoint
+Wilcoxon+FDR approach (see chat history): FDR treats every timepoint as an
+independent test, throwing away the temporal correlation between adjacent
+timepoints; cluster permutation tests whole contiguous runs against a null
+built from the same kind of statistic, which is both more powerful (a real
+effect should show up as a sustained run, not isolated blips) and still
+properly controls family-wise error (via the max-cluster-statistic null).
+Shown as a dot row under each panel. This REPLACES the empirical shuffle
+band as the group-level significance readout; the shuffle band (when
+present) is kept only as an additional single-subject-null visual
+reference, same caveat as before.
 
 Usage:
     python plot_linear_decoding_categories.py [--voxRes 8mm]
@@ -40,7 +43,7 @@ Usage:
                                                [--conditions ampOnly]
                                                [--schemes 2 4 6 10]
                                                [--subjects 1 2 ...]
-                                               [--alpha 0.05]
+                                               [--n_perm 1000] [--cluster_alpha 0.05] [--alpha 0.05]
                                                [--outdir <path>] [--figdir <path>]
 """
 
@@ -161,44 +164,86 @@ def aggregate_lindecode(all_data, band, roi, condition, scheme):
             mean_shuf, mean_shuf_std, has_shuffle)
 
 
-def _fdr_bh(pvals, alpha=0.05):
-    """Benjamini-Hochberg FDR: returns a bool significance mask, same shape as pvals."""
-    p = np.asarray(pvals)
-    n = p.size
-    order = np.argsort(p)
-    ranked = p[order]
-    thresh = alpha * (np.arange(1, n + 1) / n)
-    below = ranked <= thresh
-    sig_sorted = np.zeros(n, dtype=bool)
-    if below.any():
-        sig_sorted[:np.max(np.where(below)) + 1] = True
-    sig = np.zeros(n, dtype=bool)
-    sig[order] = sig_sorted
-    return sig
+def _cluster_tstat(diff):
+    """One-sample t-stat per timepoint. diff: (n_subj, T) -> (T,)."""
+    n_subj = diff.shape[0]
+    m = diff.mean(axis=0)
+    s = diff.std(axis=0, ddof=1)
+    s = np.where(s < 1e-12, 1e-12, s)
+    return m / (s / np.sqrt(n_subj))
 
 
-def compute_significance_vs_chance(acc_matrix, chance_level, alpha=0.05):
+def _find_clusters(tvals, t_crit):
     """
-    Two-sided Wilcoxon signed-rank test of (accuracy(t) - chance_level)
-    against 0 across subjects (acc_matrix: (n_subj, T)), one test per
-    timepoint, FDR (Benjamini-Hochberg) corrected across this array's own T
-    timepoints. Returns a (T,) bool significance mask. A timepoint with < 2
-    subjects, all-identical-to-chance values, or a scipy ValueError is
-    treated as p=1 (not significant) rather than raising.
+    Contiguous runs where |t| > t_crit. Returns list of (start, end,
+    cluster_stat) with end EXCLUSIVE, cluster_stat = sum(|t|) within the run.
+    """
+    sig = np.abs(tvals) > t_crit
+    clusters = []
+    start = None
+    for i, s in enumerate(sig):
+        if s and start is None:
+            start = i
+        elif not s and start is not None:
+            clusters.append((start, i, float(np.sum(np.abs(tvals[start:i])))))
+            start = None
+    if start is not None:
+        clusters.append((start, len(tvals), float(np.sum(np.abs(tvals[start:])))))
+    return clusters
+
+
+def cluster_permutation_test(acc_matrix, chance_level, n_perm=1000,
+                              cluster_alpha=0.05, alpha=0.05, seed=0):
+    """
+    One-sample cluster-based permutation test (Maris & Oostenveld, 2007) of
+    accuracy(t) against chance_level across subjects, via sign-flipping --
+    replaces the earlier per-timepoint Wilcoxon+FDR approach (see chat
+    history): FDR treats each timepoint as an independent test, discarding
+    the temporal correlation between adjacent timepoints; cluster
+    permutation instead tests whole contiguous runs of a candidate effect
+    against a null built from the SAME kind of contiguous-run statistic, so
+    it's both more powerful (exploits temporal structure) and still
+    controls family-wise error properly (via the max-cluster-statistic null).
+
+    acc_matrix: (n_subj, T) raw per-subject accuracy(t).
+    n_perm: sign-flip permutations for the null distribution of the max
+    cluster statistic.
+    cluster_alpha: two-sided per-timepoint threshold (as a t-distribution
+    critical value, df=n_subj-1) used only to FORM candidate clusters --
+    not itself a significance claim.
+    alpha: cluster-level significance threshold on each observed cluster's
+    permutation p-value.
+
+    Returns a (T,) bool mask -- True for timepoints belonging to a cluster
+    with p < alpha. Returns all-False if n_subj < 2 or no candidate cluster
+    forms in the observed data.
     """
     n_subj, n_times = acc_matrix.shape
-    pvals = np.ones(n_times)
-    for t in range(n_times):
-        vals = acc_matrix[:, t] - chance_level
-        vals = vals[~np.isnan(vals)]
-        if vals.size < 2 or np.allclose(vals, 0):
-            continue
-        try:
-            _, p = stats.wilcoxon(vals)
-            pvals[t] = p
-        except ValueError:
-            pass
-    return _fdr_bh(pvals, alpha=alpha)
+    if n_subj < 2:
+        return np.zeros(n_times, dtype=bool)
+
+    diff = acc_matrix - chance_level   # (n_subj, T)
+    t_crit = stats.t.ppf(1 - cluster_alpha / 2, df=n_subj - 1)
+
+    t_obs = _cluster_tstat(diff)
+    obs_clusters = _find_clusters(t_obs, t_crit)
+    if not obs_clusters:
+        return np.zeros(n_times, dtype=bool)
+
+    rng = np.random.default_rng(seed)
+    max_stat_null = np.zeros(n_perm)
+    for p in range(n_perm):
+        signs = rng.choice([-1.0, 1.0], size=n_subj)
+        t_perm = _cluster_tstat(diff * signs[:, None])
+        perm_clusters = _find_clusters(t_perm, t_crit)
+        max_stat_null[p] = max((c[2] for c in perm_clusters), default=0.0)
+
+    sig_mask = np.zeros(n_times, dtype=bool)
+    for (start, end, stat) in obs_clusters:
+        p_val = (np.sum(max_stat_null >= stat) + 1) / (n_perm + 1)
+        if p_val < alpha:
+            sig_mask[start:end] = True
+    return sig_mask
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
@@ -295,14 +340,15 @@ def _band_row_grid(n_bands, n_rois, row_h_in, fig_w_per_roi=4.2,
 
 
 def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, outdir_fig,
-                            normalize=False, alpha=0.05):
+                            normalize=False, n_perm=1000, cluster_alpha=0.05, alpha=0.05):
     """
     normalize=False (default): raw accuracy, chance line at 1/n_categories.
     normalize=True: (accuracy-chance)/(1-chance), bounded [0,1], chance line
     at 0 -- an exact linear rescaling of the raw mean/SEM (see module
     docstring), for cross-scheme comparability. Same significance mask
-    either way (a positive linear rescaling doesn't change the Wilcoxon
-    test's sign/rank).
+    either way (a positive linear rescaling doesn't change the cluster
+    test's sign/magnitude -- t-stats are scale-invariant under a positive
+    linear transform).
     """
     n_bands, n_rois = len(bands), len(rois)
     fig, gs = _band_row_grid(n_bands, n_rois, row_h_in=1.3, bottom_margin_in=0.40)
@@ -321,8 +367,9 @@ def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, out
             title_str     = roi.capitalize()
 
             if tv is not None:
-                sig_mask = compute_significance_vs_chance(acc_matrix, chance_level, alpha=alpha) \
-                    if acc_matrix.shape[0] >= 2 else None
+                sig_mask = cluster_permutation_test(
+                    acc_matrix, chance_level, n_perm=n_perm,
+                    cluster_alpha=cluster_alpha, alpha=alpha)
 
                 if normalize:
                     scale = 1.0 - chance_level
@@ -356,8 +403,8 @@ def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, out
     cond_label   = 'Amplitude only' if condition == 'ampOnly' else 'Amplitude + Phase'
     scheme_label = SCHEME_LABELS.get(scheme, str(scheme))
     metric_label = 'Normalized Accuracy' if normalize else 'Accuracy'
-    fig.suptitle(f'Linear (SVM, OvR, LOO) Decoding {metric_label}  |  {cond_label}  |  '
-                 f'{scheme_label}  |  {voxRes}  |  dots = Wilcoxon vs chance, FDR q<{alpha}',
+    fig.suptitle(f'Linear (Ridge, OvR, LOO) Decoding {metric_label}  |  {cond_label}  |  '
+                 f'{scheme_label}  |  {voxRes}  |  dots = cluster permutation vs chance, p<{alpha}',
                  color=_FG, fontsize=13, fontweight='bold', y=0.97)
     fig.text(0.5, 0.005, 'Time (s)', ha='center', va='bottom', color=_FG, fontsize=9)
 
@@ -383,9 +430,14 @@ def main():
     parser.add_argument('--conditions', nargs='+', default=['ampOnly'])
     parser.add_argument('--schemes',    nargs='+', type=int, default=sorted(CATEGORY_SCHEMES),
                         choices=sorted(CATEGORY_SCHEMES))
+    parser.add_argument('--n_perm',       type=int, default=1000,
+                        help='Sign-flip permutations for the cluster-permutation null (default 1000).')
+    parser.add_argument('--cluster_alpha', type=float, default=0.05,
+                        help='Per-timepoint threshold (t-distribution) used only to FORM '
+                             'candidate clusters, not a significance claim itself (default 0.05).')
     parser.add_argument('--alpha',      type=float, default=0.05,
-                        help='FDR (Benjamini-Hochberg) significance threshold for the '
-                             'per-timepoint Wilcoxon-vs-chance test (default 0.05).')
+                        help='Cluster-level significance threshold on each observed cluster\'s '
+                             'permutation p-value (default 0.05).')
     parser.add_argument('--outdir',     default=None,
                         help='Directory containing the per-subject .npz files.')
     parser.add_argument('--figdir',     default=None,
@@ -412,9 +464,11 @@ def main():
         for scheme in args.schemes:
             print(f'\n-- Plotting condition: {condition} | scheme: {scheme} --')
             make_timeseries_figure(all_data, args.bands, args.rois, condition, scheme,
-                                    args.voxRes, figdir, normalize=False, alpha=args.alpha)
+                                    args.voxRes, figdir, normalize=False,
+                                    n_perm=args.n_perm, cluster_alpha=args.cluster_alpha, alpha=args.alpha)
             make_timeseries_figure(all_data, args.bands, args.rois, condition, scheme,
-                                    args.voxRes, figdir, normalize=True, alpha=args.alpha)
+                                    args.voxRes, figdir, normalize=True,
+                                    n_perm=args.n_perm, cluster_alpha=args.cluster_alpha, alpha=args.alpha)
 
     print('\nAll figures saved.')
 
