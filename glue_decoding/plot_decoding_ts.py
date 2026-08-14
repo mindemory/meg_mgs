@@ -9,8 +9,16 @@ frontal):
 
   1) Timeseries figure (make_timeseries_figure):
        Mean +/- SEM circular decoding error across subjects (lower = better).
-       Dashed line: mean +/- SEM shuffle baseline.
        Horizontal line at 90 deg: theoretical chance for circular decoding.
+       Significance: two-sided Wilcoxon signed-rank test of each subject's
+       (error(t) - 90) against 0 across subjects, per timepoint, marked as a
+       dot row under each panel where p < --alpha (default 0.05). NOT FDR
+       corrected across timepoints for now (deliberately -- see chat
+       history), so read this as an uncorrected/exploratory indicator, not
+       a rigorous multiple-comparisons-controlled claim. No shuffle
+       band/line any more (removed -- it wasn't the right group-level
+       comparison; see chat history for the same reasoning already applied
+       to plot_representational_distance_ts.py / plot_linear_decoding_categories.py).
        Event flag lines: Stim at 0.0 s (top), Delay Onset at 0.2 s (mid).
        Y-axis is data-driven per panel (not a fixed 0-180 clamp), always
        keeping the 90 deg chance line in view.
@@ -64,6 +72,7 @@ _GRID      = '#1c1c1c'
 _FLAG_LINE = '#777777'
 _FLAG_TXT  = '#cccccc'
 _CHANCE    = '#444444'     # horizontal chance line
+_SIG       = '#ffffff'     # significance marker dots
 
 ROI_COLOURS = {
     'visual':   '#FFC629',
@@ -177,9 +186,13 @@ def load_all_subjects(subjects, bids_root, voxRes, bands, rois, conditions, outd
 
 def aggregate_timeseries(all_data, band, roi, condition):
     """
-    Returns (tv, mean_err, sem_err, mean_shuf, sem_shuf) or Nones.
+    Returns (tv, err_matrix, mean_err, sem_err) or (None, None, None, None).
 
-    Real error is now computed the way megScripts/plotDecodBehav.py computes
+    err_matrix: (n_subj, T) raw per-subject error(t), returned (not just its
+    mean/SEM) so compute_significance can run the actual across-subject
+    test on it.
+
+    Real error is computed the way megScripts/plotDecodBehav.py computes
     "decoding error" (its top-row scatter is unweighted circmean with no
     SEM; this ports the fuller version its own quantile/bottom-row uses,
     which is the same operation plus proper across-subject stats):
@@ -198,21 +211,9 @@ def aggregate_timeseries(all_data, band, roi, condition):
          [0, 180]).
       3. Arithmetic mean/SEM of that per-subject quantity across subjects
          (unchanged from before).
-
-    Shuffle baseline is method-matched to the real-error statistic above:
-    decoding_ts_cell.py now saves shuffle_signed_circmean (n_shuffle, T) --
-    the signed circular mean across trials for each label-permutation --
-    and here we take abs() then average over permutations, i.e. the same
-    "signed circmean over trials, then abs" statistic evaluated under the
-    permuted-label null. Falls back to the old per-trial unsigned
-    circular_dist shuffle_errors (arithmetic trial mean) for any cached
-    .npz predating this field -- not method-matched, but same ~90 deg
-    chance level, so still a valid approximate reference.
     """
     subj_err_list = []
-    shuffle_list  = []
     tv            = None
-    warned_legacy_shuffle = False
 
     for d in all_data:
         if d is None:
@@ -226,30 +227,40 @@ def aggregate_timeseries(all_data, band, roi, condition):
         signed_err  = ((pred_angles - true_angles[:, None] + 180) % 360) - 180
         subj_signed_mean = stats.circmean(signed_err, high=180, low=-180, axis=0)  # (T,)
         subj_err_list.append(np.abs(subj_signed_mean))
-
-        if 'shuffle_signed_circmean' in npz:
-            shuffle_list.append(np.abs(npz['shuffle_signed_circmean']).mean(axis=0))  # (T,)
-        else:
-            if not warned_legacy_shuffle:
-                print(f'  NOTE: {band}/{roi}/{condition}: cached .npz predates '
-                      f'shuffle_signed_circmean -- using legacy unsigned-distance '
-                      f'shuffle baseline (not method-matched). Re-run with --force '
-                      f'to regenerate.', flush=True)
-                warned_legacy_shuffle = True
-            shuffle_list.append(npz['shuffle_errors'].mean(axis=0))
         if tv is None:
             tv = npz['time_vector']
 
     if not subj_err_list:
-        return None, None, None, None, None
+        return None, None, None, None
 
-    err  = np.stack(subj_err_list)   # (n_subj, T)
-    shuf = np.stack(shuffle_list)
-    n    = err.shape[0]
+    err = np.stack(subj_err_list)   # (n_subj, T)
+    n   = err.shape[0]
 
-    return (tv,
-            err.mean(0),  err.std(0) / np.sqrt(n),
-            shuf.mean(0), shuf.std(0) / np.sqrt(n))
+    return tv, err, err.mean(0), err.std(0) / np.sqrt(n)
+
+
+def compute_significance(err_matrix, chance=90.0, alpha=0.05):
+    """
+    Two-sided Wilcoxon signed-rank test of (error(t) - chance) against 0
+    across subjects (err_matrix: (n_subj, T)), one test per timepoint.
+    Deliberately NOT FDR-corrected across timepoints for now (see module
+    docstring) -- raw p < alpha per timepoint. Returns a (T,) bool mask.
+    A timepoint with < 2 subjects, all-identical-to-chance values, or a
+    scipy ValueError is treated as p=1 (not significant) rather than raising.
+    """
+    n_subj, n_times = err_matrix.shape
+    sig = np.zeros(n_times, dtype=bool)
+    for t in range(n_times):
+        vals = err_matrix[:, t] - chance
+        vals = vals[~np.isnan(vals)]
+        if vals.size < 2 or np.allclose(vals, 0):
+            continue
+        try:
+            _, p = stats.wilcoxon(vals)
+            sig[t] = p < alpha
+        except ValueError:
+            pass
+    return sig
 
 
 def compute_epoch_quartiles(all_data, band, roi, condition):
@@ -442,21 +453,16 @@ def _style_ax(ax, spine_col='#333333'):
     ax.yaxis.label.set_color(_FG)
 
 
-def plot_timeseries_panel(ax, tv, mean_err, sem_err, mean_shuf, sem_shuf,
+def plot_timeseries_panel(ax, tv, mean_err, sem_err, sig_mask,
                            roi, is_bottom_row, is_left_col, show_title, title_str,
                            show_flag_labels=True):
-    """Draw decoding error timeseries + shuffle into ax."""
+    """Draw decoding error timeseries into ax (no shuffle band -- see module docstring)."""
     col  = ROI_COLOURS[roi]
     t0   = float(tv[0])
     t1   = float(tv[-1])
 
     # Chance line
     ax.axhline(90, color=_CHANCE, lw=0.8, ls=':', zorder=1)
-
-    # Shuffle baseline (dashed, same colour, dimmer)
-    ax.fill_between(tv, mean_shuf - sem_shuf, mean_shuf + sem_shuf,
-                     alpha=0.15, color=col, zorder=2)
-    ax.plot(tv, mean_shuf, color=col, lw=0.9, ls='--', alpha=0.55, zorder=2)
 
     # Real decoding
     ax.fill_between(tv, mean_err - sem_err, mean_err + sem_err,
@@ -465,14 +471,22 @@ def plot_timeseries_panel(ax, tv, mean_err, sem_err, mean_shuf, sem_shuf,
 
     # ylim: no longer a hard 0-180 clamp -- that flattened real effects
     # against the full theoretical range and made everything look like it
-    # hovers at chance. Instead scale to the actual data (err/shuf +/- SEM),
-    # but always keep the 90 deg chance line in view so the effect size is
+    # hovers at chance. Instead scale to the actual data (err +/- SEM), but
+    # always keep the 90 deg chance line in view so the effect size is
     # still interpretable relative to chance, and clip to the physical
     # [0, 180] range.
-    lo = min(np.nanmin(mean_err - sem_err), np.nanmin(mean_shuf - sem_shuf), 90)
-    hi = max(np.nanmax(mean_err + sem_err), np.nanmax(mean_shuf + sem_shuf), 90)
+    lo = min(np.nanmin(mean_err - sem_err), 90)
+    hi = max(np.nanmax(mean_err + sem_err), 90)
     pad = max(5.0, (hi - lo) * 0.15)
     lo, hi = max(0, lo - pad), min(180, hi + pad)
+
+    # Significance dots (Wilcoxon vs 90, uncorrected -- see
+    # compute_significance) along a fixed row near the panel bottom, same
+    # convention as plot_representational_distance_ts.py / plot_linear_decoding_categories.py.
+    if sig_mask is not None and sig_mask.any():
+        y_sig = lo + 0.06 * (hi - lo)
+        ax.plot(tv[sig_mask], np.full(sig_mask.sum(), y_sig),
+                '.', color=_SIG, ms=3.0, zorder=6)
 
     # xlim/ylim must be set BEFORE reading ax.get_ylim() for flag placement --
     # otherwise the flags are positioned against matplotlib's autoscaled
@@ -688,8 +702,8 @@ def _band_row_grid(n_bands, n_rois, row_h_in, fig_w_per_roi=4.2,
     return fig, gs
 
 
-def make_timeseries_figure(all_data, bands, rois, condition, voxRes, outdir_fig):
-    """Build and save the timeseries figure (mean +/- SEM error/shuffle vs. time)."""
+def make_timeseries_figure(all_data, bands, rois, condition, voxRes, outdir_fig, alpha=0.05):
+    """Build and save the timeseries figure (mean +/- SEM error vs. time, no shuffle band)."""
 
     n_bands = len(bands)
     n_rois  = len(rois)
@@ -700,7 +714,7 @@ def make_timeseries_figure(all_data, bands, rois, condition, voxRes, outdir_fig)
         for c_idx, roi in enumerate(rois):
             ax_ts = fig.add_subplot(gs[r_idx, c_idx])
 
-            tv, mean_err, sem_err, mean_shuf, sem_shuf = aggregate_timeseries(
+            tv, err_matrix, mean_err, sem_err = aggregate_timeseries(
                 all_data, band, roi, condition)
 
             is_left_col   = (c_idx == 0)
@@ -709,8 +723,10 @@ def make_timeseries_figure(all_data, bands, rois, condition, voxRes, outdir_fig)
             title_str     = roi.capitalize()
 
             if tv is not None:
+                sig_mask = compute_significance(err_matrix, chance=90.0, alpha=alpha) \
+                    if err_matrix.shape[0] >= 2 else None
                 plot_timeseries_panel(
-                    ax_ts, tv, mean_err, sem_err, mean_shuf, sem_shuf,
+                    ax_ts, tv, mean_err, sem_err, sig_mask,
                     roi, is_bottom_row, is_left_col, show_title, title_str,
                     show_flag_labels=show_title)
             else:
@@ -727,8 +743,9 @@ def make_timeseries_figure(all_data, bands, rois, condition, voxRes, outdir_fig)
 
     cond_label = 'Amplitude only' if condition == 'ampOnly' \
                  else 'Amplitude + Phase'
-    fig.suptitle(f'Stim-locked Decoding  |  {cond_label}  |  {voxRes}',
-                  color=_FG, fontsize=14, fontweight='bold', y=0.97)
+    fig.suptitle(f'Stim-locked Decoding  |  {cond_label}  |  {voxRes}  |  '
+                 f'dots = Wilcoxon vs 90deg, uncorrected p<{alpha}',
+                  color=_FG, fontsize=13, fontweight='bold', y=0.97)
     fig.text(0.5, 0.005, 'Time (s)', ha='center', va='bottom',
               color=_FG, fontsize=9)
 
@@ -808,6 +825,10 @@ def main():
                         default=['theta', 'alpha', 'beta', 'lowgamma', 'highgamma'])
     parser.add_argument('--rois',        nargs='+', default=list(ROI_NAMES))
     parser.add_argument('--conditions',  nargs='+', default=['ampOnly', 'ampPhase'])
+    parser.add_argument('--alpha',       type=float, default=0.05,
+                        help='Uncorrected significance threshold for the per-timepoint '
+                             'Wilcoxon-vs-90deg test (default 0.05, NOT FDR corrected -- '
+                             'see module docstring).')
     parser.add_argument('--outdir',      default=None,
                         help='Directory containing the per-subject .npz files.')
     parser.add_argument('--figdir',      default=None,
@@ -837,7 +858,7 @@ def main():
     for condition in args.conditions:
         print(f'\n-- Plotting condition: {condition} --')
         make_timeseries_figure(all_data, args.bands, args.rois, condition,
-                                 args.voxRes, figdir)
+                                 args.voxRes, figdir, alpha=args.alpha)
         make_quartile_figure(all_data, args.bands, args.rois, condition,
                                args.voxRes, figdir, bar_ylims)
 

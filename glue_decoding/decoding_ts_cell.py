@@ -14,6 +14,14 @@ For each (band x condition x ROI):
     separately would double-count it and inflate ampPhase's feature count
     3x vs ampOnly's 1x, confounding "phase helps" with "more features
     helps" under LOO (see features.py's docstring).
+  - Subtracts the ERP (trial-averaged response, per band/roi/condition cell,
+    computed at native time resolution BEFORE windowing) from every single
+    trial (default ON, --no_erp_removal to disable). This is the grand
+    average across ALL trials in the cell (not per target location -- that
+    would remove location-specific structure, defeating the point), meant
+    to strip the common stimulus-locked response shared regardless of which
+    location was shown, so the decoder sees trial-to-trial deviations from
+    that common response rather than being dominated by it.
   - Applies ±win_ms ms temporal averaging window.
   - Analytical closed-form Ridge LOO decoding (sin + cos targets, arctan2
     for angle) -- a linear regularized regression, same family as a linear
@@ -281,7 +289,7 @@ def _get_trial_idx(subjID, lockType, voxRes, bids_root, rois, n_trials):
 
 
 def run_cell(subjID, bands, voxRes, bids_root, rois, conditions,
-             win_ms, n_shuffle, alpha, outdir=None, force=False):
+             win_ms, n_shuffle, alpha, remove_erp=True, outdir=None, force=False):
 
     lockType = 'stim'   # stim-locked only
     trial_idx_cache = {}   # lazily computed once per band (n_trials can differ across bands)
@@ -337,6 +345,13 @@ def run_cell(subjID, bands, voxRes, bids_root, rois, conditions,
                     # [amp, cos(phase), sin(phase)] (3S) -- see module docstring.
                     X = build_features(condition, amp, phase)
 
+                    # ERP removal: subtract the grand trial-average (native
+                    # time resolution, BEFORE windowing) from every trial --
+                    # see module docstring.
+                    if remove_erp:
+                        erp = X.mean(axis=0, keepdims=True)   # (1, T, F)
+                        X = X - erp
+
                     # Temporal averaging window
                     X_win = moving_window_mean(X, fsample, win_ms)
                     del X
@@ -344,7 +359,8 @@ def run_cell(subjID, bands, voxRes, bids_root, rois, conditions,
                     n_times, n_feat = X_win.shape[1], X_win.shape[2]
                     print(f'  shape=({n_trials},{n_times},{n_feat}) | '
                           f'fsample={fsample:.0f}Hz | win=±{win_ms:.0f}ms | '
-                          f'n_shuffle={n_shuffle} | alpha={alpha}', flush=True)
+                          f'n_shuffle={n_shuffle} | alpha={alpha} | '
+                          f'remove_erp={remove_erp}', flush=True)
 
                     pred_angles, errors, shuffle_errors, shuffle_signed_circmean = \
                         ridge_loocv_timeseries(X_win, true_angles_deg,
@@ -367,6 +383,7 @@ def run_cell(subjID, bands, voxRes, bids_root, rois, conditions,
                         win_ms         = np.array([win_ms]),
                         n_shuffle      = np.array([n_shuffle]),
                         alpha          = np.array([alpha]),
+                        remove_erp     = np.array([remove_erp]),
                         fsample        = np.array([fsample]),
                     )
                     print(f'  Saved: {out_path}')
@@ -402,6 +419,9 @@ def main():
                              f'cheap thanks to the closed-form Ridge LOO shortcut).')
     parser.add_argument('--alpha',       type=float, default=RIDGE_ALPHA,
                         help=f'Ridge regularisation alpha (default {RIDGE_ALPHA}).')
+    parser.add_argument('--no_erp_removal', action='store_false', dest='remove_erp',
+                        help='Skip ERP (grand trial-average) subtraction before decoding '
+                             '(default: ERP IS subtracted -- see module docstring).')
     parser.add_argument('--outdir',      default=None)
     parser.add_argument('--force',       action='store_true',
                         help='Overwrite existing .npz outputs instead of skipping them '
@@ -412,12 +432,13 @@ def main():
     print(f'decoding_ts_cell | sub-{args.subjID:02d} | bands={args.bands} | '
           f'{args.voxRes} | conditions={args.conditions} | rois={args.rois} | '
           f'win_ms={args.win_ms} | n_shuffle={args.n_shuffle} | alpha={args.alpha} | '
-          f'force={args.force}',
+          f'remove_erp={args.remove_erp} | force={args.force}',
           flush=True)
 
     run_cell(args.subjID, list(args.bands), args.voxRes, bids_root,
              list(args.rois), list(args.conditions),
-             args.win_ms, args.n_shuffle, args.alpha, args.outdir, args.force)
+             args.win_ms, args.n_shuffle, args.alpha,
+             remove_erp=args.remove_erp, outdir=args.outdir, force=args.force)
 
 
 if __name__ == '__main__':
