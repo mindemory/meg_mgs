@@ -3,7 +3,7 @@
 plot_linear_decoding_categories.py
 
 Aggregates linear_decoding_categories_cell.py's per-subject .npz files and
-plots LOO (or k-fold) SVM one-vs-rest classification accuracy over time,
+plots closed-form ridge one-vs-rest LOO classification accuracy over time,
 bands x rois grid, one figure per (condition, scheme) -- mirrors
 plot_decoding_ts.py / plot_representational_distance_ts.py's layout/styling
 so all three are visually and temporally comparable.
@@ -11,10 +11,7 @@ so all three are visually and temporally comparable.
 Two figures per (condition, scheme):
   lindecode_cat_{condition}_scheme{scheme}_{voxRes}.png
       Raw accuracy: mean +/- SEM across subjects, theoretical chance line
-      (1/n_categories), optional empirical-null band (only if cells were
-      run with --n_shuffle > 0 -- same "typical single-subject null"
-      caveat as plot_representational_distance_ts.py, not a group-level
-      null). Most directly interpretable ("62% accuracy").
+      (1/n_categories). Most directly interpretable ("62% accuracy").
   lindecode_cat_norm_{condition}_scheme{scheme}_{voxRes}.png
       Normalized: (accuracy - chance) / (1 - chance), bounded [0, 1],
       comparable across schemes with different chance floors (0.5 for
@@ -22,19 +19,18 @@ Two figures per (condition, scheme):
       exact linear rescaling of the raw accuracy line/SEM, so it doesn't
       need re-deriving from the per-subject data.
 
-Both figures share the same significance overlay: a one-sample CLUSTER-BASED
-PERMUTATION test (Maris & Oostenveld, 2007; sign-flipping) of accuracy(t)
-against chance_level across subjects -- replaces an earlier per-timepoint
-Wilcoxon+FDR approach (see chat history): FDR treats every timepoint as an
-independent test, throwing away the temporal correlation between adjacent
-timepoints; cluster permutation tests whole contiguous runs against a null
-built from the same kind of statistic, which is both more powerful (a real
-effect should show up as a sustained run, not isolated blips) and still
-properly controls family-wise error (via the max-cluster-statistic null).
-Shown as a dot row under each panel. This REPLACES the empirical shuffle
-band as the group-level significance readout; the shuffle band (when
-present) is kept only as an additional single-subject-null visual
-reference, same caveat as before.
+No empirical shuffle band any more (removed -- it was never the right
+group-level comparison; see chat history). Both figures share the same
+significance overlay instead: a one-sample CLUSTER-BASED PERMUTATION test
+(Maris & Oostenveld, 2007; sign-flipping) of accuracy(t) against
+chance_level across subjects -- replaces an earlier per-timepoint
+Wilcoxon+FDR approach: FDR treats every timepoint as an independent test,
+throwing away the temporal correlation between adjacent timepoints; cluster
+permutation tests whole contiguous runs against a null built from the same
+kind of statistic, which is both more powerful (a real effect should show
+up as a sustained run, not isolated blips) and still properly controls
+family-wise error (via the max-cluster-statistic null). Shown as a dot row
+under each panel.
 
 Usage:
     python plot_linear_decoding_categories.py [--voxRes 8mm]
@@ -257,42 +253,35 @@ def _style_ax(ax, spine_col='#333333'):
     ax.yaxis.label.set_color(_FG)
 
 
-def plot_lindecode_panel(ax, tv, mean_acc, sem_acc, chance_level, mean_shuf, mean_shuf_std,
+def plot_lindecode_panel(ax, tv, mean_acc, sem_acc, chance_level,
                           sig_mask, y_label, roi, is_bottom_row, is_left_col, show_title,
                           title_str, show_flag_labels=True):
     """
-    Plots whatever (mean_acc, sem_acc, chance_level[, mean_shuf, mean_shuf_std])
-    it's given -- caller decides raw accuracy vs. normalized
-    (accuracy-chance)/(1-chance) by passing the already-transformed values
-    (see make_timeseries_figure) and the matching y_label/chance_level (0
-    for the normalized variant, 1/n_categories for raw).
+    Plots whatever (mean_acc, sem_acc, chance_level) it's given -- caller
+    decides raw accuracy vs. normalized (accuracy-chance)/(1-chance) by
+    passing the already-transformed values (see make_timeseries_figure) and
+    the matching y_label/chance_level (0 for the normalized variant,
+    1/n_categories for raw). No empirical shuffle band any more (removed --
+    see module docstring); group-level significance comes entirely from
+    the cluster-permutation dots.
     """
     col = ROI_COLOURS[roi]
     t0, t1 = float(tv[0]), float(tv[-1])
 
     ax.axhline(chance_level, color=_CHANCE, lw=0.8, ls=':', zorder=1)
 
-    if mean_shuf is not None:
-        ax.fill_between(tv, mean_shuf - mean_shuf_std, mean_shuf + mean_shuf_std,
-                         alpha=0.15, color=col, zorder=2)
-        ax.plot(tv, mean_shuf, color=col, lw=0.9, ls='--', alpha=0.55, zorder=2)
-
     ax.fill_between(tv, mean_acc - sem_acc, mean_acc + sem_acc,
                      alpha=0.30, color=col, zorder=3)
     ax.plot(tv, mean_acc, color=col, lw=1.5, zorder=3)
 
-    lo_candidates = [np.nanmin(mean_acc - sem_acc), chance_level]
-    hi_candidates = [np.nanmax(mean_acc + sem_acc), chance_level]
-    if mean_shuf is not None:
-        lo_candidates.append(np.nanmin(mean_shuf - mean_shuf_std))
-        hi_candidates.append(np.nanmax(mean_shuf + mean_shuf_std))
-    lo, hi = min(lo_candidates), max(hi_candidates)
+    lo = min(np.nanmin(mean_acc - sem_acc), chance_level)
+    hi = max(np.nanmax(mean_acc + sem_acc), chance_level)
     pad = max(1e-6, (hi - lo) * 0.15)
     lo, hi = lo - pad, hi + pad
 
-    # Significance dots (Wilcoxon vs chance, FDR-corrected -- see
-    # compute_significance_vs_chance) along a fixed row near the panel
-    # bottom, same convention as plot_representational_distance_ts.py.
+    # Significance dots (cluster permutation vs chance -- see
+    # cluster_permutation_test) along a fixed row near the panel bottom,
+    # same convention as plot_representational_distance_ts.py.
     if sig_mask is not None and sig_mask.any():
         y_sig = lo + 0.06 * (hi - lo)
         ax.plot(tv[sig_mask], np.full(sig_mask.sum(), y_sig),
@@ -373,20 +362,16 @@ def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, out
 
                 if normalize:
                     scale = 1.0 - chance_level
-                    plot_mean, plot_sem   = (mean_acc - chance_level) / scale, sem_acc / scale
+                    plot_mean, plot_sem = (mean_acc - chance_level) / scale, sem_acc / scale
                     plot_chance = 0.0
-                    plot_shuf, plot_shuf_std = (
-                        ((mean_shuf - chance_level) / scale, mean_shuf_std / scale)
-                        if mean_shuf is not None else (None, None))
                     y_label = 'Normalized accuracy\n(acc-chance)/(1-chance)'
                 else:
                     plot_mean, plot_sem = mean_acc, sem_acc
                     plot_chance = chance_level
-                    plot_shuf, plot_shuf_std = mean_shuf, mean_shuf_std
                     y_label = 'LOO accuracy'
 
                 plot_lindecode_panel(
-                    ax_ts, tv, plot_mean, plot_sem, plot_chance, plot_shuf, plot_shuf_std,
+                    ax_ts, tv, plot_mean, plot_sem, plot_chance,
                     sig_mask, y_label, roi, is_bottom_row, is_left_col, show_title, title_str,
                     show_flag_labels=show_title)
             else:
