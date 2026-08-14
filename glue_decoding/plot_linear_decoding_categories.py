@@ -8,13 +8,30 @@ bands x rois grid, one figure per (condition, scheme) -- mirrors
 plot_decoding_ts.py / plot_representational_distance_ts.py's layout/styling
 so all three are visually and temporally comparable.
 
-Real line: mean +/- SEM of the per-subject accuracy across subjects.
-Chance line: 1/n_categories (theoretical), always shown.
-Empirical null band (only if the cells were run with --n_shuffle > 0):
-mean(shuffle_acc_mean) +/- mean(shuffle_acc_std) across subjects -- same
-"typical single-subject null" caveat as plot_representational_distance_ts.py
-(NOT a formal group-level null; read the real accuracy's SEM/CI relative to
-the theoretical chance line for group-level inference instead).
+Two figures per (condition, scheme):
+  lindecode_cat_{condition}_scheme{scheme}_{voxRes}.png
+      Raw accuracy: mean +/- SEM across subjects, theoretical chance line
+      (1/n_categories), optional empirical-null band (only if cells were
+      run with --n_shuffle > 0 -- same "typical single-subject null"
+      caveat as plot_representational_distance_ts.py, not a group-level
+      null). Most directly interpretable ("62% accuracy").
+  lindecode_cat_norm_{condition}_scheme{scheme}_{voxRes}.png
+      Normalized: (accuracy - chance) / (1 - chance), bounded [0, 1],
+      comparable across schemes with different chance floors (0.5 for
+      scheme 2 vs. 0.1 for scheme 10) the same way accuracy alone isn't --
+      exact linear rescaling of the raw accuracy line/SEM, so it doesn't
+      need re-deriving from the per-subject data.
+
+Both figures share the same significance overlay: two-sided Wilcoxon
+signed-rank test of each subject's (accuracy(t) - chance_level) against 0
+across subjects, FDR (Benjamini-Hochberg) corrected across that panel's own
+timepoints -- mirrors plot_representational_distance_ts.py's fix exactly,
+and is if anything cleaner here since chance_level is a true constant
+across subjects (not a per-subject empirical quantity), shown as a dot row
+under each panel. This REPLACES the empirical shuffle band as the
+group-level significance readout; the shuffle band (when present) is kept
+only as an additional single-subject-null visual reference, same caveat as
+before.
 
 Usage:
     python plot_linear_decoding_categories.py [--voxRes 8mm]
@@ -23,6 +40,7 @@ Usage:
                                                [--conditions ampOnly]
                                                [--schemes 2 4 6 10]
                                                [--subjects 1 2 ...]
+                                               [--alpha 0.05]
                                                [--outdir <path>] [--figdir <path>]
 """
 
@@ -32,6 +50,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
+from scipy import stats
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -51,6 +70,7 @@ _GRID      = '#1c1c1c'
 _FLAG_LINE = '#777777'
 _FLAG_TXT  = '#cccccc'
 _CHANCE    = '#444444'
+_SIG       = '#ffffff'     # significance marker dots
 
 ROI_COLOURS = {
     'visual':   '#FFC629',
@@ -93,17 +113,20 @@ def load_all_subjects(subjects, bids_root, voxRes, bands, rois, conditions, sche
 
 def aggregate_lindecode(all_data, band, roi, condition, scheme):
     """
-    Returns (tv, mean_acc, sem_acc, chance_level, mean_shuf, mean_shuf_std,
-    has_shuffle) or (None,)*7.
+    Returns (tv, acc_matrix, mean_acc, sem_acc, chance_level, mean_shuf,
+    mean_shuf_std, has_shuffle) or (None,)*8.
 
-    mean_acc/sem_acc: arithmetic mean/SEM across subjects of each subject's
-    real LOO/k-fold accuracy(t).
+    acc_matrix: (n_subj, T) raw per-subject accuracy(t), returned (not just
+    its mean/SEM) so compute_significance_vs_chance can run the actual
+    across-subject test on it.
+    mean_acc/sem_acc: arithmetic mean/SEM across subjects.
     chance_level: 1/n_categories (identical across subjects for the same
     scheme, just read from the first available cell).
     mean_shuf/mean_shuf_std: same "typical single-subject null" caveat as
     plot_representational_distance_ts.py's aggregate_repdist -- only
     meaningful if cells were run with --n_shuffle > 0 (all-NaN otherwise,
-    has_shuffle=False).
+    has_shuffle=False); NOT used for group-level significance any more (see
+    module docstring) -- kept only as an optional visual reference.
     """
     acc_list, shuf_mean_list, shuf_std_list = [], [], []
     tv = None
@@ -123,7 +146,7 @@ def aggregate_lindecode(all_data, band, roi, condition, scheme):
             chance_level = float(npz['chance_level'][0])
 
     if not acc_list:
-        return None, None, None, None, None, None, False
+        return None, None, None, None, None, None, None, False
 
     acc  = np.stack(acc_list)          # (n_subj, T)
     smu  = np.stack(shuf_mean_list)    # (n_subj, T)
@@ -134,8 +157,48 @@ def aggregate_lindecode(all_data, band, roi, condition, scheme):
     mean_shuf     = np.nanmean(smu, axis=0) if has_shuffle else None
     mean_shuf_std = np.nanmean(ssd, axis=0) if has_shuffle else None
 
-    return (tv, acc.mean(0), acc.std(0) / np.sqrt(n), chance_level,
+    return (tv, acc, acc.mean(0), acc.std(0) / np.sqrt(n), chance_level,
             mean_shuf, mean_shuf_std, has_shuffle)
+
+
+def _fdr_bh(pvals, alpha=0.05):
+    """Benjamini-Hochberg FDR: returns a bool significance mask, same shape as pvals."""
+    p = np.asarray(pvals)
+    n = p.size
+    order = np.argsort(p)
+    ranked = p[order]
+    thresh = alpha * (np.arange(1, n + 1) / n)
+    below = ranked <= thresh
+    sig_sorted = np.zeros(n, dtype=bool)
+    if below.any():
+        sig_sorted[:np.max(np.where(below)) + 1] = True
+    sig = np.zeros(n, dtype=bool)
+    sig[order] = sig_sorted
+    return sig
+
+
+def compute_significance_vs_chance(acc_matrix, chance_level, alpha=0.05):
+    """
+    Two-sided Wilcoxon signed-rank test of (accuracy(t) - chance_level)
+    against 0 across subjects (acc_matrix: (n_subj, T)), one test per
+    timepoint, FDR (Benjamini-Hochberg) corrected across this array's own T
+    timepoints. Returns a (T,) bool significance mask. A timepoint with < 2
+    subjects, all-identical-to-chance values, or a scipy ValueError is
+    treated as p=1 (not significant) rather than raising.
+    """
+    n_subj, n_times = acc_matrix.shape
+    pvals = np.ones(n_times)
+    for t in range(n_times):
+        vals = acc_matrix[:, t] - chance_level
+        vals = vals[~np.isnan(vals)]
+        if vals.size < 2 or np.allclose(vals, 0):
+            continue
+        try:
+            _, p = stats.wilcoxon(vals)
+            pvals[t] = p
+        except ValueError:
+            pass
+    return _fdr_bh(pvals, alpha=alpha)
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
@@ -150,8 +213,15 @@ def _style_ax(ax, spine_col='#333333'):
 
 
 def plot_lindecode_panel(ax, tv, mean_acc, sem_acc, chance_level, mean_shuf, mean_shuf_std,
-                          roi, is_bottom_row, is_left_col, show_title, title_str,
-                          show_flag_labels=True):
+                          sig_mask, y_label, roi, is_bottom_row, is_left_col, show_title,
+                          title_str, show_flag_labels=True):
+    """
+    Plots whatever (mean_acc, sem_acc, chance_level[, mean_shuf, mean_shuf_std])
+    it's given -- caller decides raw accuracy vs. normalized
+    (accuracy-chance)/(1-chance) by passing the already-transformed values
+    (see make_timeseries_figure) and the matching y_label/chance_level (0
+    for the normalized variant, 1/n_categories for raw).
+    """
     col = ROI_COLOURS[roi]
     t0, t1 = float(tv[0]), float(tv[-1])
 
@@ -173,7 +243,15 @@ def plot_lindecode_panel(ax, tv, mean_acc, sem_acc, chance_level, mean_shuf, mea
         hi_candidates.append(np.nanmax(mean_shuf + mean_shuf_std))
     lo, hi = min(lo_candidates), max(hi_candidates)
     pad = max(1e-6, (hi - lo) * 0.15)
-    lo, hi = max(0.0, lo - pad), min(1.0, hi + pad)
+    lo, hi = lo - pad, hi + pad
+
+    # Significance dots (Wilcoxon vs chance, FDR-corrected -- see
+    # compute_significance_vs_chance) along a fixed row near the panel
+    # bottom, same convention as plot_representational_distance_ts.py.
+    if sig_mask is not None and sig_mask.any():
+        y_sig = lo + 0.06 * (hi - lo)
+        ax.plot(tv[sig_mask], np.full(sig_mask.sum(), y_sig),
+                '.', color=_SIG, ms=3.0, zorder=6)
 
     ax.set_xlim(t0, t1)
     ax.set_ylim(lo, hi)
@@ -187,7 +265,7 @@ def plot_lindecode_panel(ax, tv, mean_acc, sem_acc, chance_level, mean_shuf, mea
                     fontsize=6.5, color=_FLAG_TXT, zorder=5)
 
     if is_left_col:
-        ax.set_ylabel('LOO accuracy', fontsize=8, color=_FG)
+        ax.set_ylabel(y_label, fontsize=8, color=_FG)
     ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=4))
 
     ax.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
@@ -216,7 +294,16 @@ def _band_row_grid(n_bands, n_rois, row_h_in, fig_w_per_roi=4.2,
     return fig, gs
 
 
-def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, outdir_fig):
+def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, outdir_fig,
+                            normalize=False, alpha=0.05):
+    """
+    normalize=False (default): raw accuracy, chance line at 1/n_categories.
+    normalize=True: (accuracy-chance)/(1-chance), bounded [0,1], chance line
+    at 0 -- an exact linear rescaling of the raw mean/SEM (see module
+    docstring), for cross-scheme comparability. Same significance mask
+    either way (a positive linear rescaling doesn't change the Wilcoxon
+    test's sign/rank).
+    """
     n_bands, n_rois = len(bands), len(rois)
     fig, gs = _band_row_grid(n_bands, n_rois, row_h_in=1.3, bottom_margin_in=0.40)
 
@@ -224,7 +311,7 @@ def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, out
         for c_idx, roi in enumerate(rois):
             ax_ts = fig.add_subplot(gs[r_idx, c_idx])
 
-            (tv, mean_acc, sem_acc, chance_level,
+            (tv, acc_matrix, mean_acc, sem_acc, chance_level,
              mean_shuf, mean_shuf_std, has_shuffle) = aggregate_lindecode(
                 all_data, band, roi, condition, scheme)
 
@@ -234,9 +321,26 @@ def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, out
             title_str     = roi.capitalize()
 
             if tv is not None:
+                sig_mask = compute_significance_vs_chance(acc_matrix, chance_level, alpha=alpha) \
+                    if acc_matrix.shape[0] >= 2 else None
+
+                if normalize:
+                    scale = 1.0 - chance_level
+                    plot_mean, plot_sem   = (mean_acc - chance_level) / scale, sem_acc / scale
+                    plot_chance = 0.0
+                    plot_shuf, plot_shuf_std = (
+                        ((mean_shuf - chance_level) / scale, mean_shuf_std / scale)
+                        if mean_shuf is not None else (None, None))
+                    y_label = 'Normalized accuracy\n(acc-chance)/(1-chance)'
+                else:
+                    plot_mean, plot_sem = mean_acc, sem_acc
+                    plot_chance = chance_level
+                    plot_shuf, plot_shuf_std = mean_shuf, mean_shuf_std
+                    y_label = 'LOO accuracy'
+
                 plot_lindecode_panel(
-                    ax_ts, tv, mean_acc, sem_acc, chance_level, mean_shuf, mean_shuf_std,
-                    roi, is_bottom_row, is_left_col, show_title, title_str,
+                    ax_ts, tv, plot_mean, plot_sem, plot_chance, plot_shuf, plot_shuf_std,
+                    sig_mask, y_label, roi, is_bottom_row, is_left_col, show_title, title_str,
                     show_flag_labels=show_title)
             else:
                 ax_ts.text(0.5, 0.5, 'No data', ha='center', va='center',
@@ -251,13 +355,15 @@ def make_timeseries_figure(all_data, bands, rois, condition, scheme, voxRes, out
 
     cond_label   = 'Amplitude only' if condition == 'ampOnly' else 'Amplitude + Phase'
     scheme_label = SCHEME_LABELS.get(scheme, str(scheme))
-    fig.suptitle(f'Linear (SVM, OvR, LOO) Decoding Accuracy  |  {cond_label}  |  '
-                 f'{scheme_label}  |  {voxRes}',
-                 color=_FG, fontsize=14, fontweight='bold', y=0.97)
+    metric_label = 'Normalized Accuracy' if normalize else 'Accuracy'
+    fig.suptitle(f'Linear (SVM, OvR, LOO) Decoding {metric_label}  |  {cond_label}  |  '
+                 f'{scheme_label}  |  {voxRes}  |  dots = Wilcoxon vs chance, FDR q<{alpha}',
+                 color=_FG, fontsize=13, fontweight='bold', y=0.97)
     fig.text(0.5, 0.005, 'Time (s)', ha='center', va='bottom', color=_FG, fontsize=9)
 
     os.makedirs(outdir_fig, exist_ok=True)
-    fpath = os.path.join(outdir_fig, f'lindecode_cat_{condition}_scheme{scheme}_{voxRes}.png')
+    tag = 'lindecode_cat_norm' if normalize else 'lindecode_cat'
+    fpath = os.path.join(outdir_fig, f'{tag}_{condition}_scheme{scheme}_{voxRes}.png')
     fig.savefig(fpath, dpi=150, bbox_inches='tight', facecolor=_BG)
     plt.close(fig)
     print(f'Saved: {fpath}')
@@ -277,6 +383,9 @@ def main():
     parser.add_argument('--conditions', nargs='+', default=['ampOnly'])
     parser.add_argument('--schemes',    nargs='+', type=int, default=sorted(CATEGORY_SCHEMES),
                         choices=sorted(CATEGORY_SCHEMES))
+    parser.add_argument('--alpha',      type=float, default=0.05,
+                        help='FDR (Benjamini-Hochberg) significance threshold for the '
+                             'per-timepoint Wilcoxon-vs-chance test (default 0.05).')
     parser.add_argument('--outdir',     default=None,
                         help='Directory containing the per-subject .npz files.')
     parser.add_argument('--figdir',     default=None,
@@ -303,7 +412,9 @@ def main():
         for scheme in args.schemes:
             print(f'\n-- Plotting condition: {condition} | scheme: {scheme} --')
             make_timeseries_figure(all_data, args.bands, args.rois, condition, scheme,
-                                    args.voxRes, figdir)
+                                    args.voxRes, figdir, normalize=False, alpha=args.alpha)
+            make_timeseries_figure(all_data, args.bands, args.rois, condition, scheme,
+                                    args.voxRes, figdir, normalize=True, alpha=args.alpha)
 
     print('\nAll figures saved.')
 
