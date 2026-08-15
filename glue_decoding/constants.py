@@ -35,6 +35,14 @@ SUBJECT_LIST = [1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 15, 17, 18, 19, 23, 24, 25, 
 
 ROI_NAMES = ('visual', 'parietal', 'frontal')
 
+# Per-hemisphere ROI splits (see atlas.py's MASK_KEYS) -- deliberately kept
+# OUT of ROI_NAMES so nothing that iterates the default ROI set (precompute
+# caches, plot_timeseries.py, etc.) starts requiring these caches to exist.
+# Pass e.g. `--rois visual_left visual_right` explicitly (to
+# precompute_roi_splits.py first, then any consumer) to opt in.
+HEMI_ROI_NAMES = ('visual_left', 'visual_right', 'parietal_left', 'parietal_right',
+                   'frontal_left', 'frontal_right')
+
 # G04's canonical band table (amplitude for all 5; phase only for theta/alpha/beta).
 # Band edges are read from each G04 .mat file itself at load time (ground truth) --
 # this list is only used to enumerate which bands/conditions to run.

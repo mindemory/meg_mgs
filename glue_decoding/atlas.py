@@ -14,7 +14,18 @@ from scipy.io import loadmat
 
 from constants import open_h5
 
-MASK_KEYS = {'visual': 'visual_points', 'parietal': 'parietal_points', 'frontal': 'frontal_points'}
+MASK_KEYS = {
+    'visual': 'visual_points', 'parietal': 'parietal_points', 'frontal': 'frontal_points',
+    # Per-hemisphere splits -- G02_WangAtlasParcellation.m saves these
+    # alongside the bilateral masks above (same rois_{voxRes}.mat file, no
+    # separate precompute needed at the ATLAS level; per-subject ROI caches
+    # for these still need `precompute_roi_splits.py --rois visual_left
+    # visual_right ...` run once, same as any other roi name -- see its
+    # module docstring).
+    'visual_left': 'left_visual_points', 'visual_right': 'right_visual_points',
+    'parietal_left': 'left_parietal_points', 'parietal_right': 'right_parietal_points',
+    'frontal_left': 'left_frontal_points', 'frontal_right': 'right_frontal_points',
+}
 
 
 def _load_mat_flexible(fpath):

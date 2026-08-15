@@ -5,18 +5,28 @@
 # only, ampOnly -- see chat history for the motivation (collaborator's
 # suggestion to focus GLUE on the epoch where the standard linear
 # classifier peaks, before committing to an expensive GLUE moving-window
-# timecourse). This is step 1 of that plan: get the P=2 ridge-LOO
-# classifier timecourse, WITH and WITHOUT ERP removal, so we can see it
-# before deciding how to scope the (not yet built) GLUE step.
+# timecourse). Produces:
+#   (a) P=2 ridge-LOO classifier accuracy timecourse, ERP removed vs kept
+#       (linear_decoding_categories_cell.py, unchanged, reused as-is)
+#   (b) ipsi- vs contra-visual amplitude timecourse, ERP removed vs kept
+#       (ipsi_contra_cell.py) -- REQUIRES the visual_left/visual_right ROI
+#       caches to exist first:
+#           python glue_decoding/precompute_roi_splits.py --rois visual_left visual_right
+#       (one-time; see atlas.py's MASK_KEYS / constants.HEMI_ROI_NAMES)
+# both plotted side-by-side in one figure by plot_two_class_scenario.py.
 #
-# Reuses linear_decoding_categories_cell.py's run_cell UNCHANGED (already
-# validated) -- just run twice per subject, once with ERP removal (default)
-# and once without (--no_erp_removal), each into its own --outdir so the
-# two variants don't collide (output_path doesn't encode remove_erp in the
-# filename). Data lands in data_two_class_scenario_<voxRes>/{erpRemoved,
-# erpKept}/, NOT under the BIDS derivatives tree -- this is a scratch/focused
-# analysis, deliberately kept separate from the main linDecodeCat pipeline's
-# output.
+# NOTE (verified analytically, see plot_two_class_scenario.py's module
+# docstring): for (a), remove_erp has ZERO effect on the plotted accuracy --
+# the classifier's own per-timepoint z-scoring already removes exactly what
+# ERP removal would have. Both variants are still run/plotted as a sanity
+# check on that claim, not because a difference is expected there. (b) has
+# no such re-centering step, so ERP removal DOES change those curves.
+#
+# All data and figures are saved under the BIDS derivatives tree (host-aware
+# via constants.get_bids_root()) -- NOT under the repo directory -- same
+# convention as run_linear_decoding_categories.sh / run_glue_capacity.sh.
+# Only logs stay local (logs_two_class_scenario_<voxRes>/), matching every
+# other run_*.sh script in this repo.
 #
 # Pure numpy -- does NOT need the `glue` conda env; run with this repo's
 # normal Python environment.
@@ -59,17 +69,27 @@ TIME_STRIDE_MS=50
 MAX_PARALLEL="${2:-${#SUBJ_LIST[@]}}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CELL_SCRIPT="${SCRIPT_DIR}/glue_decoding/linear_decoding_categories_cell.py"
-PLOT_SCRIPT="${SCRIPT_DIR}/glue_decoding/plot_two_class_scenario.py"
+GLUE_DIR="${SCRIPT_DIR}/glue_decoding"
+CELL_SCRIPT="${GLUE_DIR}/linear_decoding_categories_cell.py"
+IPSI_CONTRA_SCRIPT="${GLUE_DIR}/ipsi_contra_cell.py"
+PLOT_SCRIPT="${GLUE_DIR}/plot_two_class_scenario.py"
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-DATA_DIR="${SCRIPT_DIR}/data_two_class_scenario_${VOX_RES}"
-ERP_REMOVED_DIR="${DATA_DIR}/erpRemoved"
-ERP_KEPT_DIR="${DATA_DIR}/erpKept"
-mkdir -p "${ERP_REMOVED_DIR}" "${ERP_KEPT_DIR}"
+# Host-aware BIDS root (zod/vader/other -- see constants.get_bids_root()) --
+# everything below is nested under here, in the same derivatives/ tree the
+# rest of the pipeline uses, per convention.
+BIDS_ROOT="$(cd "${GLUE_DIR}" && python3 -c 'from constants import get_bids_root; print(get_bids_root())')"
+
+BASE_DIR="${BIDS_ROOT}/derivatives/glueDecoding/twoClassScenario"
+ERP_REMOVED_DIR="${BASE_DIR}/linDecodeCat/erpRemoved"
+ERP_KEPT_DIR="${BASE_DIR}/linDecodeCat/erpKept"
+IPSI_CONTRA_REMOVED_DIR="${BASE_DIR}/ipsiContra/erpRemoved"
+IPSI_CONTRA_KEPT_DIR="${BASE_DIR}/ipsiContra/erpKept"
+FIG_DIR="${BASE_DIR}/figures"
+mkdir -p "${ERP_REMOVED_DIR}" "${ERP_KEPT_DIR}" "${IPSI_CONTRA_REMOVED_DIR}" "${IPSI_CONTRA_KEPT_DIR}" "${FIG_DIR}"
 
 LOG_DIR="logs_two_class_scenario_${VOX_RES}"
 mkdir -p "${LOG_DIR}"
@@ -85,19 +105,25 @@ echo " Subjects       : ${SUBJ_LIST[*]}"
 echo " Bands          : ${BANDS[*]}"
 echo " ROIs           : ${ROIS[*]}"
 echo " Scheme         : ${SCHEMES[*]} (left/right)"
-echo " Data (erpRemoved): ${ERP_REMOVED_DIR}/"
-echo " Data (erpKept)   : ${ERP_KEPT_DIR}/"
-echo " Jobs           : $(( ${#SUBJ_LIST[@]} * 2 )) (2 per subject: erpRemoved + erpKept)"
+echo " BIDS root      : ${BIDS_ROOT}"
+echo " Data (classifier, erpRemoved): ${ERP_REMOVED_DIR}/"
+echo " Data (classifier, erpKept)   : ${ERP_KEPT_DIR}/"
+echo " Data (ipsi/contra, erpRemoved): ${IPSI_CONTRA_REMOVED_DIR}/"
+echo " Data (ipsi/contra, erpKept)   : ${IPSI_CONTRA_KEPT_DIR}/"
+echo " Figures        : ${FIG_DIR}/"
+echo " Jobs           : $(( ${#SUBJ_LIST[@]} * 4 )) (4 per subject: classifier x2 ERP states + ipsi/contra x2 ERP states)"
 echo " Logging to     : ${LOG_DIR}/"
 echo "========================================================"
+echo ""
+echo "NOTE: ipsi/contra jobs need the visual_left/visual_right ROI caches --"
+echo "if they haven't been built yet, run this first (one-time):"
+echo "    python3 ${GLUE_DIR}/precompute_roi_splits.py --rois visual_left visual_right"
 echo ""
 
 count=0
 for subjID in "${SUBJ_LIST[@]}"; do
     subj_num=$((10#$subjID))
 
-    log_file_removed="${LOG_DIR}/sub-${subjID}_erpRemoved.log"
-    echo "[$(date '+%H:%M:%S')] Starting sub-${subjID} (ERP removed) ..."
     ( python3 "${CELL_SCRIPT}" \
           "${subj_num}" \
           --voxRes "${VOX_RES}" \
@@ -111,11 +137,9 @@ for subjID in "${SUBJ_LIST[@]}"; do
           --seed "${SEED}" \
           --outdir "${ERP_REMOVED_DIR}" \
           ${FORCE_FLAG[@]+"${FORCE_FLAG[@]}"} \
-    ) > "${log_file_removed}" 2>&1 &
+    ) > "${LOG_DIR}/sub-${subjID}_classifier_erpRemoved.log" 2>&1 &
     count=$((count + 1))
 
-    log_file_kept="${LOG_DIR}/sub-${subjID}_erpKept.log"
-    echo "[$(date '+%H:%M:%S')] Starting sub-${subjID} (ERP kept) ..."
     ( python3 "${CELL_SCRIPT}" \
           "${subj_num}" \
           --voxRes "${VOX_RES}" \
@@ -130,11 +154,30 @@ for subjID in "${SUBJ_LIST[@]}"; do
           --outdir "${ERP_KEPT_DIR}" \
           --no_erp_removal \
           ${FORCE_FLAG[@]+"${FORCE_FLAG[@]}"} \
-    ) > "${log_file_kept}" 2>&1 &
+    ) > "${LOG_DIR}/sub-${subjID}_classifier_erpKept.log" 2>&1 &
     count=$((count + 1))
 
-    if [ $((count % (MAX_PARALLEL * 2))) -eq 0 ]; then
-        echo "[$(date '+%H:%M:%S')] Reached max parallel limit (${MAX_PARALLEL} subjects x2). Waiting for batch to complete..."
+    ( python3 "${IPSI_CONTRA_SCRIPT}" \
+          "${subj_num}" \
+          --bands "${BANDS[@]}" \
+          --voxRes "${VOX_RES}" \
+          --outdir "${IPSI_CONTRA_REMOVED_DIR}" \
+          ${FORCE_FLAG[@]+"${FORCE_FLAG[@]}"} \
+    ) > "${LOG_DIR}/sub-${subjID}_ipsiContra_erpRemoved.log" 2>&1 &
+    count=$((count + 1))
+
+    ( python3 "${IPSI_CONTRA_SCRIPT}" \
+          "${subj_num}" \
+          --bands "${BANDS[@]}" \
+          --voxRes "${VOX_RES}" \
+          --outdir "${IPSI_CONTRA_KEPT_DIR}" \
+          --no_erp_removal \
+          ${FORCE_FLAG[@]+"${FORCE_FLAG[@]}"} \
+    ) > "${LOG_DIR}/sub-${subjID}_ipsiContra_erpKept.log" 2>&1 &
+    count=$((count + 1))
+
+    if [ $((count % (MAX_PARALLEL * 4))) -eq 0 ]; then
+        echo "[$(date '+%H:%M:%S')] Reached max parallel limit (${MAX_PARALLEL} subjects x4). Waiting for batch to complete..."
         wait
         echo "[$(date '+%H:%M:%S')] Batch complete. Continuing..."
     fi
@@ -156,7 +199,9 @@ python3 "${PLOT_SCRIPT}" \
     --roi "${ROIS[0]}" \
     --erp_removed_dir "${ERP_REMOVED_DIR}" \
     --erp_kept_dir "${ERP_KEPT_DIR}" \
-    --figdir "${DATA_DIR}" \
+    --ipsi_contra_removed_dir "${IPSI_CONTRA_REMOVED_DIR}" \
+    --ipsi_contra_kept_dir "${IPSI_CONTRA_KEPT_DIR}" \
+    --figdir "${FIG_DIR}" \
     > "${LOG_DIR}/plotter.log" 2>&1
 
 echo "[$(date '+%H:%M:%S')] Plotter finished. Log: ${LOG_DIR}/plotter.log"
