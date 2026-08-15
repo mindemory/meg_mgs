@@ -3,37 +3,43 @@
 plot_two_class_scenario.py
 
 Focused P=2 (left/right) case study, visual ROI only, theta/alpha/beta only,
-ampOnly. One figure, 3 rows (theta/alpha/beta) x 2 cols:
-    col 0: P=2 ridge-LOO classifier accuracy timecourse (ERP removed vs kept)
-    col 1: ipsi- vs contra-visual amplitude timecourse (ERP removed vs kept)
--- see chat history / module docstrings of run_two_class_scenario.sh,
+ampOnly. One figure, 3 rows (theta/alpha/beta) x 4 cols:
+    col 0: ipsi/contra visual amplitude, ERP kept
+    col 1: ipsi/contra visual amplitude, ERP removed
+    col 2: P=2 ridge-LOO classifier accuracy, ERP kept
+    col 3: P=2 ridge-LOO classifier accuracy, ERP removed
+-- ERP kept/removed as separate panels (not overlaid) so each is readable on
+its own; the two panels within a pair (amplitude cols 0-1, classifier cols
+2-3) share one y-axis scale so the ERP-removal effect is directly comparable
+by eye. See chat history / module docstrings of run_two_class_scenario.sh,
 linear_decoding_categories_cell.py, and ipsi_contra_cell.py for the full
 motivation and each computation's details.
 
-IMPORTANT caveat verified analytically (see chat history): for col 0's
-classifier, remove_erp has ZERO effect on the plotted accuracy. Every
-evaluated timepoint is independently z-scored across trials inside
-ridge_ovr_timeseries (mu = trial-mean, sd = trial-std, both computed AFTER
-ERP removal or not); subtracting each cell's grand trial-mean before that
-z-scoring step is subtracting a value that is IDENTICAL across every trial
-at that timepoint (a pure constant shift), which the very next z-scoring
-step removes again as `mu` regardless of whether it was pre-subtracted --
-and it doesn't change the trial-to-trial variance either (Var(X - c) =
-Var(X) for constant c), so `sd` is unaffected too. X_z is therefore
-bit-identical whether or not remove_erp was applied, for this classifier
-specifically. This is NOT true for col 1 (ipsi/contra amplitude), which has
-no such per-timepoint re-centering step -- removing the common
-stimulus-locked ERP there genuinely changes the plotted curves, since it's
-plotting a trial-averaged signal, not a re-standardized-per-timepoint one.
-Both ERP variants are still plotted for col 0 as a sanity check on this
-exact-equivalence claim (any visible difference would indicate a bug), but
-if compute time ever matters, the ERP-kept classifier runs are fully
-redundant -- unlike the ipsi/contra column's ERP-kept runs, which are not.
+IMPORTANT caveat verified analytically AND numerically (see chat history):
+for the classifier columns, remove_erp has ZERO effect on the plotted
+accuracy. Every evaluated timepoint is independently z-scored across trials
+inside ridge_ovr_timeseries (mu = trial-mean, sd = trial-std, both computed
+AFTER ERP removal or not); subtracting each cell's grand trial-mean before
+that z-scoring step is subtracting a value that is IDENTICAL across every
+trial at that timepoint (a pure constant shift), which the very next
+z-scoring step removes again as `mu` regardless of whether it was
+pre-subtracted -- and it doesn't change the trial-to-trial variance either
+(Var(X - c) = Var(X) for constant c), so `sd` is unaffected too. X_z is
+therefore bit-identical whether or not remove_erp was applied, for this
+classifier specifically (confirmed via np.allclose on real runs). This is
+NOT true for the amplitude columns, which have no such per-timepoint
+re-centering step -- removing the common stimulus-locked ERP there genuinely
+changes the plotted curves, since it's plotting a trial-averaged signal, not
+a re-standardized-per-timepoint one. Both ERP variants are still plotted for
+the classifier as a sanity check on this exact-equivalence claim (any
+visible difference there would indicate a bug), but if compute time ever
+matters, the ERP-kept classifier runs are fully redundant -- unlike the
+amplitude column's ERP-kept runs, which are not.
 
 Reuses plot_linear_decoding_categories.py's load_all_subjects,
-cluster_permutation_test, and design constants directly (col 0), and
-ipsi_contra_cell.py's saved per-subject .npz layout directly (col 1) -- no
-duplicated computation logic.
+cluster_permutation_test, and design constants directly (classifier
+columns), and ipsi_contra_cell.py's saved per-subject .npz layout directly
+(amplitude columns) -- no duplicated computation logic.
 
 Usage:
     python plot_two_class_scenario.py [--voxRes 8mm]
@@ -70,8 +76,7 @@ from ipsi_contra_cell import output_path as ipsi_contra_output_path
 SCHEME = 2          # left/right -- this script is specifically the P=2 case study
 CONDITION = 'ampOnly'
 
-_SIG_REMOVED = '#ffffff'   # ERP-removed significance dots
-_SIG_KEPT    = '#999999'   # ERP-kept significance dots (dimmer, matches its dashed/dimmer curve)
+_SIG_COLOUR = '#ffffff'
 
 
 def _dim_colour(colour, factor=0.5):
@@ -81,76 +86,67 @@ def _dim_colour(colour, factor=0.5):
     return mcolors.hsv_to_rgb((h, s * factor, min(1.0, v * 1.1 + 0.1)))
 
 
-# ── Column 0: classifier accuracy (ERP removed vs kept) ─────────────────────
-
-def plot_band_panel(ax, roi, band,
-                     tv_removed, mean_removed, sem_removed, sig_removed,
-                     tv_kept, mean_kept, sem_kept, sig_kept,
-                     chance_level, is_bottom_row, show_title, show_flag_labels=True):
-    col_removed = ROI_COLOURS[roi]
-    col_kept    = _dim_colour(col_removed)
-
-    ax.axhline(chance_level, color=_CHANCE, lw=0.8, ls=':', zorder=1)
-
-    lo_candidates, hi_candidates = [chance_level], [chance_level]
-
-    if tv_removed is not None:
-        ax.fill_between(tv_removed, mean_removed - sem_removed, mean_removed + sem_removed,
-                         alpha=0.30, color=col_removed, zorder=3)
-        ax.plot(tv_removed, mean_removed, color=col_removed, lw=1.6, zorder=4, label='ERP removed')
-        lo_candidates.append(np.nanmin(mean_removed - sem_removed))
-        hi_candidates.append(np.nanmax(mean_removed + sem_removed))
-
-    if tv_kept is not None:
-        ax.fill_between(tv_kept, mean_kept - sem_kept, mean_kept + sem_kept,
-                         alpha=0.22, color=col_kept, zorder=2)
-        ax.plot(tv_kept, mean_kept, color=col_kept, lw=1.4, ls='--', zorder=3, label='ERP kept')
-        lo_candidates.append(np.nanmin(mean_kept - sem_kept))
-        hi_candidates.append(np.nanmax(mean_kept + sem_kept))
-
-    lo, hi = min(lo_candidates), max(hi_candidates)
-    pad = max(1e-6, (hi - lo) * 0.15)
-    lo, hi = lo - pad, hi + pad
-
-    if sig_removed is not None and sig_removed.any() and tv_removed is not None:
-        y_sig = lo + 0.10 * (hi - lo)
-        ax.plot(tv_removed[sig_removed], np.full(sig_removed.sum(), y_sig),
-                '.', color=_SIG_REMOVED, ms=3.0, zorder=6)
-    if sig_kept is not None and sig_kept.any() and tv_kept is not None:
-        y_sig = lo + 0.05 * (hi - lo)
-        ax.plot(tv_kept[sig_kept], np.full(sig_kept.sum(), y_sig),
-                '.', color=_SIG_KEPT, ms=3.0, zorder=6)
-
-    tv_any = tv_removed if tv_removed is not None else tv_kept
-    t0, t1 = float(tv_any[0]), float(tv_any[-1])
+def _finish_axes(ax, t0, t1, lo, hi, is_bottom_row, show_flag_labels):
     ax.set_xlim(t0, t1)
     ax.set_ylim(lo, hi)
-
     y_lo, y_hi = ax.get_ylim()
     for (t_flag, label, y_frac) in EVENT_FLAGS:
         ax.axvline(t_flag, color=_FLAG_LINE, lw=0.8, ls='--', zorder=4)
         if show_flag_labels:
             ax.text(t_flag, y_lo + y_frac * (y_hi - y_lo), label,
                     rotation=90, va='top', ha='right', fontsize=6.5, color=_FLAG_TXT, zorder=5)
-
-    ax.set_ylabel('LOO accuracy', fontsize=8, color=_FG)
-    ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=4))
     ax.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
     if not is_bottom_row:
         ax.set_xticklabels([])
-
     ax.grid(True, color=_GRID, lw=0.4, zorder=0)
     _style_ax(ax)
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=4))
     ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
 
+
+# ── Classifier accuracy panel (one ERP state) ────────────────────────────────
+
+def classifier_row_ylim(res_kept, res_removed, chance_level):
+    lo_candidates, hi_candidates = [chance_level], [chance_level]
+    for res in (res_kept, res_removed):
+        tv, acc, mean_c, sem_c, _ = res[:5]
+        if tv is None:
+            continue
+        lo_candidates.append(np.nanmin(mean_c - sem_c))
+        hi_candidates.append(np.nanmax(mean_c + sem_c))
+    lo, hi = min(lo_candidates), max(hi_candidates)
+    pad = max(1e-6, (hi - lo) * 0.15)
+    return lo - pad, hi + pad
+
+
+def plot_classifier_panel(ax, roi, band, tv, mean_c, sem_c, sig, chance_level,
+                           ylim, is_bottom_row, show_title, show_flag_labels, erp_label):
+    colour = ROI_COLOURS[roi]
+    ax.axhline(chance_level, color=_CHANCE, lw=0.8, ls=':', zorder=1)
+
+    if tv is None:
+        ax.text(0.5, 0.5, 'No data', ha='center', va='center',
+                transform=ax.transAxes, color=_FG, fontsize=9)
+        _style_ax(ax)
+        return
+
+    ax.fill_between(tv, mean_c - sem_c, mean_c + sem_c, alpha=0.28, color=colour, zorder=3)
+    ax.plot(tv, mean_c, color=colour, lw=1.6, zorder=4)
+
+    lo, hi = ylim
+    if sig is not None and sig.any():
+        y_sig = lo + 0.06 * (hi - lo)
+        ax.plot(tv[sig], np.full(sig.sum(), y_sig), '.', color=_SIG_COLOUR, ms=3.0, zorder=6)
+
+    t0, t1 = float(tv[0]), float(tv[-1])
+    _finish_axes(ax, t0, t1, lo, hi, is_bottom_row, show_flag_labels)
+    ax.set_ylabel('LOO accuracy', fontsize=8, color=_FG)
+
     if show_title:
-        leg = ax.legend(fontsize=7.5, loc='upper right', framealpha=0.2,
-                         edgecolor='#444444', labelcolor=_FG)
-        leg.get_frame().set_facecolor('#1a1a1a')
-        ax.set_title('P=2 ridge-LOO classifier accuracy', fontsize=9, color=_FG, pad=4)
+        ax.set_title(f'LOO ridge accuracy -- ERP {erp_label}', fontsize=9, color=_FG, pad=4)
 
 
-# ── Column 1: ipsi vs contra amplitude (ERP removed vs kept) ────────────────
+# ── Ipsi/contra amplitude panel (one ERP state) ──────────────────────────────
 
 def load_ipsi_contra_all_subjects(subjects, bids_root, voxRes, bands, outdir):
     """Returns list (one dict per subject, aligned with `subjects`) of
@@ -189,65 +185,49 @@ def aggregate_ipsi_contra(all_data, band):
             contra_mat.mean(axis=0), contra_mat.std(axis=0) / np.sqrt(n))
 
 
-def plot_ipsi_contra_panel(ax, roi, band,
-                            tv_r, ipsi_r, ipsi_r_sem, contra_r, contra_r_sem,
-                            tv_k, ipsi_k, ipsi_k_sem, contra_k, contra_k_sem,
-                            is_bottom_row, show_title, show_flag_labels=True):
+def amp_row_ylim(res_kept, res_removed):
+    lo_candidates, hi_candidates = [0.0], [0.0]
+    for res in (res_kept, res_removed):
+        tv, mean_ipsi, sem_ipsi, mean_contra, sem_contra = res
+        if tv is None:
+            continue
+        for mean_c, sem_c in ((mean_ipsi, sem_ipsi), (mean_contra, sem_contra)):
+            lo_candidates.append(np.nanmin(mean_c - sem_c))
+            hi_candidates.append(np.nanmax(mean_c + sem_c))
+    lo, hi = min(lo_candidates), max(hi_candidates)
+    pad = max(1e-6, (hi - lo) * 0.15)
+    return lo - pad, hi + pad
+
+
+def plot_amp_panel(ax, roi, band, tv, mean_ipsi, sem_ipsi, mean_contra, sem_contra,
+                    ylim, is_bottom_row, show_title, show_flag_labels, erp_label):
     ipsi_colour   = ROI_COLOURS[roi]
     contra_colour = _dim_colour(ipsi_colour)
 
     ax.axhline(0.0, color=_CHANCE, lw=0.8, ls=':', zorder=1)
-    lo_candidates, hi_candidates = [0.0], [0.0]
 
-    def _draw(tv, mean_c, sem_c, colour, ls, label):
-        if tv is None:
-            return
-        ax.fill_between(tv, mean_c - sem_c, mean_c + sem_c, alpha=0.20, color=colour, zorder=2)
-        ax.plot(tv, mean_c, color=colour, lw=1.5, ls=ls, zorder=3, label=label)
-        lo_candidates.append(np.nanmin(mean_c - sem_c))
-        hi_candidates.append(np.nanmax(mean_c + sem_c))
-
-    _draw(tv_r, ipsi_r,   ipsi_r_sem,   ipsi_colour,   '-',  'Ipsi (ERP removed)')
-    _draw(tv_r, contra_r, contra_r_sem, contra_colour, '-',  'Contra (ERP removed)')
-    _draw(tv_k, ipsi_k,   ipsi_k_sem,   ipsi_colour,   '--', 'Ipsi (ERP kept)')
-    _draw(tv_k, contra_k, contra_k_sem, contra_colour, '--', 'Contra (ERP kept)')
-
-    tv_any = tv_r if tv_r is not None else tv_k
-    if tv_any is None:
+    if tv is None:
         ax.text(0.5, 0.5, 'No data', ha='center', va='center',
                 transform=ax.transAxes, color=_FG, fontsize=9)
         _style_ax(ax)
         return
 
-    lo, hi = min(lo_candidates), max(hi_candidates)
-    pad = max(1e-6, (hi - lo) * 0.15)
-    lo, hi = lo - pad, hi + pad
-    t0, t1 = float(tv_any[0]), float(tv_any[-1])
-    ax.set_xlim(t0, t1)
-    ax.set_ylim(lo, hi)
+    ax.fill_between(tv, mean_ipsi - sem_ipsi, mean_ipsi + sem_ipsi,
+                     alpha=0.25, color=ipsi_colour, zorder=3)
+    ax.plot(tv, mean_ipsi, color=ipsi_colour, lw=1.6, zorder=4, label='Ipsi')
+    ax.fill_between(tv, mean_contra - sem_contra, mean_contra + sem_contra,
+                     alpha=0.20, color=contra_colour, zorder=2)
+    ax.plot(tv, mean_contra, color=contra_colour, lw=1.4, ls='--', zorder=3, label='Contra')
 
-    y_lo, y_hi = ax.get_ylim()
-    for (t_flag, label, y_frac) in EVENT_FLAGS:
-        ax.axvline(t_flag, color=_FLAG_LINE, lw=0.8, ls='--', zorder=4)
-        if show_flag_labels:
-            ax.text(t_flag, y_lo + y_frac * (y_hi - y_lo), label,
-                    rotation=90, va='top', ha='right', fontsize=6.5, color=_FLAG_TXT, zorder=5)
-
+    t0, t1 = float(tv[0]), float(tv[-1])
+    _finish_axes(ax, t0, t1, ylim[0], ylim[1], is_bottom_row, show_flag_labels)
     ax.set_ylabel('Baselined amplitude (z)', fontsize=8, color=_FG)
-    ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=4))
-    ax.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
-    if not is_bottom_row:
-        ax.set_xticklabels([])
-
-    ax.grid(True, color=_GRID, lw=0.4, zorder=0)
-    _style_ax(ax)
-    ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
 
     if show_title:
-        leg = ax.legend(fontsize=6.5, loc='upper right', framealpha=0.2,
-                         edgecolor='#444444', labelcolor=_FG, ncol=1)
+        leg = ax.legend(fontsize=7, loc='upper right', framealpha=0.2,
+                         edgecolor='#444444', labelcolor=_FG)
         leg.get_frame().set_facecolor('#1a1a1a')
-        ax.set_title('Ipsi vs contra visual amplitude', fontsize=9, color=_FG, pad=4)
+        ax.set_title(f'Ipsi vs contra amplitude -- ERP {erp_label}', fontsize=9, color=_FG, pad=4)
 
 
 # ── Figure assembly ──────────────────────────────────────────────────────────
@@ -256,60 +236,65 @@ def make_figure(bands, roi, all_data_removed, all_data_kept,
                  ipsi_contra_removed, ipsi_contra_kept, voxRes, outdir_fig,
                  n_perm=1000, cluster_alpha=0.05, alpha=0.05):
     n_bands = len(bands)
-    fig_w, row_h = 12.0, 2.2
+    fig_w, row_h = 15.5, 2.2
     fig_h = row_h * n_bands + 0.9
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor=_BG)
-    gs = gridspec.GridSpec(n_bands, 2, figure=fig, hspace=0.5, wspace=0.28,
-                            left=0.08, right=0.98,
+    gs = gridspec.GridSpec(n_bands, 4, figure=fig, hspace=0.5, wspace=0.32,
+                            left=0.06, right=0.99,
                             top=1 - 0.6 / fig_h, bottom=0.35 / fig_h)
 
     for r_idx, band in enumerate(bands):
         is_bottom_row = (r_idx == n_bands - 1)
         show_title    = (r_idx == 0)
 
-        # -- col 0: classifier accuracy --
+        # -- amplitude: kept vs removed, shared y-lim --
+        res_amp_kept    = aggregate_ipsi_contra(ipsi_contra_kept, band)
+        res_amp_removed = aggregate_ipsi_contra(ipsi_contra_removed, band)
+        amp_ylim = amp_row_ylim(res_amp_kept, res_amp_removed)
+
         ax0 = fig.add_subplot(gs[r_idx, 0])
-        res_removed = aggregate_lindecode(all_data_removed, band, roi, CONDITION, SCHEME)
-        res_kept    = aggregate_lindecode(all_data_kept,    band, roi, CONDITION, SCHEME)
-        tv_r, acc_r, mean_r, sem_r, chance_r = res_removed[:5]
-        tv_k, acc_k, mean_k, sem_k, chance_k = res_kept[:5]
-
-        if tv_r is None and tv_k is None:
-            ax0.text(0.5, 0.5, 'No data', ha='center', va='center',
-                     transform=ax0.transAxes, color=_FG, fontsize=9)
-            _style_ax(ax0)
-        else:
-            chance_level = chance_r if chance_r is not None else chance_k
-            sig_r = cluster_permutation_test(acc_r, chance_level, n_perm=n_perm,
-                                              cluster_alpha=cluster_alpha, alpha=alpha) \
-                if tv_r is not None and acc_r.shape[0] >= 2 else None
-            sig_k = cluster_permutation_test(acc_k, chance_level, n_perm=n_perm,
-                                              cluster_alpha=cluster_alpha, alpha=alpha) \
-                if tv_k is not None and acc_k.shape[0] >= 2 else None
-            plot_band_panel(ax0, roi, band,
-                             tv_r, mean_r, sem_r, sig_r,
-                             tv_k, mean_k, sem_k, sig_k,
-                             chance_level, is_bottom_row, show_title, show_flag_labels=show_title)
-
+        plot_amp_panel(ax0, roi, band, *res_amp_kept, amp_ylim,
+                        is_bottom_row, show_title, show_title, 'kept')
         ax0.annotate(BAND_LABELS.get(band, band).replace('\n', '  '),
-                     xy=(-0.16, 0.5), xycoords='axes fraction',
+                     xy=(-0.20, 0.5), xycoords='axes fraction',
                      fontsize=9, color=_FG, ha='right', va='center',
                      rotation=90, fontweight='bold')
 
-        # -- col 1: ipsi vs contra amplitude --
         ax1 = fig.add_subplot(gs[r_idx, 1])
-        tv_ir, mean_ipsi_r, sem_ipsi_r, mean_contra_r, sem_contra_r = \
-            aggregate_ipsi_contra(ipsi_contra_removed, band)
-        tv_ik, mean_ipsi_k, sem_ipsi_k, mean_contra_k, sem_contra_k = \
-            aggregate_ipsi_contra(ipsi_contra_kept, band)
-        plot_ipsi_contra_panel(ax1, roi, band,
-                                tv_ir, mean_ipsi_r, sem_ipsi_r, mean_contra_r, sem_contra_r,
-                                tv_ik, mean_ipsi_k, sem_ipsi_k, mean_contra_k, sem_contra_k,
-                                is_bottom_row, show_title, show_flag_labels=show_title)
+        plot_amp_panel(ax1, roi, band, *res_amp_removed, amp_ylim,
+                        is_bottom_row, show_title, False, 'removed')
+
+        # -- classifier: kept vs removed, shared y-lim --
+        res_clf_kept    = aggregate_lindecode(all_data_kept,    band, roi, CONDITION, SCHEME)
+        res_clf_removed = aggregate_lindecode(all_data_removed, band, roi, CONDITION, SCHEME)
+        tv_k, acc_k, mean_k, sem_k, chance_k = res_clf_kept[:5]
+        tv_r, acc_r, mean_r, sem_r, chance_r = res_clf_removed[:5]
+        chance_level = chance_k if chance_k is not None else chance_r
+
+        if chance_level is None:
+            clf_ylim = (0.0, 1.0)
+            sig_k = sig_r = None
+        else:
+            clf_ylim = classifier_row_ylim(res_clf_kept, res_clf_removed, chance_level)
+            sig_k = cluster_permutation_test(acc_k, chance_level, n_perm=n_perm,
+                                              cluster_alpha=cluster_alpha, alpha=alpha) \
+                if tv_k is not None and acc_k.shape[0] >= 2 else None
+            sig_r = cluster_permutation_test(acc_r, chance_level, n_perm=n_perm,
+                                              cluster_alpha=cluster_alpha, alpha=alpha) \
+                if tv_r is not None and acc_r.shape[0] >= 2 else None
+
+        ax2 = fig.add_subplot(gs[r_idx, 2])
+        plot_classifier_panel(ax2, roi, band, tv_k, mean_k, sem_k, sig_k, chance_level,
+                               clf_ylim, is_bottom_row, show_title, show_title, 'kept')
+
+        ax3 = fig.add_subplot(gs[r_idx, 3])
+        plot_classifier_panel(ax3, roi, band, tv_r, mean_r, sem_r, sig_r, chance_level,
+                               clf_ylim, is_bottom_row, show_title, False, 'removed')
 
     fig.suptitle(f'P=2 (Left/Right) Case Study  |  {roi.capitalize()}  |  Amplitude only  |  {voxRes}\n'
-                 f'left: LOO accuracy, dots = cluster permutation vs chance p<{alpha}  |  '
-                 f'right: ipsi/contra baselined amplitude, mean +/- SEM across subjects',
+                 f'cols 1-2: ipsi/contra baselined amplitude, mean +/- SEM  |  '
+                 f'cols 3-4: LOO ridge accuracy, dots = cluster permutation vs chance p<{alpha}  |  '
+                 f'each pair shares one y-axis scale',
                  color=_FG, fontsize=10.5, fontweight='bold', y=1.0)
     fig.text(0.5, 0.01, 'Time (s)', ha='center', va='bottom', color=_FG, fontsize=9)
 
@@ -323,8 +308,8 @@ def make_figure(bands, roi, all_data_removed, all_data_kept,
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Plot the P=2 (left/right) case study: ridge-LOO classifier accuracy '
-                     'and ipsi/contra visual amplitude, both ERP removed vs. ERP kept.')
+        description='Plot the P=2 (left/right) case study: ipsi/contra visual amplitude and '
+                     'ridge-LOO classifier accuracy, each ERP kept vs. ERP removed.')
     parser.add_argument('--voxRes', default='8mm')
     parser.add_argument('--subjects', nargs='+', type=int, default=SUBJECT_LIST)
     parser.add_argument('--bands', nargs='+', default=['theta', 'alpha', 'beta'])

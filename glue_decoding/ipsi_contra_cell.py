@@ -36,7 +36,10 @@ BASELINE_WINDOWS['stim'] = [-1.0, 0.0] s, same window as plot_timeseries.py)
 against a SINGLE pooled mean/std computed from ALL trials/both hemisphere
 ROIs in that band -- i.e. ipsi and contra share one scale factor per subject/
 band, so their absolute DIFFERENCE is preserved exactly while normalizing
-away cross-subject amplitude-scale differences.
+away cross-subject amplitude-scale differences. That mean/std comes from
+RAW single-trial values in the baseline window (not the temporal std of the
+already trial-averaged curve, which can be near-zero for a smooth trace and
+blow the z-score up to absurd magnitudes -- see run_cell's comment).
 
 Usage:
     python ipsi_contra_cell.py <subjID> [--bands theta alpha beta]
@@ -138,12 +141,21 @@ def run_cell(subjID, bands, voxRes, bids_root, remove_erp=True, outdir=None, for
 
         # Single pooled baseline scale (see module docstring) -- both hemisphere
         # ROIs, both hemifields, i.e. every trial loaded for this (subject, band).
-        pooled_all = np.concatenate([curve_left_all, curve_right_all], axis=0)
-        pooled_curve = pooled_all.mean(axis=0)[t_mask]
+        # b_mean/b_std are computed from RAW per-trial values in the baseline
+        # window (trials x baseline-timepoints), NOT from the already
+        # trial-averaged curve's std across time -- the latter (what
+        # plot_timeseries.py's _baseline_zscore does) measures how much the
+        # MEAN trace wiggles within the baseline window, which for a smooth
+        # Hilbert-amplitude trace can be near-zero even though single-trial
+        # amplitude varies a lot -- dividing by that near-zero temporal std
+        # is what produced the absurd (~1e5-1e6) z-scores seen in practice.
+        # True trial-to-trial variance is a far more robust denominator.
         b_mask = (tv_crop >= BASELINE_WINDOW[0]) & (tv_crop <= BASELINE_WINDOW[1])
         if b_mask.any():
-            b_mean = pooled_curve[b_mask].mean()
-            b_std  = pooled_curve[b_mask].std()
+            pooled_all = np.concatenate([curve_left_all, curve_right_all], axis=0)
+            baseline_vals = pooled_all[:, t_mask][:, b_mask]   # (n_trials_pooled, n_baseline_times)
+            b_mean = baseline_vals.mean()
+            b_std  = baseline_vals.std()
             if b_std < 1e-12:
                 ipsi_curve   = ipsi_curve - b_mean
                 contra_curve = contra_curve - b_mean
