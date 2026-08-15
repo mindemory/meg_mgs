@@ -32,28 +32,25 @@ For each (band, roi, epoch, scheme):
        amplitude only, matches build_features's 'ampOnly' condition). Loaded
        once per (band, roi), shared across both epochs.
     2. Slice the epoch window (EPOCHS below -- stim=[0.0,0.2], delay=
-       [0.2,1.7], matching intrinsic_dim_epochs.py) and treat EVERY
-       timepoint in that window as its own point (no time-averaging) --
-       each trial contributes n_epoch_timepoints points instead of 1. G04
-       stores everything at a shared 200 Hz (TARGET_RATE in
-       G04_BandAmplitudePhaseInSource.m, ~5ms spacing), so stim (~41
-       timepoints/trial) and especially delay (~301 timepoints/trial) can
-       generate a LOT of points -- e.g. ~6.3k points for stim and ~46k for
-       delay at n_trials=154. This matters because glue_analysis's QR
-       rotation caps effective ambient dimension at min(n_features,
-       total_points); with time-averaging (n_trials points only, the
-       previous version of this script) that cap was BELOW every ROI's raw
-       source count, silently collapsing all ROIs to the same effective
-       dimensionality regardless of ROI size -- per-timepoint points fixes
-       that (total_points now comfortably exceeds every ROI's source count),
-       at the cost of many more -- autocorrelated, since adjacent timepoints
-       within a trial are highly correlated, not independent samples -- and
-       much slower QP solves (cvxopt scales badly with point count). Use
-       --points_per_trial to evenly subsample each trial's epoch window
-       down to a manageable point count per epoch (recommended for delay
-       especially); default is "use every timepoint" (no subsampling).
-    3. Z-score each source (feature) across all (trial, timepoint) samples
-       in the epoch (optional, default OFF). glue's own preprocessing
+       [0.2,1.7], matching intrinsic_dim_epochs.py) and average over time
+       -> ONE point per trial (time-averaged, NOT per-timepoint). An
+       intermediate version of this script treated every timepoint as its
+       own point instead (each trial contributing n_epoch_timepoints
+       points) specifically to avoid a dimensionality-collapse caveat (see
+       below) -- but at G04's 200Hz storage rate that meant ~41 points/
+       trial for stim and ~301 for delay, and cvxopt's QP solves scale
+       badly with point count: a real run (4 schemes x 5 bands x 3 rois x
+       21 subjects, stim only) was still running after 5+ hours with no
+       cell finished. Reverted to time-averaging for tractability.
+       CAVEAT this reintroduces: glue_analysis's QR rotation caps effective
+       ambient dimension at min(n_features, total_points); with only
+       n_trials points per cell (~154), that cap sits BELOW every ROI's raw
+       source count, so all ROIs' effective dimensionality collapses to the
+       same ~154-dim space regardless of raw ROI size -- cross-ROI capacity
+       comparisons should be read with that in mind, not as reflecting true
+       per-ROI dimensionality.
+    3. Z-score each source (feature) across trials in the epoch (optional,
+       default OFF). glue's own preprocessing
        (reallocate_origin) only mean-centers, never rescales -- its
        implicit assumption is that raw feature magnitude is meaningful.
        For source-space amplitude, per-voxel variance differences plausibly
@@ -65,28 +62,29 @@ For each (band, roi, epoch, scheme):
        -- drops trials whose raw location isn't in any category for this
        scheme, e.g. the 2 axis locations for scheme=4), balance every
        category to the same trial count (see SCHEME note above), THEN split
-       (trial, timepoint) points into one manifold per category -- glue's
-       ONE_VERSUS_REST dichotomy set then tests each category against the
-       rest of the "concept" set, matching the classic
-       manifold-capacity-theory setup (P object manifolds in shared neural
-       feature space). If this scheme's smallest category has fewer than
-       --min_trials_per_class DISTINCT TRIALS, the whole scheme is skipped
-       for this cell (with a warning) -- trial count, not point count,
-       since a class with 2 trials x 40 timepoints is still only 2
-       independent samples repeated with heavy autocorrelation, not a
-       genuinely diverse 80-point manifold.
-    5. manifolds are (n_features, n_points_for_that_target) arrays -- glue
-       expects (n_neurons, n_points), the TRANSPOSE of every other array
-       shape convention used in glue_decoding (which is (n_trials, ...)).
+       trials into one manifold per category -- glue's ONE_VERSUS_REST
+       dichotomy set then tests each category against the rest of the
+       "concept" set, matching the classic manifold-capacity-theory setup
+       (P object manifolds in shared neural feature space). If this
+       scheme's smallest category has fewer than --min_trials_per_class
+       DISTINCT TRIALS, the whole scheme is skipped for this cell (with a
+       warning).
+    5. manifolds are (n_features, n_trials_for_that_category) arrays --
+       glue expects (n_neurons, n_points), the TRANSPOSE of every other
+       array shape convention used in glue_decoding (which is
+       (n_trials, ...)).
     6. Run glue_analysis_dataframe(shuffle=True) so each cell reports both
        the real dichotomy geometry and a shuffled-points null in one call.
 
 Output: one CSV per subject at derivatives/sub-XX/sourceRecon/glueFits/
 sub-XX_task-mgs_glueFits_{lockType}_{voxRes}.csv (see constants.glue_fits_csv_path),
 matching run_glue_cell.py's decodingGlue / decoding_ts_cell.py's decodingTS
-per-subject layout. No dedicated log file -- prints only, same as every
-other glue_decoding script; run_glue_capacity.sh redirects stdout into
-logs_glue_capacity_<voxRes>/ in the code's own working directory.
+per-subject layout. No dedicated log file -- prints only (with flush=True,
+so tail -f on the redirected log shows real-time progress rather than
+sitting in Python's stdout buffer until it fills or the process exits),
+same pattern as every other glue_decoding script; run_glue_capacity.sh
+redirects stdout into logs_glue_capacity_<voxRes>/ in the code's own
+working directory.
 
 Requires the `glue` package (github.com/cnchou/glue, distinct from PyPI
 `glue-core`/glueviz), which is NOT part of this repo's normal Python
@@ -100,7 +98,7 @@ Usage:
                                  [--bands theta alpha beta lowgamma highgamma]
                                  [--rois visual parietal frontal]
                                  [--epochs stim delay] [--schemes 2 4 6 10]
-                                 [--points_per_trial N] [--points_per_category N] [--zscore]
+                                 [--points_per_category N] [--zscore]
                                  [--analysis_type ONE_VERSUS_REST]
                                  [--n_hyperplanes 200] [--seed 42]
                                  [--min_trials_per_class 2]
@@ -152,56 +150,44 @@ EPOCHS = {
 # ── Manifold construction ──────────────────────────────────────────────────
 
 def build_manifolds(amp, tv, target_labels, t0, t1, scheme, zscore=False,
-                     points_per_trial=None, points_per_category=None,
-                     min_trials_per_class=2, seed=42, log=print):
+                     points_per_category=None, min_trials_per_class=2, seed=42, log=print):
     """
     amp: (n_trials, n_times, n_sources); tv: (n_times,);
     target_labels: (n_trials,) values in ANGLE_MAPPING's keys.
     scheme: category-grouping scheme (2, 4, 6, or 10 -- see
     constants.CATEGORY_SCHEMES).
 
-    Every timepoint in [t0, t1] becomes its own point (no time-averaging) --
-    each trial contributes n_epoch_timepoints points. points_per_trial, if
-    given, evenly subsamples each trial's epoch window down to that many
-    timepoints (spanning the full window, not just its start) before
-    building manifolds -- see module docstring for why this matters (G04's
-    200Hz storage rate means the delay epoch alone is ~301 timepoints/trial).
+    Averages over [t0, t1] -> ONE point per trial (time-averaged -- see
+    module docstring for why this script reverted to that from an
+    intermediate per-timepoint-points version).
 
     Trials are mapped to this scheme's categories and balanced to the same
-    trial count BEFORE the per-timepoint expansion above (see module
-    docstring's SCHEME note) -- points_per_category defaults to None (auto:
-    this subject's own smallest category trial count for this scheme).
+    trial count -- points_per_category defaults to None (auto: this
+    subject's own smallest category trial count for this scheme).
 
-    Returns (manifolds, kept_labels, n_epoch_timepoints) where manifolds is
-    a list of (n_sources, n_points_for_that_category) arrays -- glue's
-    expected (n_neurons, n_points) convention, the transpose of this repo's
-    usual (n_trials, n_features) convention -- one per category in
-    kept_labels (sorted category-name order). Returns ([], [], n_epoch_pts)
-    if this scheme's smallest category has fewer than min_trials_per_class
-    DISTINCT TRIALS (trial count, not point count -- see module docstring).
+    Returns (manifolds, kept_labels) where manifolds is a list of
+    (n_sources, n_trials_for_that_category) arrays -- glue's expected
+    (n_neurons, n_points) convention, the transpose of this repo's usual
+    (n_trials, n_features) convention -- one per category in kept_labels
+    (sorted category-name order). Returns ([], []) if this scheme's
+    smallest category has fewer than min_trials_per_class DISTINCT TRIALS.
     """
-    epoch_idx = np.where((tv >= t0) & (tv <= t1))[0]
-    if epoch_idx.size == 0:
+    epoch_mask = (tv >= t0) & (tv <= t1)
+    if not epoch_mask.any():
         raise ValueError(f'Epoch [{t0}, {t1}] has no timepoints in this time_vector.')
 
-    if points_per_trial is not None and points_per_trial < epoch_idx.size:
-        sub = np.linspace(0, epoch_idx.size - 1, points_per_trial).round().astype(int)
-        epoch_idx = epoch_idx[sub]
-
-    X = amp[:, epoch_idx, :]   # (n_trials, n_epoch_pts, n_sources)
-    n_epoch_pts = X.shape[1]
+    X = amp[:, epoch_mask, :].mean(axis=1)   # (n_trials, n_sources) -- one point per trial
 
     if zscore:
-        flat = X.reshape(-1, X.shape[2])
-        mu = flat.mean(axis=0)
-        sd = flat.std(axis=0)
+        mu = X.mean(axis=0, keepdims=True)
+        sd = X.std(axis=0, keepdims=True)
         sd[sd < 1e-10] = 1.0
         X = (X - mu) / sd
 
     group_labels, keep_mask = category_labels_for_scheme(target_labels, scheme)
     if group_labels.size == 0:
         log(f'    NOTE: scheme={scheme}: no trials map to any category -- skipping.')
-        return [], [], n_epoch_pts
+        return [], []
 
     _, counts = np.unique(group_labels, return_counts=True)
     natural_min = int(counts.min())
@@ -210,25 +196,24 @@ def build_manifolds(amp, tv, target_labels, t0, t1, scheme, zscore=False,
         log(f'    NOTE: scheme={scheme}: points_per_category={ppc_used} '
             f'(natural min={natural_min}) < min_trials_per_class={min_trials_per_class} '
             f'-- skipping this scheme.')
-        return [], [], n_epoch_pts
+        return [], []
 
     try:
         balance_mask = balance_categories(group_labels, ppc_used, seed=seed)
     except ValueError as e:
         log(f'    NOTE: scheme={scheme}: {e} -- skipping this scheme.')
-        return [], [], n_epoch_pts
+        return [], []
 
-    X_kept      = X[keep_mask][balance_mask]        # (n_kept_trials, n_epoch_pts, n_sources)
+    X_kept      = X[keep_mask][balance_mask]        # (n_kept_trials, n_sources)
     labels_kept = group_labels[balance_mask]
 
     manifolds, kept_labels = [], []
     for cat in sorted(np.unique(labels_kept)):
         sel = labels_kept == cat
-        pts = X_kept[sel].reshape(-1, X_kept.shape[2])   # (n_trials_cat * n_epoch_pts, n_sources)
-        manifolds.append(pts.T)                          # (n_sources, n_points) -- glue's convention
+        manifolds.append(X_kept[sel].T)   # (n_sources, n_trials_cat) -- glue's convention
         kept_labels.append(cat)
 
-    return manifolds, kept_labels, n_epoch_pts
+    return manifolds, kept_labels
 
 
 # ── Main ──────────────────────────────────────────────────────────────────
@@ -252,10 +237,6 @@ def main():
     parser.add_argument('--n_hyperplanes', type=int, default=200)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--min_trials_per_class', type=int, default=2)
-    parser.add_argument('--points_per_trial', type=int, default=None,
-                         help='Evenly subsample each trial epoch window to this many '
-                              'timepoints (default: use every timepoint -- see module '
-                              'docstring for point-count cost, especially for delay).')
     parser.add_argument('--points_per_category', type=int, default=None,
                          help='Fixed trial count per category, applied identically across '
                               'every scheme. Default: None (auto -- balance each scheme to '
@@ -287,13 +268,18 @@ def main():
     # none of which write their own log; they just print() and rely on the
     # launcher shell script (run_glue_capacity.sh) to redirect stdout into
     # logs_glue_capacity_<voxRes>/ in the code's own working directory.
-    log = print
+    # flush=True: stdout is block-buffered (not line-buffered) once
+    # redirected to a file rather than a terminal, so without this, output
+    # sits invisible in Python's internal buffer until it fills or the
+    # process exits -- `tail -f` on the log otherwise shows nothing for a
+    # long time even while the run is genuinely progressing.
+    def log(msg=''):
+        print(msg, flush=True)
 
     log(f'manifold_capacity | sub-{args.subjID:02d} | {args.lockType} | {args.voxRes} | '
         f'bands={args.bands} | rois={args.rois} | epochs={args.epochs} | schemes={args.schemes} | '
         f'analysis_type={args.analysis_type} | n_hyperplanes={args.n_hyperplanes} | '
         f'seed={args.seed} | shuffle={not args.no_shuffle} | zscore={args.zscore} | '
-        f'points_per_trial={args.points_per_trial or "all"} | '
         f'points_per_category={args.points_per_category or "auto"}')
 
     df_list = []
@@ -320,16 +306,16 @@ def main():
                 log(f'  epoch={epoch} [{t0}, {t1}]')
 
                 for scheme in args.schemes:
-                    manifolds, kept_labels, n_epoch_pts = build_manifolds(
+                    manifolds, kept_labels = build_manifolds(
                         amp, tv, target_labels, t0, t1, scheme,
-                        zscore=args.zscore, points_per_trial=args.points_per_trial,
+                        zscore=args.zscore,
                         points_per_category=args.points_per_category,
                         min_trials_per_class=args.min_trials_per_class,
                         seed=args.seed, log=log)
 
                     total_points = sum(m.shape[1] for m in manifolds)
-                    log(f'    scheme={scheme}: {n_epoch_pts} timepoints/trial in this epoch -> '
-                        f'{total_points} total points across {len(manifolds)} manifolds')
+                    log(f'    scheme={scheme}: {total_points} total points '
+                        f'(1 point/trial, time-averaged) across {len(manifolds)} manifolds')
 
                     if len(manifolds) < 2:
                         log(f'    SKIP scheme={scheme}: only {len(manifolds)} usable manifold(s) '

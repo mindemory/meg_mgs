@@ -20,7 +20,7 @@
 # Examples:
 #   bash run_glue_capacity.sh                                  # 8mm, max parallel = n_subjects, n_hyperplanes=200, stim+delay, schemes 2 4 6 10
 #   bash run_glue_capacity.sh 8mm 21 200 42 true                # overwrite existing per-subject CSVs, stim+delay, all schemes
-#   bash run_glue_capacity.sh 8mm 21 200 42 true stim            # force, stim epoch only (skip delay's ~46k-point cells)
+#   bash run_glue_capacity.sh 8mm 21 200 42 true stim            # force, stim epoch only
 #   bash run_glue_capacity.sh 8mm 21 200 42 true stim "2"         # force, stim only, P=2 (left/right) only
 #
 # schemes: 2=left/right hemifield, 4=quadrants, 6=quadrants+axis, 10=every
@@ -28,6 +28,14 @@
 # points_per_category: leave empty/unset (default) for auto -- each
 # (subject, scheme) balanced to that subject's own smallest category trial
 # count for that scheme (see manifold_capacity.py's module docstring).
+#
+# manifold_capacity.py builds ONE (time-averaged) point per trial -- an
+# intermediate version treated every timepoint as its own point instead,
+# which was far more faithful to per-timepoint dynamics but made cvxopt's
+# QP solves intractably slow (a real 4-scheme x 5-band x 3-roi x 21-subject
+# stim-only run was still running after 5+ hours with zero cells finished);
+# reverted for tractability. See manifold_capacity.py's module docstring
+# for the dimensionality-collapse caveat this reintroduces.
 
 set -euo pipefail
 
