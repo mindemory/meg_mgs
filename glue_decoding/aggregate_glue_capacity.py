@@ -10,6 +10,15 @@ of grouped bar panels (Real vs Shuffle, mean +/- SEM across subjects, with
 individual-subject dots), the same visual convention as
 intrinsic_dim_epochs.py's plot_epoch_figure.
 
+Significance: a paired t-test (real vs shuffle, matched by subjID -- each
+subject contributes one real value and one shuffle value from the same
+manifolds/seed, so this is a paired, not independent-samples, comparison)
+per panel, marked with stars above the bars (*/**/*** for p<0.05/0.01/0.001,
+nothing if not significant -- see paired_ttest/_sig_stars). y-axis is purely
+data-driven (NOT clamped to include 0), since capacity-type metrics sit in
+a narrow band (e.g. ~0.2-0.3) and a forced 0 floor made the real
+Real-vs-Shuffle difference nearly invisible.
+
 Metrics plotted (see glue's ManifoldAnalysisResults / glue_analysis.py):
     capacity, dimension, radius, utility, center_alignment, axis_alignment
 
@@ -45,6 +54,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 from constants import SUBJECT_LIST, ROI_NAMES, CATEGORY_SCHEMES, get_bids_root, glue_fits_csv_path
 
@@ -135,6 +145,39 @@ def aggregate_cell(df, band, roi, epoch, scheme, shuffle_val, metric):
     return mean, sem, vals.tolist()
 
 
+def paired_ttest(df, band, roi, epoch, scheme, metric):
+    """
+    Paired (real vs shuffle) t-test across subjects for one (band, roi,
+    epoch, scheme, metric) cell -- each subject contributes one real value
+    and one shuffle value (matched by subjID, since real/shuffle share the
+    same seed/manifolds per subject), not an independent-samples test.
+
+    Returns (p_value, n_pairs) or (None, 0) if fewer than 2 subjects have
+    both a real and a shuffle row for this cell.
+    """
+    sel = df[(df['band'] == band) & (df['roi'] == roi) &
+             (df['epoch'] == epoch) & (df['scheme'] == scheme)]
+    real = sel[sel['shuffle'] == False].dropna(subset=[metric]).set_index('subjID')[metric]
+    shuf = sel[sel['shuffle'] == True].dropna(subset=[metric]).set_index('subjID')[metric]
+    common = real.index.intersection(shuf.index)
+    if len(common) < 2:
+        return None, len(common)
+    _, p = stats.ttest_rel(real.loc[common].to_numpy(), shuf.loc[common].to_numpy())
+    return float(p), len(common)
+
+
+def _sig_stars(p):
+    if p is None:
+        return ''
+    if p < 0.001:
+        return '***'
+    if p < 0.01:
+        return '**'
+    if p < 0.05:
+        return '*'
+    return ''
+
+
 # -- Plotting --------------------------------------------------------------------
 
 def _apply_black_style(fig, axes_flat):
@@ -168,7 +211,13 @@ def plot_metric_figure(df, metric, epoch, scheme, bands, rois, voxRes, outdir):
     x_pos   = np.array([0.0])
     rng     = np.random.default_rng(42)
 
-    # Per-row (band) y-limits, shared across ROI cols within that row.
+    # Per-row (band) y-limits, shared across ROI cols within that row. Purely
+    # data-driven (NOT clamped to include 0) -- capacity-type metrics sit in
+    # a narrow band (e.g. ~0.2-0.3), and forcing a 0 floor squashed the real
+    # Real-vs-Shuffle difference down to a barely-visible sliver against
+    # mostly-empty axis space. Extra headroom at the top makes room for the
+    # significance-star annotation (see paired_ttest/_sig_stars) drawn above
+    # each panel's bar pair.
     row_ylim = {}
     for band in bands:
         vmin, vmax = np.inf, -np.inf
@@ -180,7 +229,7 @@ def plot_metric_figure(df, metric, epoch, scheme, bands, rois, voxRes, outdir):
                     vmax = max(vmax, mean + sem)
         if np.isfinite(vmin) and np.isfinite(vmax):
             pad = max(1e-6, (vmax - vmin) * 0.20)
-            row_ylim[band] = (min(0.0, vmin - pad), vmax + pad)
+            row_ylim[band] = (vmin - pad, vmax + pad * 1.8)   # extra top room for stars
         else:
             row_ylim[band] = None
 
@@ -194,6 +243,7 @@ def plot_metric_figure(df, metric, epoch, scheme, bands, rois, voxRes, outdir):
             state_colour = {False: real_colour, True: shuffle_colour}
 
             has_data = False
+            top_y = -np.inf
             for sh in STATE_ORDER:
                 mean, sem, subj_vals = aggregate_cell(df, band, roi, epoch, scheme, sh, metric)
                 if mean is None:
@@ -211,6 +261,21 @@ def plot_metric_figure(df, metric, epoch, scheme, bands, rois, voxRes, outdir):
                 jitter = rng.uniform(-0.07, 0.07, len(subj_vals))
                 ax.scatter(xc + jitter, subj_vals, color=colour, s=22,
                            alpha=0.55, linewidths=0, zorder=5)
+
+                top_y = max(top_y, mean + sem, max(subj_vals, default=-np.inf))
+
+            if has_data:
+                # Paired (real vs shuffle, matched by subject) t-test -- see
+                # paired_ttest docstring. Star drawn above the taller of the
+                # two bars/dot-clouds only when significant (p<0.05); nothing
+                # drawn otherwise, matching plot_decoding_ts.py's convention.
+                p_val, n_pairs = paired_ttest(df, band, roi, epoch, scheme, metric)
+                stars = _sig_stars(p_val)
+                if stars:
+                    y_lo, y_hi = row_ylim[band] if row_ylim[band] is not None else ax.get_ylim()
+                    y_star = top_y + 0.04 * (y_hi - y_lo)
+                    ax.text(x_pos[0], y_star, stars, ha='center', va='bottom',
+                            fontsize=13, color=_FG, fontweight='bold', zorder=7)
 
             if not has_data:
                 ax.text(0.5, 0.5, 'no data', transform=ax.transAxes,
