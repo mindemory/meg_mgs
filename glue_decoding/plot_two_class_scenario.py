@@ -9,9 +9,15 @@ ampOnly. One figure, 3 rows (theta/alpha/beta) x 4 cols:
     col 2: P=2 ridge-LOO classifier accuracy, ERP kept
     col 3: P=2 ridge-LOO classifier accuracy, ERP removed
 -- ERP kept/removed as separate panels (not overlaid) so each is readable on
-its own; the two panels within a pair (amplitude cols 0-1, classifier cols
-2-3) share one y-axis scale so the ERP-removal effect is directly comparable
-by eye. See chat history / module docstrings of run_two_class_scenario.sh,
+its own. The classifier pair (cols 2-3) SHARE one y-axis scale (harmless --
+see caveat below, they're bit-identical). The amplitude pair (cols 0-1)
+deliberately do NOT share a y-axis: the common per-hemisphere-ROI response
+(and any raw left/right ROI scale offset) that ERP removal strips out is
+typically much larger than the residual ipsi/contra difference, so a shared
+axis flattens the ERP-removed panel to an indistinguishable near-zero line.
+Each amplitude panel is auto-scaled to its own data and annotates its exact
+y-range (top-left) so the two panels' relative scale is still legible.
+See chat history / module docstrings of run_two_class_scenario.sh,
 linear_decoding_categories_cell.py, and ipsi_contra_cell.py for the full
 motivation and each computation's details.
 
@@ -185,22 +191,17 @@ def aggregate_ipsi_contra(all_data, band):
             contra_mat.mean(axis=0), contra_mat.std(axis=0) / np.sqrt(n))
 
 
-def amp_row_ylim(res_kept, res_removed):
-    lo_candidates, hi_candidates = [0.0], [0.0]
-    for res in (res_kept, res_removed):
-        tv, mean_ipsi, sem_ipsi, mean_contra, sem_contra = res
-        if tv is None:
-            continue
-        for mean_c, sem_c in ((mean_ipsi, sem_ipsi), (mean_contra, sem_contra)):
-            lo_candidates.append(np.nanmin(mean_c - sem_c))
-            hi_candidates.append(np.nanmax(mean_c + sem_c))
-    lo, hi = min(lo_candidates), max(hi_candidates)
-    pad = max(1e-6, (hi - lo) * 0.15)
-    return lo - pad, hi + pad
-
-
 def plot_amp_panel(ax, roi, band, tv, mean_ipsi, sem_ipsi, mean_contra, sem_contra,
-                    ylim, is_bottom_row, show_title, show_flag_labels, erp_label):
+                    is_bottom_row, show_title, show_flag_labels, erp_label):
+    """
+    NOTE: deliberately auto-scales its OWN y-range instead of sharing one
+    with its ERP-kept/removed partner (unlike the classifier panels). The
+    common per-hemisphere-ROI response removed by ERP subtraction here is
+    typically much larger than the residual ipsi/contra difference, so a
+    shared axis flattens the ERP-removed panel to an indistinguishable
+    near-zero line -- the annotated y-range (top-left) is what lets you
+    still judge the two panels' relative scale despite the different axes.
+    """
     ipsi_colour   = ROI_COLOURS[roi]
     contra_colour = _dim_colour(ipsi_colour)
 
@@ -219,9 +220,17 @@ def plot_amp_panel(ax, roi, band, tv, mean_ipsi, sem_ipsi, mean_contra, sem_cont
                      alpha=0.20, color=contra_colour, zorder=2)
     ax.plot(tv, mean_contra, color=contra_colour, lw=1.4, ls='--', zorder=3, label='Contra')
 
+    lo = min(np.nanmin(mean_ipsi - sem_ipsi), np.nanmin(mean_contra - sem_contra))
+    hi = max(np.nanmax(mean_ipsi + sem_ipsi), np.nanmax(mean_contra + sem_contra))
+    lo, hi = min(lo, 0.0), max(hi, 0.0)
+    pad = max(1e-6, (hi - lo) * 0.15)
+    lo, hi = lo - pad, hi + pad
+
     t0, t1 = float(tv[0]), float(tv[-1])
-    _finish_axes(ax, t0, t1, ylim[0], ylim[1], is_bottom_row, show_flag_labels)
+    _finish_axes(ax, t0, t1, lo, hi, is_bottom_row, show_flag_labels)
     ax.set_ylabel('Baselined amplitude (z)', fontsize=8, color=_FG)
+    ax.text(0.02, 0.96, f'range: [{lo+pad:.3f}, {hi-pad:.3f}]', transform=ax.transAxes,
+            fontsize=6.5, color=_FLAG_TXT, ha='left', va='top', zorder=7)
 
     if show_title:
         leg = ax.legend(fontsize=7, loc='upper right', framealpha=0.2,
@@ -247,13 +256,13 @@ def make_figure(bands, roi, all_data_removed, all_data_kept,
         is_bottom_row = (r_idx == n_bands - 1)
         show_title    = (r_idx == 0)
 
-        # -- amplitude: kept vs removed, shared y-lim --
+        # -- amplitude: kept vs removed, EACH auto-scales its own y-axis
+        # (see plot_amp_panel docstring for why these are NOT shared) --
         res_amp_kept    = aggregate_ipsi_contra(ipsi_contra_kept, band)
         res_amp_removed = aggregate_ipsi_contra(ipsi_contra_removed, band)
-        amp_ylim = amp_row_ylim(res_amp_kept, res_amp_removed)
 
         ax0 = fig.add_subplot(gs[r_idx, 0])
-        plot_amp_panel(ax0, roi, band, *res_amp_kept, amp_ylim,
+        plot_amp_panel(ax0, roi, band, *res_amp_kept,
                         is_bottom_row, show_title, show_title, 'kept')
         ax0.annotate(BAND_LABELS.get(band, band).replace('\n', '  '),
                      xy=(-0.20, 0.5), xycoords='axes fraction',
@@ -261,7 +270,7 @@ def make_figure(bands, roi, all_data_removed, all_data_kept,
                      rotation=90, fontweight='bold')
 
         ax1 = fig.add_subplot(gs[r_idx, 1])
-        plot_amp_panel(ax1, roi, band, *res_amp_removed, amp_ylim,
+        plot_amp_panel(ax1, roi, band, *res_amp_removed,
                         is_bottom_row, show_title, False, 'removed')
 
         # -- classifier: kept vs removed, shared y-lim --
@@ -292,9 +301,9 @@ def make_figure(bands, roi, all_data_removed, all_data_kept,
                                clf_ylim, is_bottom_row, show_title, False, 'removed')
 
     fig.suptitle(f'P=2 (Left/Right) Case Study  |  {roi.capitalize()}  |  Amplitude only  |  {voxRes}\n'
-                 f'cols 1-2: ipsi/contra baselined amplitude, mean +/- SEM  |  '
-                 f'cols 3-4: LOO ridge accuracy, dots = cluster permutation vs chance p<{alpha}  |  '
-                 f'each pair shares one y-axis scale',
+                 f'cols 1-2: ipsi/contra baselined amplitude, mean +/- SEM, each auto-scaled '
+                 f'(see annotated range -- kept vs removed axes differ on purpose)  |  '
+                 f'cols 3-4: LOO ridge accuracy (shared y-axis), dots = cluster permutation vs chance p<{alpha}',
                  color=_FG, fontsize=10.5, fontweight='bold', y=1.0)
     fig.text(0.5, 0.01, 'Time (s)', ha='center', va='bottom', color=_FG, fontsize=9)
 
