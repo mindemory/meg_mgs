@@ -31,14 +31,13 @@ a period whose geometry has rotated yields systematically wrong angles, not
 merely uninformative ones.
 
 SIGNIFICANCE
-2-D cluster-based permutation (Maris & Oostenveld 2007) against chance, by
-sign-flipping subjects -- the natural extension of the 1-D sign-flip test
-plot_linear_decoding_categories.py already uses, with candidate clusters
-formed from 2-D connected components of the supra-threshold t-map (so a
-contiguous train x test region is treated as one unit, which is exactly the
-structure a TGM has). Significant clusters are outlined, not colour-masked,
-so the underlying error values stay readable. This corrects for the ~2.9k
-train/test cells being tested, which an uncorrected per-cell test would not.
+The TGM heatmaps are plotted WITHOUT any significance overlay -- read them as
+raw decoding performance on a fixed colour scale. Cluster outlines were tried
+and removed: drawn over a dense matrix they obscured the structure they were
+meant to describe. The DIAGONAL figure still marks a cluster-permutation test
+(sign-flip, Maris & Oostenveld 2007) as a dot row, where it sits below the
+curve and hides nothing; cluster_permutation_2d is kept for that and for
+anyone wanting to re-enable an overlay.
 
 Usage:
     python plot_circular_tgm.py [--voxRes 8mm] [--bands theta alpha beta]
@@ -185,8 +184,8 @@ def _time_ticks(ax, tv, axis='x'):
         ax.set_yticks(locs); ax.set_yticklabels(labs, fontsize=6.5)
 
 
-def figure_tgm(data, bands, rois, cond, voxRes, figdir, n_perm, alpha, metric,
-                clim=(60.0, 120.0), cluster_alpha=0.05):
+def figure_tgm(data, bands, rois, cond, voxRes, figdir, metric,
+                clim=(60.0, 120.0)):
     n_r, n_c = len(bands), len(rois)
     fig_h = 3.4 * n_r + 1.4
     fig = plt.figure(figsize=(3.5 * n_c + 1.3, fig_h), facecolor=_BG)
@@ -212,15 +211,14 @@ def figure_tgm(data, bands, rois, cond, voxRes, figdir, n_perm, alpha, metric,
             # and amplitude+phase panels are directly comparable by eye -- with
             # autoscaling, a panel containing only noise gets its range blown up
             # and looks as structured as a panel with a real effect.
+            # No significance overlay on the heatmaps: the cluster outlines sat
+            # on top of the very structure they were describing and made the
+            # matrix harder to read. The 2-D cluster test is not computed here
+            # at all now (it was also the slowest part of this figure); the
+            # DIAGONAL figure still carries a cluster-permutation marker, and
+            # cluster_permutation_2d remains available for it.
             im = ax.imshow(m, origin='lower', cmap='RdBu', aspect='equal',
                            vmin=clim[0], vmax=clim[1], interpolation='nearest')
-            sig = cluster_permutation_2d(stack, n_perm=n_perm, alpha=alpha,
-                                          cluster_alpha=cluster_alpha)
-            if sig is not None and sig.any():
-                ax.contour(sig.astype(float), levels=[0.5], colors='#000000',
-                           linewidths=1.4)
-                ax.contour(sig.astype(float), levels=[0.5], colors='#ffffff',
-                           linewidths=0.7)
             for t_ev, _lab in EVENT_TIMES:
                 i_ev = int(np.argmin(np.abs(tv - t_ev)))
                 ax.axhline(i_ev, color=_FLAG, lw=0.6, ls=':')
@@ -250,9 +248,7 @@ def figure_tgm(data, bands, rois, cond, voxRes, figdir, n_perm, alpha, metric,
     fig.suptitle(f'Circular TGM (LOO ridge, sin/cos)  |  {COND_LABELS.get(cond, cond)}  |  '
                  f'{voxRes}  |  ERP removed  |  metric={metric}\n'
                  f'chance = {CHANCE_ERROR_DEG:.0f} deg; colour fixed to '
-                 f'[{clim[0]:.0f}, {clim[1]:.0f}] deg; outlined = 2-D cluster permutation '
-                 f'vs chance (cluster-forming p<{cluster_alpha}, cluster p<{alpha}); '
-                 f'dashed = diagonal',
+                 f'[{clim[0]:.0f}, {clim[1]:.0f}] deg; dashed = diagonal',
                  color=_FG, fontsize=10.5, fontweight='bold', y=1 - 0.10 / fig_h)
     os.makedirs(figdir, exist_ok=True)
     fp = os.path.join(figdir, f'circular_tgm_{cond}_{voxRes}.png')
@@ -396,8 +392,7 @@ def main():
 
     for cond in args.conditions:
         figure_tgm(data, args.bands, args.rois, cond, args.voxRes, args.figdir,
-                   args.n_perm, args.alpha, args.metric,
-                   clim=tuple(args.clim), cluster_alpha=args.cluster_alpha)
+                   args.metric, clim=tuple(args.clim))
         figure_diagonal(data, args.bands, args.rois, cond, args.voxRes, args.figdir,
                         args.n_perm, args.alpha, args.metric,
                         cluster_alpha=args.cluster_alpha)
