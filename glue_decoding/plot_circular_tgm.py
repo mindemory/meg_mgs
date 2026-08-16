@@ -88,8 +88,17 @@ def _style_ax(ax):
     ax.title.set_color(_FG)
 
 
-def load_all(subjects, bids_root, voxRes, bands, rois, conditions, metric, outdir):
-    """data[(band, roi, condition)] = (err_stack (n_subj,T,T), tv, n_subj)."""
+def load_all(subjects, bids_root, voxRes, bands, rois, conditions, metric, outdir,
+              tmin=None):
+    """
+    data[(band, roi, condition)] = (err_stack (n_subj,T,T), tv, n_subj).
+
+    tmin crops BOTH the train and test axes (a TGM is square in time, so the
+    crop has to be applied symmetrically or the axes stop corresponding).
+    Default -0.5 s: the pre-stimulus baseline carries no location information
+    by construction, so those rows/columns are a large field of near-chance
+    noise that only compresses the part of the matrix worth looking at.
+    """
     key = METRIC_KEY[metric]
     data = {}
     for band in bands:
@@ -101,9 +110,15 @@ def load_all(subjects, bids_root, voxRes, bands, rois, conditions, metric, outdi
                     if not os.path.exists(fp):
                         continue
                     with np.load(fp, allow_pickle=True) as npz:
-                        mats.append(np.asarray(npz[key], dtype=float))
+                        m = np.asarray(npz[key], dtype=float)
+                        t = np.asarray(npz['eval_time_vector'], dtype=float)
+                        if tmin is not None:
+                            keep = t >= tmin
+                            m = m[np.ix_(keep, keep)]   # symmetric: train AND test
+                            t = t[keep]
+                        mats.append(m)
                         if tv is None:
-                            tv = np.asarray(npz['eval_time_vector'], dtype=float)
+                            tv = t
                 data[(band, roi, cond)] = (np.stack(mats) if mats else None, tv, len(mats))
     return data
 
@@ -170,7 +185,8 @@ def _time_ticks(ax, tv, axis='x'):
         ax.set_yticks(locs); ax.set_yticklabels(labs, fontsize=6.5)
 
 
-def figure_tgm(data, bands, rois, cond, voxRes, figdir, n_perm, alpha, metric):
+def figure_tgm(data, bands, rois, cond, voxRes, figdir, n_perm, alpha, metric,
+                clim=(60.0, 120.0), cluster_alpha=0.05):
     n_r, n_c = len(bands), len(rois)
     fig_h = 3.4 * n_r + 1.4
     fig = plt.figure(figsize=(3.5 * n_c + 1.3, fig_h), facecolor=_BG)
@@ -191,12 +207,15 @@ def figure_tgm(data, bands, rois, cond, voxRes, figdir, n_perm, alpha, metric):
                 _style_ax(ax)
                 continue
             m = stack.mean(axis=0)
-            span = max(2.0, np.nanmax(np.abs(m - CHANCE_ERROR_DEG)))
-            # 'RdBu': low (better than chance) -> red/warm, high -> blue.
+            # FIXED colour limits (default 60-120 deg, symmetric about the 90 deg
+            # chance level) rather than per-panel data-driven ones, so amplitude
+            # and amplitude+phase panels are directly comparable by eye -- with
+            # autoscaling, a panel containing only noise gets its range blown up
+            # and looks as structured as a panel with a real effect.
             im = ax.imshow(m, origin='lower', cmap='RdBu', aspect='equal',
-                           vmin=CHANCE_ERROR_DEG - span, vmax=CHANCE_ERROR_DEG + span,
-                           interpolation='nearest')
-            sig = cluster_permutation_2d(stack, n_perm=n_perm, alpha=alpha)
+                           vmin=clim[0], vmax=clim[1], interpolation='nearest')
+            sig = cluster_permutation_2d(stack, n_perm=n_perm, alpha=alpha,
+                                          cluster_alpha=cluster_alpha)
             if sig is not None and sig.any():
                 ax.contour(sig.astype(float), levels=[0.5], colors='#000000',
                            linewidths=1.4)
@@ -230,8 +249,10 @@ def figure_tgm(data, bands, rois, cond, voxRes, figdir, n_perm, alpha, metric):
 
     fig.suptitle(f'Circular TGM (LOO ridge, sin/cos)  |  {COND_LABELS.get(cond, cond)}  |  '
                  f'{voxRes}  |  ERP removed  |  metric={metric}\n'
-                 f'chance = {CHANCE_ERROR_DEG:.0f} deg; outlined = 2-D cluster permutation '
-                 f'vs chance, p<{alpha}; dashed = diagonal',
+                 f'chance = {CHANCE_ERROR_DEG:.0f} deg; colour fixed to '
+                 f'[{clim[0]:.0f}, {clim[1]:.0f}] deg; outlined = 2-D cluster permutation '
+                 f'vs chance (cluster-forming p<{cluster_alpha}, cluster p<{alpha}); '
+                 f'dashed = diagonal',
                  color=_FG, fontsize=10.5, fontweight='bold', y=1 - 0.10 / fig_h)
     os.makedirs(figdir, exist_ok=True)
     fp = os.path.join(figdir, f'circular_tgm_{cond}_{voxRes}.png')
@@ -241,7 +262,8 @@ def figure_tgm(data, bands, rois, cond, voxRes, figdir, n_perm, alpha, metric):
     return fp
 
 
-def figure_diagonal(data, bands, rois, cond, voxRes, figdir, n_perm, alpha, metric):
+def figure_diagonal(data, bands, rois, cond, voxRes, figdir, n_perm, alpha, metric,
+                     cluster_alpha=0.05):
     """
     The TGM diagonal == the standard decoding-over-time curve, so this figure
     is directly comparable to plot_decoding_ts.py's output for the same cells.
@@ -268,7 +290,8 @@ def figure_diagonal(data, bands, rois, cond, voxRes, figdir, n_perm, alpha, metr
             ax.fill_between(tv, mean - sem, mean + sem, color=col, alpha=0.28)
             ax.plot(tv, mean, color=col, lw=1.5)
             # 1-D sign-flip cluster test on the diagonal
-            sig = cluster_permutation_2d(diag[:, :, None], n_perm=n_perm, alpha=alpha)
+            sig = cluster_permutation_2d(diag[:, :, None], n_perm=n_perm, alpha=alpha,
+                                          cluster_alpha=cluster_alpha)
             if sig is not None and sig.any():
                 y = (mean - sem).min()
                 ax.plot(tv[sig[:, 0]], np.full(sig[:, 0].sum(), y), '.',
@@ -336,16 +359,35 @@ def main():
     ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
     ap.add_argument('--metric', default='signed', choices=['signed', 'unsigned'])
     ap.add_argument('--n_perm', type=int, default=1000)
-    ap.add_argument('--alpha', type=float, default=0.05)
+    ap.add_argument('--alpha', type=float, default=0.05,
+                     help='Cluster-LEVEL significance threshold (default 0.05).')
+    ap.add_argument('--cluster_alpha', type=float, default=0.10,
+                     help='Cluster-FORMING per-cell threshold (default 0.10, deliberately '
+                          'more lenient than the usual 0.05). This only decides which cells '
+                          'are eligible to join a candidate cluster; the family-wise error '
+                          'rate is still controlled by the max-cluster-statistic null at '
+                          '--alpha, so loosening it does NOT inflate false positives -- it '
+                          'trades sensitivity toward broad, weak, spatially-extended effects '
+                          '(what a real TGM generalization block looks like) and away from '
+                          'small, very intense ones. Raise to 0.20 for more leniency still.')
+    ap.add_argument('--tmin', type=float, default=-0.5,
+                     help='Crop BOTH TGM axes to t >= this (default -0.5 s); the '
+                          'pre-stimulus baseline is near-chance by construction.')
+    ap.add_argument('--clim', type=float, nargs=2, default=[60.0, 120.0],
+                     metavar=('LO', 'HI'),
+                     help='Fixed colour limits in deg (default 60 120, symmetric about '
+                          '90 deg chance) so conditions are comparable by eye.')
     ap.add_argument('--outdir', default=None)
     ap.add_argument('--figdir', required=True)
     args = ap.parse_args()
 
     bids_root = get_bids_root()
     print(f'Loading | {args.voxRes} | bands={args.bands} | rois={args.rois} | '
-          f'conditions={args.conditions} | metric={args.metric}')
+          f'conditions={args.conditions} | metric={args.metric} | tmin={args.tmin} | '
+          f'clim={args.clim} | cluster_alpha={args.cluster_alpha} (forming) '
+          f'alpha={args.alpha} (cluster-level)')
     data = load_all(args.subjects, bids_root, args.voxRes, args.bands, args.rois,
-                    args.conditions, args.metric, args.outdir)
+                    args.conditions, args.metric, args.outdir, tmin=args.tmin)
     tot = sum(v[2] for v in data.values())
     print(f'Loaded {tot} subject-cells.')
     if tot == 0:
@@ -354,9 +396,11 @@ def main():
 
     for cond in args.conditions:
         figure_tgm(data, args.bands, args.rois, cond, args.voxRes, args.figdir,
-                   args.n_perm, args.alpha, args.metric)
+                   args.n_perm, args.alpha, args.metric,
+                   clim=tuple(args.clim), cluster_alpha=args.cluster_alpha)
         figure_diagonal(data, args.bands, args.rois, cond, args.voxRes, args.figdir,
-                        args.n_perm, args.alpha, args.metric)
+                        args.n_perm, args.alpha, args.metric,
+                        cluster_alpha=args.cluster_alpha)
     print_summary(data, args.bands, args.rois, args.conditions, args.metric)
     print('\nDone.')
 
