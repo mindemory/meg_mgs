@@ -285,7 +285,7 @@ def run_cell(subjID, bands, voxRes, bids_root, rois, conditions, schemes,
 
     for band in bands:
         for condition in conditions:
-            want_phase = (condition == 'ampPhase')
+            want_phase = condition in ('ampPhase', 'phaseOnly')
             if want_phase and band not in AMP_PHASE_BANDS:
                 print(f'SKIP {condition}/{band}: phase not available '
                       f'(AMP_PHASE_BANDS={AMP_PHASE_BANDS})')
@@ -413,7 +413,7 @@ def main():
     parser.add_argument('--voxRes',     default='8mm')
     parser.add_argument('--rois',       nargs='+', default=list(ROI_NAMES))
     parser.add_argument('--conditions', nargs='+', default=['ampOnly'])
-    parser.add_argument('--schemes',    nargs='+', type=int, default=sorted(CATEGORY_SCHEMES),
+    parser.add_argument('--schemes',    nargs='+', type=int, default=[2, 4, 6, 10],  # NOT sorted(CATEGORY_SCHEMES) -- scheme 3 (top_bottom) is opt-in only (two_class_scenario), not part of this pipeline's standard sweep
                          choices=sorted(CATEGORY_SCHEMES))
     parser.add_argument('--points_per_category', type=int, default=DEFAULT_POINTS_PER_CATEGORY,
                          help='Fixed points-per-category, applied identically across every scheme. '

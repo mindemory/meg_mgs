@@ -296,7 +296,7 @@ def run_cell(subjID, bands, voxRes, bids_root, rois, conditions,
 
     for band in bands:
         for condition in conditions:
-            want_phase = (condition == 'ampPhase')
+            want_phase = condition in ('ampPhase', 'phaseOnly')
 
             # Guard: phase data only available for theta/alpha/beta
             if want_phase and band not in AMP_PHASE_BANDS:

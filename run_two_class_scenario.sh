@@ -1,32 +1,38 @@
 #!/usr/bin/env bash
 # run_two_class_scenario.sh
 #
-# Focused P=2 (left/right) case study, visual ROI only, theta/alpha/beta
-# only, ampOnly -- see chat history for the motivation (collaborator's
-# suggestion to focus GLUE on the epoch where the standard linear
-# classifier peaks, before committing to an expensive GLUE moving-window
-# timecourse). Produces:
-#   (a) P=2 ridge-LOO classifier accuracy timecourse, ERP removed vs kept
-#       (linear_decoding_categories_cell.py, unchanged, reused as-is)
-#   (b) ipsi- vs contra-visual amplitude timecourse, ERP removed vs kept
-#       (ipsi_contra_cell.py) -- REQUIRES the visual_left/visual_right ROI
-#       caches to exist first:
-#           python glue_decoding/precompute_roi_splits.py --rois visual_left visual_right
-#       (one-time; see atlas.py's MASK_KEYS / constants.HEMI_ROI_NAMES)
-# both plotted side-by-side in one figure by plot_two_class_scenario.py.
+# Focused visual-ROI case study, theta/alpha/beta only, across THREE
+# decoders and THREE feature conditions, each with/without ERP removal:
+#   decoders:
+#     - LOO ridge binary classification, left vs right   (scheme=2)
+#     - LOO ridge binary classification, top vs bottom    (scheme=3)
+#     - LOO ridge circular regression, all 10 locations   (sin/cos targets)
+#   conditions: ampOnly, ampPhase, phaseOnly
+#   ERP: removed (default), kept (--no_erp_removal)
 #
-# NOTE (verified analytically, see plot_two_class_scenario.py's module
-# docstring): for (a), remove_erp has ZERO effect on the plotted accuracy --
-# the classifier's own per-timepoint z-scoring already removes exactly what
-# ERP removal would have. Both variants are still run/plotted as a sanity
-# check on that claim, not because a difference is expected there. (b) has
-# no such re-centering step, so ERP removal DOES change those curves.
+# ROI is 'visual' only (whole ROI, NOT split by hemisphere -- the earlier
+# ipsi/contra-visual amplitude comparison has been dropped from this script;
+# ipsi_contra_cell.py still exists standalone if needed again).
+#
+# Reuses linear_decoding_categories_cell.py (classifiers) and
+# decoding_ts_cell.py (circular regression) UNCHANGED -- both already
+# validated -- just run twice per subject each (ERP removed / kept), each
+# internally looping bands x conditions x schemes.
+#
+# NOTE (see plot_two_class_scenario.py's module docstring for the full
+# derivation): BOTH decoders z-score every feature across trials at each
+# independently-evaluated timepoint before fitting (see
+# linear_decoding_categories_cell.py's ridge_ovr_timeseries and
+# decoding_ts_cell.py's ridge_loocv_timeseries). That per-timepoint
+# z-scoring subtracts out any trial-invariant constant -- exactly what ERP
+# removal subtracts -- so for BOTH decoders here, remove_erp has ZERO effect
+# on the result, provably (verified earlier this session on real saved
+# accuracy arrays via np.allclose). This is expected, not a bug -- both ERP
+# states are still run/plotted purely as a live sanity check on that claim.
 #
 # All data and figures are saved under the BIDS derivatives tree (host-aware
-# via constants.get_bids_root()) -- NOT under the repo directory -- same
-# convention as run_linear_decoding_categories.sh / run_glue_capacity.sh.
-# Only logs stay local (logs_two_class_scenario_<voxRes>/), matching every
-# other run_*.sh script in this repo.
+# via constants.get_bids_root()), not the repo directory. Only logs stay
+# local (logs_two_class_scenario_<voxRes>/).
 #
 # Pure numpy -- does NOT need the `glue` conda env; run with this repo's
 # normal Python environment.
@@ -38,12 +44,11 @@
 #   bash run_two_class_scenario.sh                       # 8mm, n_shuffle=0 (fast; see below)
 #   bash run_two_class_scenario.sh 8mm 21 0 0 true        # overwrite existing per-cell .npz
 #
-# n_shuffle default is 0 here (unlike run_linear_decoding_categories.sh's
-# 100) -- this is a quick look-first-then-decide step, and the cluster-
-# permutation significance test in plot_two_class_scenario.py doesn't need
-# it (that test uses the real per-subject accuracy values directly, not an
-# empirical per-cell shuffle). Pass a larger --n_shuffle if you also want
-# the optional single-subject shuffle reference band.
+# n_shuffle default is 0 -- this is a quick look-first-then-decide step, and
+# the cluster-permutation significance test in plot_two_class_scenario.py
+# uses the real per-subject values directly, not an empirical per-cell
+# shuffle. Pass a larger --n_shuffle if you also want the optional
+# single-subject shuffle reference band.
 
 set -euo pipefail
 
@@ -61,8 +66,8 @@ esac
 SUBJ_LIST=(01 02 03 04 05 06 07 09 10 12 13 15 17 18 19 23 24 25 29 31 32)
 BANDS=(theta alpha beta)
 ROIS=(visual)
-CONDITIONS=(ampOnly)
-SCHEMES=(2)
+CONDITIONS=(ampOnly ampPhase phaseOnly)
+CLASSIFIER_SCHEMES=(2 3)   # 2=left/right, 3=top/bottom -- see constants.CATEGORY_SCHEMES
 WIN_MS=50
 TIME_STRIDE_MS=50
 
@@ -70,8 +75,8 @@ MAX_PARALLEL="${2:-${#SUBJ_LIST[@]}}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GLUE_DIR="${SCRIPT_DIR}/glue_decoding"
-CELL_SCRIPT="${GLUE_DIR}/linear_decoding_categories_cell.py"
-IPSI_CONTRA_SCRIPT="${GLUE_DIR}/ipsi_contra_cell.py"
+CLASSIFIER_SCRIPT="${GLUE_DIR}/linear_decoding_categories_cell.py"
+CIRCULAR_SCRIPT="${GLUE_DIR}/decoding_ts_cell.py"
 PLOT_SCRIPT="${GLUE_DIR}/plot_two_class_scenario.py"
 
 export OMP_NUM_THREADS=1
@@ -84,96 +89,101 @@ export OPENBLAS_NUM_THREADS=1
 BIDS_ROOT="$(cd "${GLUE_DIR}" && python3 -c 'from constants import get_bids_root; print(get_bids_root())')"
 
 BASE_DIR="${BIDS_ROOT}/derivatives/glueDecoding/twoClassScenario"
-ERP_REMOVED_DIR="${BASE_DIR}/linDecodeCat/erpRemoved"
-ERP_KEPT_DIR="${BASE_DIR}/linDecodeCat/erpKept"
-IPSI_CONTRA_REMOVED_DIR="${BASE_DIR}/ipsiContra/erpRemoved"
-IPSI_CONTRA_KEPT_DIR="${BASE_DIR}/ipsiContra/erpKept"
+CLASSIFIER_REMOVED_DIR="${BASE_DIR}/linDecodeCat/erpRemoved"
+CLASSIFIER_KEPT_DIR="${BASE_DIR}/linDecodeCat/erpKept"
+CIRCULAR_REMOVED_DIR="${BASE_DIR}/decodingTS/erpRemoved"
+CIRCULAR_KEPT_DIR="${BASE_DIR}/decodingTS/erpKept"
 FIG_DIR="${BASE_DIR}/figures"
-mkdir -p "${ERP_REMOVED_DIR}" "${ERP_KEPT_DIR}" "${IPSI_CONTRA_REMOVED_DIR}" "${IPSI_CONTRA_KEPT_DIR}" "${FIG_DIR}"
+mkdir -p "${CLASSIFIER_REMOVED_DIR}" "${CLASSIFIER_KEPT_DIR}" \
+         "${CIRCULAR_REMOVED_DIR}" "${CIRCULAR_KEPT_DIR}" "${FIG_DIR}"
 
 LOG_DIR="logs_two_class_scenario_${VOX_RES}"
 mkdir -p "${LOG_DIR}"
 
 echo "========================================================"
-echo " Two-Class (P=2) Scenario Runner"
-echo " VoxRes         : ${VOX_RES}"
-echo " Max Parallel   : ${MAX_PARALLEL}"
-echo " N Shuffle      : ${N_SHUFFLE}"
-echo " Seed           : ${SEED}"
-echo " Force          : ${FORCE_RAW}"
-echo " Subjects       : ${SUBJ_LIST[*]}"
-echo " Bands          : ${BANDS[*]}"
-echo " ROIs           : ${ROIS[*]}"
-echo " Scheme         : ${SCHEMES[*]} (left/right)"
-echo " BIDS root      : ${BIDS_ROOT}"
-echo " Data (classifier, erpRemoved): ${ERP_REMOVED_DIR}/"
-echo " Data (classifier, erpKept)   : ${ERP_KEPT_DIR}/"
-echo " Data (ipsi/contra, erpRemoved): ${IPSI_CONTRA_REMOVED_DIR}/"
-echo " Data (ipsi/contra, erpKept)   : ${IPSI_CONTRA_KEPT_DIR}/"
-echo " Figures        : ${FIG_DIR}/"
-echo " Jobs           : $(( ${#SUBJ_LIST[@]} * 4 )) (4 per subject: classifier x2 ERP states + ipsi/contra x2 ERP states)"
-echo " Logging to     : ${LOG_DIR}/"
+echo " Two-Class Scenario Runner (visual ROI, theta/alpha/beta)"
+echo " VoxRes           : ${VOX_RES}"
+echo " Max Parallel      : ${MAX_PARALLEL}"
+echo " N Shuffle         : ${N_SHUFFLE}"
+echo " Seed              : ${SEED}"
+echo " Force             : ${FORCE_RAW}"
+echo " Subjects          : ${SUBJ_LIST[*]}"
+echo " Bands             : ${BANDS[*]}"
+echo " Conditions        : ${CONDITIONS[*]}"
+echo " Classifier schemes: ${CLASSIFIER_SCHEMES[*]} (2=left/right, 3=top/bottom)"
+echo " BIDS root         : ${BIDS_ROOT}"
+echo " Data (classifier, erpRemoved): ${CLASSIFIER_REMOVED_DIR}/"
+echo " Data (classifier, erpKept)   : ${CLASSIFIER_KEPT_DIR}/"
+echo " Data (circular, erpRemoved)  : ${CIRCULAR_REMOVED_DIR}/"
+echo " Data (circular, erpKept)     : ${CIRCULAR_KEPT_DIR}/"
+echo " Figures           : ${FIG_DIR}/"
+echo " Jobs              : $(( ${#SUBJ_LIST[@]} * 4 )) (4 per subject: classifier x2 ERP + circular x2 ERP)"
+echo " Logging to        : ${LOG_DIR}/"
 echo "========================================================"
-echo ""
-echo "NOTE: ipsi/contra jobs need the visual_left/visual_right ROI caches --"
-echo "if they haven't been built yet, run this first (one-time):"
-echo "    python3 ${GLUE_DIR}/precompute_roi_splits.py --rois visual_left visual_right"
 echo ""
 
 count=0
 for subjID in "${SUBJ_LIST[@]}"; do
     subj_num=$((10#$subjID))
 
-    ( python3 "${CELL_SCRIPT}" \
+    ( python3 "${CLASSIFIER_SCRIPT}" \
           "${subj_num}" \
           --voxRes "${VOX_RES}" \
           --bands "${BANDS[@]}" \
           --rois "${ROIS[@]}" \
           --conditions "${CONDITIONS[@]}" \
-          --schemes "${SCHEMES[@]}" \
+          --schemes "${CLASSIFIER_SCHEMES[@]}" \
           --win_ms "${WIN_MS}" \
           --time_stride_ms "${TIME_STRIDE_MS}" \
           --n_shuffle "${N_SHUFFLE}" \
           --seed "${SEED}" \
-          --outdir "${ERP_REMOVED_DIR}" \
+          --outdir "${CLASSIFIER_REMOVED_DIR}" \
           ${FORCE_FLAG[@]+"${FORCE_FLAG[@]}"} \
     ) > "${LOG_DIR}/sub-${subjID}_classifier_erpRemoved.log" 2>&1 &
     count=$((count + 1))
 
-    ( python3 "${CELL_SCRIPT}" \
+    ( python3 "${CLASSIFIER_SCRIPT}" \
           "${subj_num}" \
           --voxRes "${VOX_RES}" \
           --bands "${BANDS[@]}" \
           --rois "${ROIS[@]}" \
           --conditions "${CONDITIONS[@]}" \
-          --schemes "${SCHEMES[@]}" \
+          --schemes "${CLASSIFIER_SCHEMES[@]}" \
           --win_ms "${WIN_MS}" \
           --time_stride_ms "${TIME_STRIDE_MS}" \
           --n_shuffle "${N_SHUFFLE}" \
           --seed "${SEED}" \
-          --outdir "${ERP_KEPT_DIR}" \
+          --outdir "${CLASSIFIER_KEPT_DIR}" \
           --no_erp_removal \
           ${FORCE_FLAG[@]+"${FORCE_FLAG[@]}"} \
     ) > "${LOG_DIR}/sub-${subjID}_classifier_erpKept.log" 2>&1 &
     count=$((count + 1))
 
-    ( python3 "${IPSI_CONTRA_SCRIPT}" \
+    ( python3 "${CIRCULAR_SCRIPT}" \
           "${subj_num}" \
-          --bands "${BANDS[@]}" \
           --voxRes "${VOX_RES}" \
-          --outdir "${IPSI_CONTRA_REMOVED_DIR}" \
+          --bands "${BANDS[@]}" \
+          --rois "${ROIS[@]}" \
+          --conditions "${CONDITIONS[@]}" \
+          --win_ms "${WIN_MS}" \
+          --n_shuffle "${N_SHUFFLE}" \
+          --outdir "${CIRCULAR_REMOVED_DIR}" \
           ${FORCE_FLAG[@]+"${FORCE_FLAG[@]}"} \
-    ) > "${LOG_DIR}/sub-${subjID}_ipsiContra_erpRemoved.log" 2>&1 &
+    ) > "${LOG_DIR}/sub-${subjID}_circular_erpRemoved.log" 2>&1 &
     count=$((count + 1))
 
-    ( python3 "${IPSI_CONTRA_SCRIPT}" \
+    ( python3 "${CIRCULAR_SCRIPT}" \
           "${subj_num}" \
-          --bands "${BANDS[@]}" \
           --voxRes "${VOX_RES}" \
-          --outdir "${IPSI_CONTRA_KEPT_DIR}" \
+          --bands "${BANDS[@]}" \
+          --rois "${ROIS[@]}" \
+          --conditions "${CONDITIONS[@]}" \
+          --win_ms "${WIN_MS}" \
+          --n_shuffle "${N_SHUFFLE}" \
+          --outdir "${CIRCULAR_KEPT_DIR}" \
           --no_erp_removal \
           ${FORCE_FLAG[@]+"${FORCE_FLAG[@]}"} \
-    ) > "${LOG_DIR}/sub-${subjID}_ipsiContra_erpKept.log" 2>&1 &
+    ) > "${LOG_DIR}/sub-${subjID}_circular_erpKept.log" 2>&1 &
     count=$((count + 1))
 
     if [ $((count % (MAX_PARALLEL * 4))) -eq 0 ]; then
@@ -197,10 +207,11 @@ python3 "${PLOT_SCRIPT}" \
     --voxRes "${VOX_RES}" \
     --bands "${BANDS[@]}" \
     --roi "${ROIS[0]}" \
-    --erp_removed_dir "${ERP_REMOVED_DIR}" \
-    --erp_kept_dir "${ERP_KEPT_DIR}" \
-    --ipsi_contra_removed_dir "${IPSI_CONTRA_REMOVED_DIR}" \
-    --ipsi_contra_kept_dir "${IPSI_CONTRA_KEPT_DIR}" \
+    --conditions "${CONDITIONS[@]}" \
+    --classifier_removed_dir "${CLASSIFIER_REMOVED_DIR}" \
+    --classifier_kept_dir "${CLASSIFIER_KEPT_DIR}" \
+    --circular_removed_dir "${CIRCULAR_REMOVED_DIR}" \
+    --circular_kept_dir "${CIRCULAR_KEPT_DIR}" \
     --figdir "${FIG_DIR}" \
     > "${LOG_DIR}/plotter.log" 2>&1
 

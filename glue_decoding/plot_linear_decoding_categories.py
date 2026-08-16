@@ -59,7 +59,10 @@ import matplotlib.ticker as ticker
 from constants import SUBJECT_LIST, ROI_NAMES, CATEGORY_SCHEMES, get_bids_root
 from linear_decoding_categories_cell import output_path
 
-SCHEME_LABELS = {s: f"{CATEGORY_SCHEMES[s]['name']} ({s} categories)" for s in CATEGORY_SCHEMES}
+# NOTE: category count uses len(groups), NOT the scheme key `s` -- they
+# diverge as of scheme 3 (top_bottom, 2 categories, not 3; see constants.py).
+SCHEME_LABELS = {s: f"{CATEGORY_SCHEMES[s]['name']} ({len(CATEGORY_SCHEMES[s]['groups'])} categories)"
+                  for s in CATEGORY_SCHEMES}
 
 # ── Design constants (mirrors plot_decoding_ts.py / plot_representational_distance_ts.py) ──
 
@@ -413,7 +416,7 @@ def main():
                         default=['theta', 'alpha', 'beta', 'lowgamma', 'highgamma'])
     parser.add_argument('--rois',       nargs='+', default=list(ROI_NAMES))
     parser.add_argument('--conditions', nargs='+', default=['ampOnly'])
-    parser.add_argument('--schemes',    nargs='+', type=int, default=sorted(CATEGORY_SCHEMES),
+    parser.add_argument('--schemes',    nargs='+', type=int, default=[2, 4, 6, 10],  # NOT sorted(CATEGORY_SCHEMES) -- scheme 3 (top_bottom) is opt-in only (two_class_scenario), not part of this pipeline's standard sweep
                         choices=sorted(CATEGORY_SCHEMES))
     parser.add_argument('--n_perm',       type=int, default=1000,
                         help='Sign-flip permutations for the cluster-permutation null (default 1000).')

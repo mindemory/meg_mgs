@@ -229,7 +229,7 @@ def main():
     parser.add_argument('--rois',     nargs='+', default=list(ROI_NAMES))
     parser.add_argument('--epochs',   nargs='+', default=list(EPOCHS),
                          choices=list(EPOCHS))
-    parser.add_argument('--schemes',  nargs='+', type=int, default=sorted(CATEGORY_SCHEMES),
+    parser.add_argument('--schemes',  nargs='+', type=int, default=[2, 4, 6, 10],  # NOT sorted(CATEGORY_SCHEMES) -- scheme 3 (top_bottom) is opt-in only (two_class_scenario), not part of this pipeline's standard sweep
                          choices=sorted(CATEGORY_SCHEMES),
                          help='Category-grouping schemes to test (see constants.CATEGORY_SCHEMES): '
                               '2=left/right, 4=quadrants, 6=quadrants+axis, 10=every raw location.')

@@ -73,6 +73,19 @@ CATEGORY_SCHEMES = {
             'left':  (4, 5, 6, 7, 8),     # angles in (90, 270):  130, 155, 180, 205, 230
         },
     },
+    3: {   # top vs bottom hemifield (sin(angle) sign) -- excludes the two
+           # locations sitting exactly on the horizontal axis (0 deg, 180
+           # deg), which have sin(angle)==0 and don't belong to either half
+           # (same exclusion principle as scheme 4's quadrant boundaries).
+           # NOTE this gives an asymmetric split (4 vs 4, not 5 vs 5 like
+           # scheme 2's left/right) -- unlike cos(angle), sin(angle) is
+           # exactly zero for two of the ten locations here, not zero.
+        'name': 'top_bottom',
+        'groups': {
+            'top':    (2, 3, 4, 5),     # angles 25, 50, 130, 155  (sin > 0)
+            'bottom': (7, 8, 9, 10),    # angles 205, 230, 310, 335 (sin < 0)
+        },
+    },
     4: {   # four quadrants -- excludes the two axis-aligned locations (0 deg, 180 deg),
            # which sit exactly on the quadrant boundary and don't belong to any one quadrant
         'name': 'quadrant4',
