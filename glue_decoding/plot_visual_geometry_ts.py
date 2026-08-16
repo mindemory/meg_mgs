@@ -51,12 +51,19 @@ double-centered group RDM, positive eigenvalues only)
                 here, whereas lam2_over_lam1's reference shifts with sampling.
                 Ellipse ~0.12, line ~0.18, null ~0.46.
 
-  neg_eig_frac  sum|negative eigenvalues| / sum|all eigenvalues|. Classical
-                MDS assumes Euclidean dissimilarities; crossnobis is unbiased
-                and so legitimately produces negative entries, which produce
-                negative eigenvalues. When this is large the 2-D embedding and
-                every ratio above are on shaky ground -- it is reported so
-                that is visible rather than silent.
+  neg_eig_frac  sum|negative eigenvalues| / sum|all eigenvalues|, computed on
+                each subject's RAW RDM and averaged -- NOT on the group RDM.
+                On the GROUP RDM this quantity is mathematically pinned to
+                exactly 0.500 and carries no information: z-scoring forces
+                sum(off-diagonals)=0 with a zero diagonal, so
+                trace(B) = -0.5*[trace(D) - sum(D)/n] = 0, i.e. the eigenvalues
+                sum to zero and positive mass always equals negative mass.
+                (An earlier version reported the group value and duly printed
+                0.50 for every single cell.) On the raw per-subject RDMs it is
+                informative: crossnobis is unbiased and legitimately yields
+                negative entries, and a large value means the dissimilarities
+                are far from Euclidean, so the 2-D embedding and every ratio
+                above should be treated as approximate.
 
   intersubj_r   Mean pairwise Spearman between subjects' RDMs. The GATE: a
                 clean-looking group geometry with intersubj_r ~ 0 is an
@@ -274,6 +281,11 @@ def metrics_over_time(rdm_stack, null_stack):
                 if k in real:
                     real[k][t] = v
         real['intersubj_r'][t] = cons
+        # neg_eig_frac from the RAW per-subject RDMs -- on the group RDM it is
+        # pinned to 0.5 by z-scoring and says nothing (see module docstring).
+        subj_neg = [geometry_metrics(rdm_stack[s, t])['neg_eig_frac']
+                    for s in range(n_subj)]
+        real['neg_eig_frac'][t] = float(np.nanmean(subj_neg)) if subj_neg else np.nan
 
         for j in range(n_null):
             gj, cj = group_rdm_and_consistency([null_stack[s, t, j] for s in range(n_subj)])
@@ -432,17 +444,37 @@ def write_csv(results, csvdir, roi, voxRes):
     return fp
 
 
+def spearman_brown(rho, n):
+    """Reliability of the MEAN of n raters given mean pairwise reliability rho.
+    interR is a ONE-subject-vs-ONE-subject correlation; the group average is
+    far more reliable than that, which is why a pairwise r of 0.03 does not by
+    itself mean the group RDM is noise."""
+    if not np.isfinite(rho) or n < 2 or rho <= 0:
+        return np.nan
+    return float(n * rho / (1.0 + (n - 1) * rho))
+
+
 def print_summary(results, bands, feature_reps, rois):
     hdr = (f"{'band':6s} {'featrep':9s} {'roi':8s} {'n':>3s} {'peak_ring':>9s} "
-           f"{'@t':>7s} {'null_p95':>8s} {'l2/l1':>6s} {'top2':>5s} {'PR':>5s} "
-           f"{'radCV':>6s} {'interR':>7s} {'negEig':>6s}")
+           f"{'@t':>7s} {'p_corr':>7s} {'l2/l1':>6s} {'top2':>5s} {'PR':>5s} "
+           f"{'radCV':>6s} {'interR':>7s} {'Rgroup':>7s} {'negEig':>6s}")
     print('\n' + '=' * len(hdr))
     print('SUMMARY -- values at each cell\'s PEAK ring-ness timepoint')
     print(f"  perfect ring at THIS angle set: l2/l1={IDEAL_RING['lam2_over_lam1']:.2f} "
           f"top2={IDEAL_RING['top2_var_frac']:.2f} PR={IDEAL_RING['pr_mds']:.2f} "
           f"radCV={IDEAL_RING['radial_cv']:.2f}   (NOT 1/1/2/0 -- angles are non-uniform)")
-    print('  null_p95 = 95th pct of the label-shuffle null for ring-ness at that timepoint')
-    print('  interR is the GATE: near 0 => the group geometry is an averaging artifact')
+    print('  p_corr = permutation p for the PEAK, against the max-over-TIME null')
+    print('           (each shuffle contributes its own max across all timepoints).')
+    print('           This is the honest test: comparing a peak picked over ~84')
+    print('           windows against a PER-timepoint null is cherry-picking -- the')
+    print('           per-timepoint p95 sits near 0.62 but the max-over-time p95 is')
+    print('           near 0.85. Floor is 1/(n_null+1).')
+    print('  interR = mean PAIRWISE (one subject vs one subject) RDM correlation.')
+    print('  Rgroup = Spearman-Brown reliability of the GROUP MEAN given interR and n.')
+    print('           Low interR with high Rgroup means: trust the group geometry,')
+    print('           do NOT trust any single subject.')
+    print('  negEig = mean over subjects of each RAW RDM\'s negative-eigenvalue mass')
+    print('           (>0.4 => strongly non-Euclidean; read the 2-D picture loosely).')
     print('=' * len(hdr))
     print(hdr); print('-' * len(hdr))
     for fr in feature_reps:
@@ -455,14 +487,20 @@ def print_summary(results, bands, feature_reps, rois):
                 if not np.isfinite(rr).any():
                     continue
                 i = int(np.nanargmax(rr))
-                npv = (np.nanpercentile(e['null']['ring_r'][i], 95)
-                       if e['null'] is not None else np.nan)
+                # Max-over-TIME null: each shuffle contributes its own peak
+                # across all timepoints, matching how the observed peak was chosen.
+                if e['null'] is not None and np.isfinite(e['null']['ring_r']).any():
+                    null_max = np.nanmax(e['null']['ring_r'], axis=0)   # (n_null,)
+                    p_corr = (np.sum(null_max >= rr[i]) + 1) / (null_max.size + 1)
+                else:
+                    p_corr = np.nan
+                rg = spearman_brown(e['real']['intersubj_r'][i], e['n'])
                 f = lambda x, w, p=2: (f'{x:{w}.{p}f}' if np.isfinite(x) else f'{"-":>{w}}')
                 print(f"{band:6s} {fr:9s} {roi:8s} {e['n']:3d} {f(rr[i],9)} "
-                      f"{e['tv'][i]:+7.2f} {f(npv,8)} {f(e['real']['lam2_over_lam1'][i],6)} "
+                      f"{e['tv'][i]:+7.2f} {f(p_corr,7,3)} {f(e['real']['lam2_over_lam1'][i],6)} "
                       f"{f(e['real']['top2_var_frac'][i],5)} {f(e['real']['pr_mds'][i],5)} "
                       f"{f(e['real']['radial_cv'][i],6)} {f(e['real']['intersubj_r'][i],7)} "
-                      f"{f(e['real']['neg_eig_frac'][i],6)}")
+                      f"{f(rg,7)} {f(e['real']['neg_eig_frac'][i],6)}")
 
 
 def main():
