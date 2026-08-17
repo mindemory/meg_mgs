@@ -35,34 +35,42 @@
 # NOTE this thins the data: 138-351 trials/subject over 10 locations and 3 bins
 # leaves ~5-12 trials per location per bin, and crossnobis drops any location
 # with fewer than 4. The per-cell log reports the smallest per-location count in
-# each bin; if that runs low, 2 bins (arg 6 = 2) roughly doubles it.
+# each bin; if that runs low, 2 bins (arg 5 = 2) roughly doubles it.
 #
 # Usage:
-#   bash run_visual_geometry_epochs.sh [voxRes] [max_parallel] [n_null] [force] [rois...] [n_bins]
+#   bash run_visual_geometry_epochs.sh [voxRes] [max_parallel] [n_null] [force] [n_bins] [rois...]
+#
+# n_bins comes BEFORE the ROI list: the ROI list is variadic, so nothing fixed
+# can follow it.
 #
 # Examples:
-#   bash run_visual_geometry_epochs.sh                  # 8mm, all 3 ROIs, 100 shuffles
-#   bash run_visual_geometry_epochs.sh 8mm 21 100 true  # overwrite
-#   bash run_visual_geometry_epochs.sh 8mm 21 100 false visual   # visual only
+#   bash run_visual_geometry_epochs.sh                       # 8mm, all 3 ROIs, 3 bins
+#   bash run_visual_geometry_epochs.sh 8mm 21 100 true 3     # overwrite, 3 bins
+#   bash run_visual_geometry_epochs.sh 8mm 21 100 true 2     # 2 bins (more trials each)
+#   bash run_visual_geometry_epochs.sh 8mm 21 100 true 3 visual   # visual only
 
 set -euo pipefail
-
-VOX_RES="${1:-8mm}"
-N_NULL="${3:-100}"
-N_BINS="${6:-3}"      # performance tertiles from initial-saccade error
-FORCE_RAW="${4:-false}"
-FORCE_FLAG=()
-case "${FORCE_RAW}" in
-    [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]) FORCE_FLAG=(--force) ;;
-esac
-shift $(( $# > 4 ? 4 : $# )) || true
-ROIS=("$@"); [ ${#ROIS[@]} -eq 0 ] && ROIS=(visual parietal frontal)
 
 SUBJ_LIST=(01 02 03 04 05 06 07 09 10 12 13 15 17 18 19 23 24 25 29 31 32)
 BANDS=(theta alpha beta lowgamma highgamma)
 CONDITIONS=(ampOnly ampPhase)
 
+# Capture EVERY fixed positional BEFORE shifting. Reading e.g. "${2}" after the
+# shift silently picks up a trailing ROI instead of max_parallel, which is what
+# previously produced "Max Parallel : parietal". Note also that n_bins must come
+# BEFORE the variadic ROI list, not after it -- a fixed positional cannot follow
+# a variadic one.
+VOX_RES="${1:-8mm}"
 MAX_PARALLEL="${2:-${#SUBJ_LIST[@]}}"
+N_NULL="${3:-100}"
+FORCE_RAW="${4:-false}"
+N_BINS="${5:-3}"      # performance tertiles from initial-saccade error
+FORCE_FLAG=()
+case "${FORCE_RAW}" in
+    [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]) FORCE_FLAG=(--force) ;;
+esac
+shift $(( $# > 5 ? 5 : $# )) || true
+ROIS=("$@"); [ ${#ROIS[@]} -eq 0 ] && ROIS=(visual parietal frontal)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GLUE_DIR="${SCRIPT_DIR}/glue_decoding"
@@ -86,6 +94,7 @@ echo " Epoch-based RDM -> MDS Geometry Runner"
 echo " VoxRes       : ${VOX_RES}"
 echo " Max Parallel : ${MAX_PARALLEL}"
 echo " N null       : ${N_NULL} label shuffles per epoch"
+echo " N bins       : ${N_BINS} (performance tertiles of i_sacc_err)"
 echo " Force        : ${FORCE_RAW}"
 echo " Bands        : ${BANDS[*]}"
 echo " Conditions   : ${CONDITIONS[*]}  (ampPhase skipped for the gamma bands)"

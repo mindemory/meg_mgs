@@ -34,7 +34,17 @@
 
 set -euo pipefail
 
+SUBJ_LIST=(01 02 03 04 05 06 07 09 10 12 13 15 17 18 19 23 24 25 29 31 32)
+BANDS=(theta alpha beta)
+FEATURE_REPS=(ampOnly ampPhase)
+WIN_MS=50            # one-sided => 100 ms window
+TIME_STRIDE_MS=50
+
+# All fixed positionals are read BEFORE the shift: reading "${2}" afterwards
+# would pick up the first trailing ROI instead of max_parallel. (This only
+# stayed hidden here because the ROI list was never actually passed.)
 VOX_RES="${1:-8mm}"
+MAX_PARALLEL="${2:-${#SUBJ_LIST[@]}}"
 N_NULL="${3:-50}"
 FORCE_RAW="${4:-false}"
 FORCE_FLAG=()
@@ -43,14 +53,6 @@ case "${FORCE_RAW}" in
 esac
 shift $(( $# > 4 ? 4 : $# )) || true
 ROIS=("$@"); [ ${#ROIS[@]} -eq 0 ] && ROIS=(visual)
-
-SUBJ_LIST=(01 02 03 04 05 06 07 09 10 12 13 15 17 18 19 23 24 25 29 31 32)
-BANDS=(theta alpha beta)
-FEATURE_REPS=(ampOnly ampPhase)
-WIN_MS=50            # one-sided => 100 ms window
-TIME_STRIDE_MS=50
-
-MAX_PARALLEL="${2:-${#SUBJ_LIST[@]}}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GLUE_DIR="${SCRIPT_DIR}/glue_decoding"
