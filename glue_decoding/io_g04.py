@@ -56,6 +56,12 @@ def _load_g04_roi_cache(subjID, lockType, band, voxRes, bids_root, roi, want_pha
             'trialinfo_col2': npz['trialinfo_col2'],
             'actualRate': float(npz['actualRate']),
             'freq_range': tuple(npz['freq_range'].tolist()),
+            # TEMPLATE-GRID index of each ROI source, in column order (written by
+            # precompute_roi_splits._save_g04_roi_splits as inside_pos_full[idx]).
+            # This is what makes source identity comparable ACROSS subjects: column
+            # k of subject A and column k of subject B are only the same anatomical
+            # location if these agree. None for caches built before it was saved.
+            'inside_pos': npz['inside_pos'] if 'inside_pos' in npz else None,
         }
 
 
