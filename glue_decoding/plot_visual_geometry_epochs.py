@@ -86,7 +86,7 @@ def load_group(subjects, bids_root, voxRes, band, cond, roi, outdir, bin_name='a
     performance bin. Files written before binning existed have no bin axis and
     are treated as the single 'all' bin.
     """
-    rdms, nulls = [], []
+    rdms, nulls, dropped = [], [], []
     for s in subjects:
         fp = output_path(bids_root, s, band, cond, roi, voxRes, outdir)
         if not os.path.exists(fp):
@@ -104,10 +104,19 @@ def load_group(subjects, bids_root, voxRes, band, cond, roi, outdir, bin_name='a
             elif bin_name != 'all':
                 continue          # pre-binning file: only 'all' is available
             if not np.isfinite(r).all():
-                continue          # a location dropped out for this subject/bin
+                # A location fell below the crossnobis minimum for this
+                # subject/bin, so its RDM row/col is NaN. Counted and reported
+                # rather than silently skipped -- with 3 bins this drops a large
+                # share of subjects, which is invisible otherwise.
+                dropped.append(s)
+                continue
             rdms.append(r[:, _ORDER][:, :, _ORDER])
             if nl is not None:
                 nulls.append(nl[:, :, _ORDER][:, :, :, _ORDER])
+    if dropped:
+        print(f'    [{band}/{cond}/{roi}/{bin_name}] dropped {len(dropped)} subject(s) '
+              f'with an under-populated location: '
+              f'{", ".join(f"sub-{d:02d}" for d in dropped)}', flush=True)
     if not rdms:
         return None, None, 0
     return np.stack(rdms), (np.stack(nulls) if nulls else None), len(rdms)
