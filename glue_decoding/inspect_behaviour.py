@@ -104,6 +104,9 @@ def audit(subjID, bids_root, voxRes, roi, n_bins):
         v = e[valid]
         r['err_min'] = float(v.min()); r['err_p5'] = float(np.percentile(v, 5))
         r['err_med'] = float(np.median(v)); r['err_max'] = float(v.max())
+    tiny = e[fin & (e > 0) & (e <= I_SACC_ERR_THRESH)]
+    if tiny.size:
+        r['tiny_med'] = float(np.median(tiny)); r['tiny_max'] = float(tiny.max())
     r['angle_all_nan'] = bool(np.all(~np.isfinite(np.asarray(behav['i_sacc_angle'], float))))
 
     # G03 metadata + alignment checksum
@@ -213,6 +216,17 @@ def main():
         out.append(f'  exactly 0 (missing/unparsed saccade, correctly excluded): {tz}')
         out.append(f'  0 < err <= {I_SACC_ERR_THRESH} (real measurements the threshold '
                    f'discards): {tt}')
+        tm = [r['tiny_med'] for r in ok if 'tiny_med' in r]
+        p5s = [r['err_p5'] for r in ok if 'err_p5' in r]
+        if tm and p5s:
+            out.append(f'  excluded-value median across subjects: {np.median(tm):.3g}; '
+                       f'retained 5th-percentile range: {min(p5s):.3g}-{max(p5s):.3g} '
+                       f'({min(p5s)/max(np.median(tm), 1e-12):.0f}x-'
+                       f'{max(p5s)/max(np.median(tm), 1e-12):.0f}x above it)')
+            out.append('  A continuous distribution would place its 5th percentile just '
+                       'above the cut. A large gap instead means the excluded values are '
+                       'a SEPARATE population (no-saccade / unparsed), i.e. the threshold '
+                       'is removing missing data rather than trimming the real low tail.')
         if tt == 0:
             out.append('  -> every excluded trial is an exact 0, so the threshold is only '
                        'removing missing data and is doing its job. The low valid% in some '
