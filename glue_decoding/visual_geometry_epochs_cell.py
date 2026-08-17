@@ -40,7 +40,7 @@ label-defined).
 Usage:
     python visual_geometry_epochs_cell.py <subjID>
         [--bands theta alpha beta lowgamma highgamma]
-        [--conditions ampOnly ampPhase] [--rois visual]
+        [--conditions ampOnly ampPhase] [--rois visual parietal frontal]
         [--voxRes 8mm] [--n_splits 10] [--n_null 100]
         [--max_pca_dim 50] [--seed 0] [--outdir <path>] [--force]
 """
@@ -186,7 +186,7 @@ def main():
                      default=['theta', 'alpha', 'beta', 'lowgamma', 'highgamma'])
     ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'],
                      choices=['ampOnly', 'ampPhase'])
-    ap.add_argument('--rois', nargs='+', default=['visual'])
+    ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
     ap.add_argument('--voxRes', default='8mm')
     ap.add_argument('--n_splits', type=int, default=DEFAULT_N_SPLITS)
     ap.add_argument('--n_null', type=int, default=DEFAULT_N_NULL)

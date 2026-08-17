@@ -18,7 +18,8 @@
 # Bands x conditions: theta/alpha/beta run ampOnly AND ampPhase;
 # lowgamma/highgamma have no saved phase (constants.AMP_PHASE_BANDS) and are
 # skipped for ampPhase automatically, contributing amplitude-only cells.
-# ROI: visual only by default.
+# ROIs: visual, parietal and frontal by default. Pass a different set as
+# trailing arguments to narrow it (e.g. "... false visual").
 #
 # Parallelism: one process per subject, single-threaded BLAS -- same as every
 # other run_*.sh here. The label-shuffle null is cheap because the PCA basis is
@@ -28,9 +29,9 @@
 #   bash run_visual_geometry_epochs.sh [voxRes] [max_parallel] [n_null] [force] [rois...]
 #
 # Examples:
-#   bash run_visual_geometry_epochs.sh                       # 8mm, visual, 100 shuffles
-#   bash run_visual_geometry_epochs.sh 8mm 21 100 true       # overwrite
-#   bash run_visual_geometry_epochs.sh 8mm 21 100 false visual parietal frontal
+#   bash run_visual_geometry_epochs.sh                  # 8mm, all 3 ROIs, 100 shuffles
+#   bash run_visual_geometry_epochs.sh 8mm 21 100 true  # overwrite
+#   bash run_visual_geometry_epochs.sh 8mm 21 100 false visual   # visual only
 
 set -euo pipefail
 
@@ -42,7 +43,7 @@ case "${FORCE_RAW}" in
     [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]) FORCE_FLAG=(--force) ;;
 esac
 shift $(( $# > 4 ? 4 : $# )) || true
-ROIS=("$@"); [ ${#ROIS[@]} -eq 0 ] && ROIS=(visual)
+ROIS=("$@"); [ ${#ROIS[@]} -eq 0 ] && ROIS=(visual parietal frontal)
 
 SUBJ_LIST=(01 02 03 04 05 06 07 09 10 12 13 15 17 18 19 23 24 25 29 31 32)
 BANDS=(theta alpha beta lowgamma highgamma)

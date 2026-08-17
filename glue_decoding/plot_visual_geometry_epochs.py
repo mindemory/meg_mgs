@@ -39,7 +39,7 @@ self-crosses and the colour order scrambles.
 Usage:
     python plot_visual_geometry_epochs.py [--voxRes 8mm]
         [--bands theta alpha beta lowgamma highgamma]
-        [--conditions ampOnly ampPhase] [--rois visual]
+        [--conditions ampOnly ampPhase] [--rois visual parietal frontal]
         [--subjects 1 2 ...] [--outdir <path>] [--figdir <path>] [--csvdir <path>]
 """
 
@@ -272,9 +272,13 @@ def figure_rdm(results, bands, cond, roi, voxRes, figdir):
     return fp
 
 
-def write_csv(results, csvdir, roi, voxRes):
+def write_csv(results, csvdir, rois, voxRes):
+    """One tidy table covering EVERY roi in `results`. The filename is built
+    from the full roi list, not rois[0] -- naming a three-ROI table after just
+    the first one invites it being read as visual-only later."""
     os.makedirs(csvdir, exist_ok=True)
-    fp = os.path.join(csvdir, f'visual_geometry_epochs_{roi}_{voxRes}.csv')
+    tag = rois[0] if len(rois) == 1 else '-'.join(rois)
+    fp = os.path.join(csvdir, f'visual_geometry_epochs_{tag}_{voxRes}.csv')
     keys = ['ring_r', 'p_ring', 'lam2_over_lam1', 'top2_var_frac', 'pr_mds',
             'radial_cv', 'intersubj_r', 'Rgroup', 'neg_eig_frac']
     lines = ['band,condition,roi,epoch,t_start,t_stop,n_subj,' + ','.join(keys)]
@@ -328,7 +332,7 @@ def main():
     ap.add_argument('--bands', nargs='+',
                      default=['theta', 'alpha', 'beta', 'lowgamma', 'highgamma'])
     ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
-    ap.add_argument('--rois', nargs='+', default=['visual'])
+    ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
     ap.add_argument('--outdir', default=None)
     ap.add_argument('--figdir', required=True)
     ap.add_argument('--csvdir', required=True)
@@ -355,7 +359,7 @@ def main():
         for roi in args.rois:
             figure_rdm(results, args.bands, cond, roi, args.voxRes, args.figdir)
             figure_mds(results, args.bands, cond, roi, args.voxRes, args.figdir)
-    write_csv(results, args.csvdir, args.rois[0], args.voxRes)
+    write_csv(results, args.csvdir, args.rois, args.voxRes)
     print_summary(results, args.bands, args.conditions, args.rois)
     print('\nDone.')
 
