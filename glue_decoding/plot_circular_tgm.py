@@ -69,7 +69,8 @@ _BG, _FG, _GRID = '#000000', '#e0e0e0', '#1c1c1c'
 _FLAG = '#888888'
 
 BAND_LABELS = {'theta': 'Theta (4-8 Hz)', 'alpha': 'Alpha (8-12 Hz)',
-               'beta': 'Beta (13-30 Hz)'}
+               'beta': 'Beta (13-30 Hz)', 'lowgamma': 'Low gamma (30-80 Hz)',
+               'highgamma': 'High gamma (80-150 Hz)'}
 COND_LABELS = {'ampOnly': 'Amplitude', 'ampPhase': 'Amplitude + Phase'}
 ROI_COLOURS = {'visual': '#FFC629', 'parietal': '#A78BFA', 'frontal': '#34D399'}
 EVENT_TIMES = [(0.0, 'Stim'), (0.2, 'Delay')]
@@ -88,15 +89,16 @@ def _style_ax(ax):
 
 
 def load_all(subjects, bids_root, voxRes, bands, rois, conditions, metric, outdir,
-              tmin=None):
+              tmin=None, tmax=None):
     """
     data[(band, roi, condition)] = (err_stack (n_subj,T,T), tv, n_subj).
 
-    tmin crops BOTH the train and test axes (a TGM is square in time, so the
-    crop has to be applied symmetrically or the axes stop corresponding).
-    Default -0.5 s: the pre-stimulus baseline carries no location information
-    by construction, so those rows/columns are a large field of near-chance
-    noise that only compresses the part of the matrix worth looking at.
+    tmin/tmax crop BOTH the train and test axes (a TGM is square in time, so
+    the crop must be applied symmetrically or the axes stop corresponding).
+    Defaults -0.5 to 1.7 s: before -0.5 the pre-stimulus baseline is
+    near-chance by construction, and after 1.7 s the epoch runs past the end
+    of the delay period of interest -- both are large fields of noise that
+    only compress the part of the matrix worth looking at.
     """
     key = METRIC_KEY[metric]
     data = {}
@@ -111,8 +113,12 @@ def load_all(subjects, bids_root, voxRes, bands, rois, conditions, metric, outdi
                     with np.load(fp, allow_pickle=True) as npz:
                         m = np.asarray(npz[key], dtype=float)
                         t = np.asarray(npz['eval_time_vector'], dtype=float)
+                        keep = np.ones(t.shape, dtype=bool)
                         if tmin is not None:
-                            keep = t >= tmin
+                            keep &= (t >= tmin)
+                        if tmax is not None:
+                            keep &= (t <= tmax)
+                        if not keep.all():
                             m = m[np.ix_(keep, keep)]   # symmetric: train AND test
                             t = t[keep]
                         mats.append(m)
@@ -184,15 +190,31 @@ def _time_ticks(ax, tv, axis='x'):
         ax.set_yticks(locs); ax.set_yticklabels(labs, fontsize=6.5)
 
 
+def _bands_with_data(data, bands, rois, cond):
+    """
+    Bands that actually have data for this condition. lowgamma/highgamma have
+    no saved phase (AMP_PHASE_BANDS is theta/alpha/beta), so the cell script
+    legitimately produces nothing for them under ampPhase -- without this the
+    amp+phase figure would carry two permanently empty rows.
+    """
+    out = [b for b in bands
+           if any(data.get((b, r, cond), (None,))[0] is not None for r in rois)]
+    return out or list(bands)
+
+
 def figure_tgm(data, bands, rois, cond, voxRes, figdir, metric,
                 clim=(60.0, 120.0)):
+    bands = _bands_with_data(data, bands, rois, cond)
     n_r, n_c = len(bands), len(rois)
-    fig_h = 3.4 * n_r + 1.4
+    # Panels are forced square by aspect='equal', so with 5 band rows the
+    # figure grows tall fast -- keep the per-row height and gaps modest so the
+    # 5-band x 3-ROI grid stays a usable shape.
+    fig_h = 3.0 * n_r + 1.4
     fig = plt.figure(figsize=(3.5 * n_c + 1.3, fig_h), facecolor=_BG)
     # Title block needs a fixed ~1.05 in of headroom regardless of how many band
     # rows there are -- a fixed fractional top collides with the column titles
     # whenever the figure is short (e.g. a single-band run).
-    gs = gridspec.GridSpec(n_r, n_c, figure=fig, hspace=0.30, wspace=0.28,
+    gs = gridspec.GridSpec(n_r, n_c, figure=fig, hspace=0.22, wspace=0.24,
                             left=0.09, right=0.90,
                             top=1 - 1.05 / fig_h, bottom=0.55 / fig_h)
     im = None
@@ -219,11 +241,18 @@ def figure_tgm(data, bands, rois, cond, voxRes, figdir, metric,
             # cluster_permutation_2d remains available for it.
             im = ax.imshow(m, origin='lower', cmap='RdBu', aspect='equal',
                            vmin=clim[0], vmax=clim[1], interpolation='nearest')
+            # Guide lines are drawn as a dark halo with a bright line on top:
+            # a single mid-grey thin line (the previous style) vanished against
+            # the saturated ends of the RdBu map, which is exactly where the
+            # interesting structure sits.
             for t_ev, _lab in EVENT_TIMES:
                 i_ev = int(np.argmin(np.abs(tv - t_ev)))
-                ax.axhline(i_ev, color=_FLAG, lw=0.6, ls=':')
-                ax.axvline(i_ev, color=_FLAG, lw=0.6, ls=':')
-            ax.plot([0, len(tv) - 1], [0, len(tv) - 1], color='#666666', lw=0.6, ls='--')
+                for col, w in (('#000000', 2.2), ('#ffffff', 1.0)):
+                    ax.axhline(i_ev, color=col, lw=w, ls=':', alpha=0.9, zorder=5)
+                    ax.axvline(i_ev, color=col, lw=w, ls=':', alpha=0.9, zorder=5)
+            for col, w in (('#000000', 2.6), ('#ffffff', 1.3)):
+                ax.plot([0, len(tv) - 1], [0, len(tv) - 1], color=col, lw=w,
+                        ls='--', alpha=0.95, zorder=6)
             _time_ticks(ax, tv, 'x'); _time_ticks(ax, tv, 'y')
             if r == 0:
                 ax.set_title(f'{roi.capitalize()}  (n={n_subj})', fontsize=9,
@@ -264,6 +293,7 @@ def figure_diagonal(data, bands, rois, cond, voxRes, figdir, n_perm, alpha, metr
     The TGM diagonal == the standard decoding-over-time curve, so this figure
     is directly comparable to plot_decoding_ts.py's output for the same cells.
     """
+    bands = _bands_with_data(data, bands, rois, cond)
     n_r, n_c = len(bands), len(rois)
     fig_h = 2.3 * n_r + 1.3
     fig = plt.figure(figsize=(3.6 * n_c + 0.8, fig_h), facecolor=_BG)
@@ -293,7 +323,7 @@ def figure_diagonal(data, bands, rois, cond, voxRes, figdir, n_perm, alpha, metr
                 ax.plot(tv[sig[:, 0]], np.full(sig[:, 0].sum(), y), '.',
                         color='#ffffff', ms=3)
             for t_ev, lab in EVENT_TIMES:
-                ax.axvline(t_ev, color=_FLAG, lw=0.7, ls='--')
+                ax.axvline(t_ev, color='#cccccc', lw=1.1, ls='--', alpha=0.85, zorder=2)
             ax.set_xlim(tv[0], tv[-1])
             ax.invert_yaxis()          # lower error upward = better decoding upward
             ax.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
@@ -350,7 +380,10 @@ def main():
     ap = argparse.ArgumentParser(description='Aggregate + plot circular TGM across subjects.')
     ap.add_argument('--voxRes', default='8mm')
     ap.add_argument('--subjects', nargs='+', type=int, default=SUBJECT_LIST)
-    ap.add_argument('--bands', nargs='+', default=['theta', 'alpha', 'beta'])
+    ap.add_argument('--bands', nargs='+',
+                     default=['theta', 'alpha', 'beta', 'lowgamma', 'highgamma'],
+                     help='lowgamma/highgamma have no saved phase, so they appear in '
+                          'the ampOnly figures only (rows with no data are dropped).')
     ap.add_argument('--rois', nargs='+', default=list(ROI_NAMES))
     ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
     ap.add_argument('--metric', default='signed', choices=['signed', 'unsigned'])
@@ -369,6 +402,9 @@ def main():
     ap.add_argument('--tmin', type=float, default=-0.5,
                      help='Crop BOTH TGM axes to t >= this (default -0.5 s); the '
                           'pre-stimulus baseline is near-chance by construction.')
+    ap.add_argument('--tmax', type=float, default=1.7,
+                     help='Crop BOTH TGM axes to t <= this (default 1.7 s, the end of '
+                          'the delay period).')
     ap.add_argument('--clim', type=float, nargs=2, default=[60.0, 120.0],
                      metavar=('LO', 'HI'),
                      help='Fixed colour limits in deg (default 60 120, symmetric about '
@@ -379,11 +415,13 @@ def main():
 
     bids_root = get_bids_root()
     print(f'Loading | {args.voxRes} | bands={args.bands} | rois={args.rois} | '
-          f'conditions={args.conditions} | metric={args.metric} | tmin={args.tmin} | '
+          f'conditions={args.conditions} | metric={args.metric} | '
+          f'span=[{args.tmin}, {args.tmax}] | '
           f'clim={args.clim} | cluster_alpha={args.cluster_alpha} (forming) '
           f'alpha={args.alpha} (cluster-level)')
     data = load_all(args.subjects, bids_root, args.voxRes, args.bands, args.rois,
-                    args.conditions, args.metric, args.outdir, tmin=args.tmin)
+                    args.conditions, args.metric, args.outdir,
+                    tmin=args.tmin, tmax=args.tmax)
     tot = sum(v[2] for v in data.values())
     print(f'Loaded {tot} subject-cells.')
     if tot == 0:

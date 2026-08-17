@@ -5,8 +5,9 @@
 # LOO ridge -- see circular_tgm_cell.py's module docstring for the method and
 # the Sherman-Morrison cross-time LOO derivation that makes it fast.
 #
-# Grid: 3 bands (theta/alpha/beta) x 2 conditions (ampOnly/ampPhase)
-#       x 3 ROIs (visual/parietal/frontal) = 18 cells per subject.
+# Grid: 5 bands (theta/alpha/beta/lowgamma/highgamma) x 2 conditions
+#       (ampOnly/ampPhase, the latter only for theta/alpha/beta since the
+#       gamma bands have no saved phase) x 3 ROIs = 24 cells per subject.
 # Stim-locked only. ERP removed (no ERP-kept arm).
 #
 # PARALLELISM -- one process per SUBJECT (21), single-threaded BLAS.
@@ -50,7 +51,11 @@ case "${FORCE_RAW}" in
 esac
 
 SUBJ_LIST=(01 02 03 04 05 06 07 09 10 12 13 15 17 18 19 23 24 25 29 31 32)
-BANDS=(theta alpha beta)
+# lowgamma/highgamma have no saved phase (constants.AMP_PHASE_BANDS is
+# theta/alpha/beta), so circular_tgm_cell.py skips ampPhase for them
+# automatically -- they contribute ampOnly cells only, and the plotter drops
+# the resulting empty rows from the amp+phase figures.
+BANDS=(theta alpha beta lowgamma highgamma)
 CONDITIONS=(ampOnly ampPhase)
 ROIS=(visual parietal frontal)
 WIN_MS=50
