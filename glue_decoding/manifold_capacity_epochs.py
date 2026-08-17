@@ -50,21 +50,30 @@ pooled-vs-per-subject. Read it as "is there a location code shared across
 brains in a common anatomical space", which is the manifold-capacity analogue
 of the inter-subject RDM correlation used elsewhere here.
 
-POINTS PER MANIFOLD are UNCAPPED by default: pooling exists precisely to
-maximise them (~30 per subject becomes ~600+ pooled), and capping would throw
-away the benefit. Every pooled trial is used, balanced down only to the
-smallest category so the manifolds are equal-sized, and the number actually
-used is recorded in the output.
+POINTS PER MANIFOLD -- there is a HARD CEILING, and it is not a compute budget.
+glue requires the manifolds to be LINEARLY SEPARABLE and raises
+"Data is not linearly separable" otherwise. By Cover's theorem, points in
+general position admit a separating homogeneous hyperplane only while the TOTAL
+point count satisfies
 
-There is no statistical reason to cap -- more points strictly improves how well
-each manifold's shape is sampled, and capacity theory is fine with points
-exceeding the ambient dimension. The only risk is compute: glue's QP time grows
-superlinearly in points, and an earlier sweep here ran 5+ hours before being
-killed (that was a different cause -- per-timepoint point expansion rather than
-pooling -- but the same scaling is what bit). Rather than guess a cap, run
-    python manifold_capacity_epochs.py --benchmark --bands alpha --rois visual
-which times one real glue fit across a range of point counts and prints the
-measured scaling. Set --points_per_category only if that says you must.
+        P * M  <=  2 * n_features        (P manifolds, M points each)
+
+so M <= 2*F/P no matter how many subjects are pooled. Measured on real data
+(visual, F=597, P=10 => 2F/P = 119): M=50 and M=100 fitted fine, M=200 raised
+the separability error. This script therefore caps M at COVER_SAFETY (80%) of
+that bound automatically, and reports the ceiling per cell.
+
+The practical consequence: pooling still helps a lot -- it lifts M from ~30
+(one subject) to the ceiling -- but NOT without limit, and past the ceiling
+extra pooled trials are simply unusable. The only ways to raise the ceiling are
+a larger ROI (more features) or a coarser scheme (fewer manifolds): at P=10 the
+visual ROI allows ~119 points, while the P=4 quadrant scheme allows ~298. Small
+ROIs bind much harder -- check each ROI's source count (inspect_data_summary.py)
+before assuming a cell is runnable at P=10.
+
+--benchmark times one real fit across sizes up to the ceiling and prints the
+measured cost scaling; glue_with_retry additionally steps the point count down
+if a cell turns out non-separable below the bound anyway.
 
 Requires the `glue` package (github.com/cnchou/glue) importable -- activate the
 env that has it first (e.g. `conda activate eegmne`); this script only calls
@@ -113,11 +122,58 @@ except ImportError as e:
 
 LOCK_TYPE = 'stim'
 PHASE_CONDITIONS = ('ampPhase',)
+
+# Fraction of the Cover bound to actually use. glue REQUIRES the manifolds to be
+# linearly separable and raises RuntimeError otherwise; by Cover's theorem points
+# in general position admit a separating homogeneous hyperplane only while the
+# TOTAL number of points P*M stays under 2*n_features. Measured on real data
+# (visual, N=597, P=10, so 2N/P = 119): M=50 and M=100 fitted, M=200 raised
+# "Data is not linearly separable". Staying at 80% of the bound leaves room for
+# the data not being in perfectly general position.
+COVER_SAFETY = 0.8
 # UNCAPPED by default. Maximising points per manifold is the entire reason to
 # pool subjects in the first place, so the default must not throw that away.
 # The flag remains for the case where a measured QP time turns out prohibitive
 # -- use --benchmark to find out rather than guessing.
 DEFAULT_POINTS_PER_CATEGORY = 0
+
+
+def cover_max_points(n_features, n_manifolds, safety=COVER_SAFETY):
+    """
+    Largest points-per-manifold that keeps the pooled set linearly separable,
+    P*M <= 2*n_features (Cover), scaled by `safety`. This is a HARD ceiling from
+    the theory, not a compute budget: exceeding it makes glue raise rather than
+    run slowly, and no amount of extra pooled data can get past it -- only more
+    features (a bigger ROI) or fewer manifolds (a coarser scheme) can.
+    """
+    return max(2, int(safety * 2.0 * n_features / max(1, n_manifolds)))
+
+
+def glue_with_retry(manifolds, log, retry_seed=42, min_points=20, **kwargs):
+    """
+    Call glue, and if it rejects the data as not linearly separable, subsample
+    the points and try again rather than losing the cell. Returns
+    (result_df, points_used) or (None, points_used_at_failure).
+
+    The Cover bound is applied up front, so this is a safety net for data that
+    is not in general position (e.g. near-duplicate trials), not the main
+    mechanism.
+    """
+    # NB: named retry_seed, not seed -- `seed` is forwarded to glue via **kwargs
+    # and having both would be a duplicate-keyword TypeError.
+    rng = np.random.default_rng(retry_seed)
+    cur = [np.asarray(m) for m in manifolds]
+    while True:
+        m_pts = cur[0].shape[1]
+        try:
+            return glue_analysis_dataframe(cur, **kwargs), m_pts
+        except RuntimeError as e:
+            if 'not linearly separable' not in str(e).lower() or m_pts <= min_points:
+                raise
+            new_pts = max(min_points, int(m_pts * 0.7))
+            log(f'      not linearly separable at {m_pts} pts/manifold '
+                f'-> retrying at {new_pts}')
+            cur = [m[:, rng.choice(m.shape[1], new_pts, replace=False)] for m in cur]
 
 
 def output_csv_path(bids_root, voxRes, outdir=None):
@@ -265,13 +321,22 @@ def run_benchmark(args, bids_root, ppc_cap, log):
                     continue
                 scheme = args.schemes[0]
                 lo, hi = EPOCHS['early_delay']
-                # Largest available, to know the real ceiling.
                 _, _, ppc_max = build_epoch_manifolds(X, tv, y, scheme, lo, hi,
                                                        None, args.seed, log=log)
-                sizes = [s for s in (50, 100, 200, 400, 800, 1600) if s < ppc_max]
-                sizes.append(int(ppc_max))
-                log(f'  max available points/manifold = {ppc_max}; '
-                    f'timing sizes {sizes}')
+                n_man = len(CATEGORY_SCHEMES[scheme]['groups'])
+                cover = cover_max_points(info['n_features'], n_man)
+                hard = int(2.0 * info['n_features'] / n_man)
+                usable = min(int(ppc_max), cover)
+                log(f'  pooled data allows {ppc_max} pts/manifold, but glue requires the '
+                    f'manifolds to be LINEARLY SEPARABLE:')
+                log(f'    P={n_man} manifolds, F={info["n_features"]} features '
+                    f'-> Cover bound P*M <= 2F gives M <= {hard}; '
+                    f'using {int(COVER_SAFETY*100)}% => {cover}')
+                log(f'    so the usable size is {usable}, NOT {ppc_max} -- pooling past '
+                    f'this point cannot help; only a larger ROI (more features) or a '
+                    f'coarser scheme (fewer manifolds) can.')
+                sizes = sorted({s for s in (50, 100, 200) if s < usable} | {usable})
+                log(f'  timing sizes {sizes}')
                 log(f'\n  {"pts/manifold":>13s} {"seconds":>9s} {"scaling t~M^k":>14s}')
                 log('  ' + '-' * 40)
                 prev = None
@@ -286,6 +351,13 @@ def run_benchmark(args, bids_root, ppc_cap, log):
                             analysis_type=args.analysis_type,
                             n_hyperplanes=args.n_hyperplanes,
                             shuffle=False, seed=args.seed)
+                    except RuntimeError as e:
+                        if 'not linearly separable' in str(e).lower():
+                            log(f'  {used:13d} {"NOT SEP.":>9s}   <- separability limit '
+                                f'reached (Cover bound was {cover})')
+                        else:
+                            log(f'  {used:13d} {"FAILED":>9s}'); log(traceback.format_exc())
+                        break
                     except Exception:
                         log(f'  {used:13d} {"FAILED":>9s}')
                         log(traceback.format_exc())
@@ -387,11 +459,17 @@ def main():
                     continue
 
                 for scheme in args.schemes:
+                    n_man = len(CATEGORY_SCHEMES[scheme]['groups'])
+                    cover = cover_max_points(info['n_features'], n_man)
+                    cell_cap = cover if ppc_cap is None else min(ppc_cap, cover)
+                    log(f'    scheme={scheme}: P={n_man} manifolds, F={info["n_features"]} '
+                        f'features -> separability ceiling {cover} pts/manifold '
+                        f'({int(COVER_SAFETY*100)}% of Cover 2N/P); using cap {cell_cap}')
                     for ep in EPOCH_ORDER:
                         lo, hi = EPOCHS[ep]
                         try:
                             manifolds, cats, ppc = build_epoch_manifolds(
-                                X, tv, y, scheme, lo, hi, ppc_cap, args.seed, log=log)
+                                X, tv, y, scheme, lo, hi, cell_cap, args.seed, log=log)
                         except ValueError as e:
                             log(f'    SKIP {ep}: {e}')
                             continue
@@ -401,8 +479,8 @@ def main():
 
                         t0 = time.time()
                         try:
-                            ret = glue_analysis_dataframe(
-                                manifolds,
+                            ret, ppc = glue_with_retry(
+                                manifolds, log, retry_seed=args.seed,
                                 indices=(band, condition, roi, scheme, ep),
                                 indices_name=['band', 'condition', 'roi', 'scheme', 'epoch'],
                                 analysis_type=args.analysis_type,
