@@ -8,7 +8,8 @@
 #
 # Epochs match visual_geometry_epochs_cell.py exactly (fixation / stimulus /
 # early_delay / late_delay), so the two analyses line up cell for cell.
-# Scheme 4 = quadrant manifolds (drops 0 and 180 deg). ROIs: visual, parietal,
+# Scheme 10 = ONE MANIFOLD PER LOCATION, all ten (0 and 180 deg included --
+# unlike the quadrant scheme, which drops them). ROIs: visual, parietal,
 # frontal. Conditions: ampOnly everywhere, ampPhase for --phase_rois (default
 # visual) since it doubles the feature count and the QP cost.
 #
@@ -19,14 +20,17 @@
 # Each job independently loads all subjects for its own cell and writes its own
 # CSV; the CSVs are concatenated at the end.
 #
-# COST WARNING: pooling multiplies points-per-manifold by ~n_subjects, and
-# glue's QP time scales badly with point count (an earlier sweep here ran 5+
-# hours before being killed for that reason). Points per manifold are capped by
-# --points_per_category (default 200). TIME ONE CELL BEFORE THE FULL GRID:
+# POINTS PER MANIFOLD ARE UNCAPPED (arg 3 = 0): maximising them is the reason to
+# pool at all. glue's QP time does grow superlinearly in points, so MEASURE it
+# before committing to the full grid rather than guessing a cap -- the script
+# has a benchmark mode that times one real fit across a range of sizes:
 #
 #   conda activate eegmne
-#   python3 glue_decoding/manifold_capacity_epochs.py \
-#       --bands alpha --rois visual --conditions ampOnly --force
+#   python3 glue_decoding/manifold_capacity_epochs.py --benchmark \
+#       --bands alpha --rois visual --conditions ampOnly
+#
+# It prints seconds vs points/manifold, the fitted scaling exponent, and a
+# projection of the whole grid. Pass a positive arg 3 only if that says you must.
 #
 # Requires the `glue` conda env -- this script only calls python3, it does NOT
 # activate anything. Activate it yourself first.
@@ -38,7 +42,7 @@ set -euo pipefail
 
 VOX_RES="${1:-8mm}"
 MAX_PARALLEL="${2:-9}"
-PPC="${3:-200}"
+PPC="${3:-0}"   # 0 = UNCAPPED (use every pooled trial)
 N_HYP="${4:-200}"
 FORCE_RAW="${5:-false}"
 FORCE_FLAG=()
@@ -50,7 +54,7 @@ BANDS=(theta alpha beta)
 ROIS=(visual parietal frontal)
 CONDITIONS=(ampOnly ampPhase)
 PHASE_ROIS=(visual)
-SCHEMES=(4)
+SCHEMES=(10)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GLUE_DIR="${SCRIPT_DIR}/glue_decoding"
@@ -79,13 +83,13 @@ echo "========================================================"
 echo " Pooled Epoch glue Capacity Runner"
 echo " VoxRes           : ${VOX_RES}"
 echo " Max Parallel     : ${MAX_PARALLEL}  (over (band,roi) cells -- NOT subjects)"
-echo " Points/manifold  : ${PPC} (cap, applied after pooling)"
+echo " Points/manifold  : $( [ "${PPC}" -eq 0 ] && echo 'UNCAPPED (all pooled trials)' || echo "capped at ${PPC}" )"
 echo " N hyperplanes    : ${N_HYP}"
 echo " Force            : ${FORCE_RAW}"
 echo " Bands            : ${BANDS[*]}"
 echo " ROIs             : ${ROIS[*]}"
 echo " Conditions       : ${CONDITIONS[*]}  (ampPhase only for: ${PHASE_ROIS[*]})"
-echo " Schemes          : ${SCHEMES[*]}  (4 = quadrants, drops 0/180 deg)"
+echo " Schemes          : ${SCHEMES[*]}  (10 = one manifold per location, incl 0/180 deg)"
 echo " Epochs           : fixation stimulus early_delay late_delay"
 echo " Output           : ${BASE_DIR}/"
 echo "========================================================"

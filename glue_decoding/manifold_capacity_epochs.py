@@ -10,7 +10,12 @@ manifold per location is built from the whole pooled set.
              early_delay 0.2..0.8 | late_delay 1.0..1.6   (half-open; the
              0.8-1.0 s gap is deliberate) -- identical to
              visual_geometry_epochs_cell.py, so the two analyses line up.
-    scheme   4 quadrant manifolds (drops locations 1 and 6, i.e. 0 and 180 deg).
+    scheme   10 -- ONE MANIFOLD PER LOCATION, all ten. Note this differs from
+             the quadrant variant (scheme 4) in two ways that matter: locations
+             1 and 6 (0 and 180 deg) are INCLUDED here rather than dropped, and
+             with P=10 rather than P=4 there are ~2.5x fewer pooled trials per
+             manifold (a manifold is now one location, not a pair) and 10
+             one-versus-rest dichotomies per fit instead of 4.
     rois     visual, parietal, frontal.
 
 =============================================================================
@@ -45,12 +50,21 @@ pooled-vs-per-subject. Read it as "is there a location code shared across
 brains in a common anatomical space", which is the manifold-capacity analogue
 of the inter-subject RDM correlation used elsewhere here.
 
-COST: pooling multiplies points-per-manifold by ~n_subjects (from ~30 to
-~600+), and glue's QP solves scale badly with point count -- an earlier sweep
-in this repo ran 5+ hours before being killed for exactly that reason. Points
-per manifold are therefore CAPPED (--points_per_category, default 200) with
-the cap applied after pooling and reported in the output. Time one cell before
-launching the grid.
+POINTS PER MANIFOLD are UNCAPPED by default: pooling exists precisely to
+maximise them (~30 per subject becomes ~600+ pooled), and capping would throw
+away the benefit. Every pooled trial is used, balanced down only to the
+smallest category so the manifolds are equal-sized, and the number actually
+used is recorded in the output.
+
+There is no statistical reason to cap -- more points strictly improves how well
+each manifold's shape is sampled, and capacity theory is fine with points
+exceeding the ambient dimension. The only risk is compute: glue's QP time grows
+superlinearly in points, and an earlier sweep here ran 5+ hours before being
+killed (that was a different cause -- per-timepoint point expansion rather than
+pooling -- but the same scaling is what bit). Rather than guess a cap, run
+    python manifold_capacity_epochs.py --benchmark --bands alpha --rois visual
+which times one real glue fit across a range of point counts and prints the
+measured scaling. Set --points_per_category only if that says you must.
 
 Requires the `glue` package (github.com/cnchou/glue) importable -- activate the
 env that has it first (e.g. `conda activate eegmne`); this script only calls
@@ -59,8 +73,8 @@ python3.
 Usage:
     python manifold_capacity_epochs.py [--bands theta alpha beta]
         [--conditions ampOnly ampPhase] [--rois visual parietal frontal]
-        [--phase_rois visual] [--schemes 4] [--voxRes 8mm]
-        [--points_per_category 200] [--n_hyperplanes 200] [--seed 42]
+        [--phase_rois visual] [--schemes 10] [--voxRes 8mm]
+        [--points_per_category 0] [--n_hyperplanes 200] [--seed 42]
         [--subjects 1 2 ...] [--outdir <path>] [--force]
 """
 
@@ -99,7 +113,11 @@ except ImportError as e:
 
 LOCK_TYPE = 'stim'
 PHASE_CONDITIONS = ('ampPhase',)
-DEFAULT_POINTS_PER_CATEGORY = 200
+# UNCAPPED by default. Maximising points per manifold is the entire reason to
+# pool subjects in the first place, so the default must not throw that away.
+# The flag remains for the case where a measured QP time turns out prohibitive
+# -- use --benchmark to find out rather than guessing.
+DEFAULT_POINTS_PER_CATEGORY = 0
 
 
 def output_csv_path(bids_root, voxRes, outdir=None):
@@ -227,6 +245,72 @@ def build_epoch_manifolds(X, tv, y, scheme, lo, hi, points_per_category, seed, l
     return manifolds, cats, ppc
 
 
+def run_benchmark(args, bids_root, ppc_cap, log):
+    """
+    Time ONE real glue fit at increasing points-per-manifold on the first
+    runnable cell, so the cost of running uncapped is measured rather than
+    assumed. Prints elapsed time and the implied scaling exponent between
+    successive sizes (t ~ M^k), plus a projection of the full grid.
+    """
+    for band in args.bands:
+        for roi in args.rois:
+            for condition in args.conditions:
+                if condition in PHASE_CONDITIONS and (
+                        roi not in args.phase_rois or band not in AMP_PHASE_BANDS):
+                    continue
+                log(f'\nBENCHMARK cell: band={band} roi={roi} condition={condition}')
+                X, tv, y, _, info = load_pooled(
+                    args.subjects, band, condition, roi, args.voxRes, bids_root, log=log)
+                if X is None:
+                    continue
+                scheme = args.schemes[0]
+                lo, hi = EPOCHS['early_delay']
+                # Largest available, to know the real ceiling.
+                _, _, ppc_max = build_epoch_manifolds(X, tv, y, scheme, lo, hi,
+                                                       None, args.seed, log=log)
+                sizes = [s for s in (50, 100, 200, 400, 800, 1600) if s < ppc_max]
+                sizes.append(int(ppc_max))
+                log(f'  max available points/manifold = {ppc_max}; '
+                    f'timing sizes {sizes}')
+                log(f'\n  {"pts/manifold":>13s} {"seconds":>9s} {"scaling t~M^k":>14s}')
+                log('  ' + '-' * 40)
+                prev = None
+                for m in sizes:
+                    manifolds, _, used = build_epoch_manifolds(
+                        X, tv, y, scheme, lo, hi, m, args.seed, log=log)
+                    t0 = time.time()
+                    try:
+                        glue_analysis_dataframe(
+                            manifolds, indices=(band, condition, roi, scheme, 'bench'),
+                            indices_name=['band', 'condition', 'roi', 'scheme', 'epoch'],
+                            analysis_type=args.analysis_type,
+                            n_hyperplanes=args.n_hyperplanes,
+                            shuffle=False, seed=args.seed)
+                    except Exception:
+                        log(f'  {used:13d} {"FAILED":>9s}')
+                        log(traceback.format_exc())
+                        break
+                    dt = time.time() - t0
+                    k = ''
+                    if prev is not None and prev[1] > 0 and used > prev[0]:
+                        k = f'{np.log(dt / prev[1]) / np.log(used / prev[0]):14.2f}'
+                    log(f'  {used:13d} {dt:9.1f} {k:>14s}')
+                    prev = (used, dt)
+                if prev is not None:
+                    n_cells = (len(args.bands) * len(args.rois) *
+                               len([c for c in args.conditions if c not in PHASE_CONDITIONS])
+                               + len(args.bands) * len(args.phase_rois) *
+                               len([c for c in args.conditions if c in PHASE_CONDITIONS]))
+                    n_fits = n_cells * len(EPOCH_ORDER) * len(args.schemes)
+                    log(f'\n  At the largest size, one fit took {prev[1]:.1f}s.')
+                    log(f'  Full grid is ~{n_fits} fits (x2 with shuffle) => roughly '
+                        f'{n_fits * 2 * prev[1] / 3600:.1f} h serial, '
+                        f'{n_fits * 2 * prev[1] / 3600 / max(1, len(args.bands) * len(args.rois)):.1f} h '
+                        f'at the runner\'s (band,roi) parallelism.')
+                return
+    log('No runnable cell found for benchmarking.')
+
+
 def main():
     ap = argparse.ArgumentParser(
         description='Epoch-based glue manifold capacity with manifolds pooled across subjects.')
@@ -236,15 +320,23 @@ def main():
     ap.add_argument('--phase_rois', nargs='+', default=['visual'],
                      help='ROIs for which ampPhase is run (default visual only -- '
                           'ampPhase doubles the feature count and the QP cost).')
-    ap.add_argument('--schemes', nargs='+', type=int, default=[4],
-                     choices=sorted(CATEGORY_SCHEMES))
+    ap.add_argument('--schemes', nargs='+', type=int, default=[10],
+                     choices=sorted(CATEGORY_SCHEMES),
+                     help='Default 10 = one manifold per location (all ten, including '
+                          '0 and 180 deg). 4 = quadrants, which drops those two.')
     ap.add_argument('--voxRes', default='8mm')
     ap.add_argument('--subjects', nargs='+', type=int, default=SUBJECT_LIST)
     ap.add_argument('--points_per_category', type=int, default=DEFAULT_POINTS_PER_CATEGORY,
-                     help='CAP on points per manifold after pooling (default 200). '
-                          'Pooling multiplies point count by ~n_subjects and glue QP '
-                          'time scales badly with it. 0 = uncapped (use the pooled '
-                          'minimum) -- time one cell first.')
+                     help='Cap on points per manifold after pooling. DEFAULT 0 = '
+                          'UNCAPPED, i.e. use every pooled trial up to the smallest '
+                          'category -- maximising points is the point of pooling. Set a '
+                          'positive value only if --benchmark shows the QP time is '
+                          'prohibitive at full size.')
+    ap.add_argument('--benchmark', action='store_true',
+                     help='Do not run the grid. Instead take the first runnable cell and '
+                          'time ONE glue fit at a range of points-per-manifold, printing '
+                          'the measured scaling so the cap decision (if any) is made from '
+                          'data rather than guessed.')
     ap.add_argument('--n_hyperplanes', type=int, default=200)
     ap.add_argument('--analysis_type', default='ONE_VERSUS_REST')
     ap.add_argument('--no_shuffle', action='store_true')
@@ -254,15 +346,23 @@ def main():
     args = ap.parse_args()
 
     bids_root = get_bids_root()
-    out_csv = output_csv_path(bids_root, args.voxRes, args.outdir)
-    if os.path.exists(out_csv) and not args.force:
-        print(f'SKIP (exists): {out_csv}  -- pass --force to overwrite.')
-        return
 
     def log(m=''):
         print(m, flush=True)
 
     ppc_cap = args.points_per_category if args.points_per_category > 0 else None
+
+    # Benchmark writes nothing, so it must NOT be gated behind the
+    # output-already-exists check -- otherwise it silently refuses to run for
+    # exactly the cells you have already computed once and want to re-time.
+    if args.benchmark:
+        run_benchmark(args, bids_root, ppc_cap, log)
+        return
+
+    out_csv = output_csv_path(bids_root, args.voxRes, args.outdir)
+    if os.path.exists(out_csv) and not args.force:
+        print(f'SKIP (exists): {out_csv}  -- pass --force to overwrite.')
+        return
     log(f'manifold_capacity_epochs (POOLED across subjects) | {args.voxRes} | '
         f'bands={args.bands} | conditions={args.conditions} | rois={args.rois} | '
         f'phase_rois={args.phase_rois} | schemes={args.schemes} | '
