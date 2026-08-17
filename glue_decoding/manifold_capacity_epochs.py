@@ -188,8 +188,16 @@ def load_pooled(subjects, band, condition, roi, voxRes, bids_root, log=print):
     Load every subject's ROI cache, align them onto a COMMON template-grid
     source set, z-score each subject's own trials, and return the pooled data.
 
-    Returns (X_pooled (n_trials_total, n_times, n_common), tv, labels, subj_ids,
+    Returns (P_pooled (n_trials_total, n_epochs, n_common), labels, subj_ids,
     info dict) or (None, ...) if nothing usable.
+
+    Each subject is reduced to its EPOCH AVERAGES here rather than after
+    pooling. Only the averages are ever used, and keeping the full time series
+    for all subjects at once is enormous: 5051 trials x 1001 timepoints x 597
+    features is 12 GB per job (24 GB for ampPhase), which times nine parallel
+    jobs would exhaust the machine. Averaging first makes it ~48 MB, and makes
+    repeated bootstrap draws essentially free since nothing has to be
+    re-averaged.
     """
     want_phase = condition in PHASE_CONDITIONS
     per_subj = []
@@ -256,32 +264,41 @@ def load_pooled(subjects, band, condition, roi, voxRes, bids_root, log=print):
         sd = X.std(axis=0, keepdims=True)
         X = X / np.where(sd < 1e-10, np.asarray(1.0, dtype=sd.dtype), sd)
 
-        Xs.append(X.astype(np.float32))
+        # Collapse to epoch averages immediately (see docstring): (trials, n_ep, F)
+        tvv = np.asarray(g['time_vector'])
+        Pe = np.stack([X[:, (tvv >= EPOCHS[e][0]) & (tvv < EPOCHS[e][1]), :].mean(axis=1)
+                       for e in EPOCH_ORDER], axis=1)
+        Xs.append(Pe.astype(np.float32))
         ys.append(np.asarray(g['target_labels']).astype(int))
-        subj_ids.append(np.full(X.shape[0], s, dtype=int))
-        del g
+        subj_ids.append(np.full(Pe.shape[0], s, dtype=int))
+        del X, Pe, g
 
     if len(Xs) < 2:
         return None, None, None, None, None
 
-    X_pooled = np.concatenate(Xs, axis=0)
+    P_pooled = np.concatenate(Xs, axis=0)
     y_pooled = np.concatenate(ys, axis=0)
     subj_pooled = np.concatenate(subj_ids, axis=0)
     info = dict(n_subjects=len(Xs), n_common_sources=int(common.size),
                 identical_sources=bool(identical),
-                n_features=int(X_pooled.shape[2]))
-    log(f'    pooled: {X_pooled.shape[0]} trials from {len(Xs)} subjects, '
-        f'{X_pooled.shape[2]} features')
-    return X_pooled, tv, y_pooled, subj_pooled, info
+                n_features=int(P_pooled.shape[2]))
+    log(f'    pooled: {P_pooled.shape[0]} trials from {len(Xs)} subjects, '
+        f'{P_pooled.shape[2]} features, epoch-averaged '
+        f'({P_pooled.nbytes/1e6:.0f} MB)')
+    return P_pooled, y_pooled, subj_pooled, info
 
 
-def build_epoch_manifolds(X, tv, y, scheme, lo, hi, points_per_category, seed, log=print):
-    """Epoch-average -> one point per trial -> one manifold per category."""
-    mask = (tv >= lo) & (tv < hi)
-    if not mask.any():
-        raise ValueError(f'no timepoints in [{lo}, {hi})')
-    P = X[:, mask, :].mean(axis=1)                      # (n_trials, n_features)
+def build_epoch_manifolds(P, y, scheme, points_per_category, seed, log=print):
+    """
+    One manifold per category from an already epoch-averaged slice
+    P: (n_trials, n_features). `seed` selects WHICH points are drawn, so
+    varying it gives independent bootstrap draws.
 
+    Points are drawn WITHOUT replacement. A textbook bootstrap (with
+    replacement) would put duplicate points inside a manifold, and duplicates
+    are exactly the degeneracy that breaks the general-position assumption
+    behind the separability requirement -- so this is subsampling, repeated.
+    """
     group_labels, keep = category_labels_for_scheme(y, scheme)
     if group_labels.size == 0:
         return None, None, None
@@ -315,13 +332,13 @@ def run_benchmark(args, bids_root, ppc_cap, log):
                         roi not in args.phase_rois or band not in AMP_PHASE_BANDS):
                     continue
                 log(f'\nBENCHMARK cell: band={band} roi={roi} condition={condition}')
-                X, tv, y, _, info = load_pooled(
+                P_all, y, _, info = load_pooled(
                     args.subjects, band, condition, roi, args.voxRes, bids_root, log=log)
-                if X is None:
+                if P_all is None:
                     continue
                 scheme = args.schemes[0]
-                lo, hi = EPOCHS['early_delay']
-                _, _, ppc_max = build_epoch_manifolds(X, tv, y, scheme, lo, hi,
+                ei = EPOCH_ORDER.index('early_delay')
+                _, _, ppc_max = build_epoch_manifolds(P_all[:, ei, :], y, scheme,
                                                        None, args.seed, log=log)
                 n_man = len(CATEGORY_SCHEMES[scheme]['groups'])
                 cover = cover_max_points(info['n_features'], n_man)
@@ -342,7 +359,7 @@ def run_benchmark(args, bids_root, ppc_cap, log):
                 prev = None
                 for m in sizes:
                     manifolds, _, used = build_epoch_manifolds(
-                        X, tv, y, scheme, lo, hi, m, args.seed, log=log)
+                        P_all[:, ei, :], y, scheme, m, args.seed, log=log)
                     t0 = time.time()
                     try:
                         glue_analysis_dataframe(
@@ -409,6 +426,16 @@ def main():
                           'time ONE glue fit at a range of points-per-manifold, printing '
                           'the measured scaling so the cap decision (if any) is made from '
                           'data rather than guessed.')
+    ap.add_argument('--n_bootstrap', type=int, default=10,
+                     help='Independent random subsamples of the pooled points per cell '
+                          '(default 10). The separability ceiling forces any single fit '
+                          'to use only a fraction of the pooled trials (~21%% at P=10 for '
+                          'visual); repeating the draw uses the rest and yields mean +/- '
+                          'SEM, which a single pooled fit cannot give at all since there '
+                          'are no per-subject values left to average over.')
+    ap.add_argument('--epochs', nargs='+', default=None, choices=list(EPOCH_ORDER),
+                     help='Restrict to these epochs (default all four). Lets the runner '
+                          'fan out per epoch for finer parallelism.')
     ap.add_argument('--n_hyperplanes', type=int, default=200)
     ap.add_argument('--analysis_type', default='ONE_VERSUS_REST')
     ap.add_argument('--no_shuffle', action='store_true')
@@ -453,9 +480,9 @@ def main():
                         continue
 
                 log(f'\n-- band={band} roi={roi} condition={condition} --')
-                X, tv, y, subj_ids, info = load_pooled(
+                P_all, y, subj_ids, info = load_pooled(
                     args.subjects, band, condition, roi, args.voxRes, bids_root, log=log)
-                if X is None:
+                if P_all is None:
                     continue
 
                 for scheme in args.schemes:
@@ -464,51 +491,69 @@ def main():
                     cell_cap = cover if ppc_cap is None else min(ppc_cap, cover)
                     log(f'    scheme={scheme}: P={n_man} manifolds, F={info["n_features"]} '
                         f'features -> separability ceiling {cover} pts/manifold '
-                        f'({int(COVER_SAFETY*100)}% of Cover 2N/P); using cap {cell_cap}')
-                    for ep in EPOCH_ORDER:
+                        f'({int(COVER_SAFETY*100)}% of Cover 2F/P); using {cell_cap}, '
+                        f'x{args.n_bootstrap} bootstrap draws')
+                    for ei, ep in enumerate(EPOCH_ORDER):
+                        if args.epochs and ep not in args.epochs:
+                            continue
                         lo, hi = EPOCHS[ep]
-                        try:
-                            manifolds, cats, ppc = build_epoch_manifolds(
-                                X, tv, y, scheme, lo, hi, cell_cap, args.seed, log=log)
-                        except ValueError as e:
-                            log(f'    SKIP {ep}: {e}')
-                            continue
-                        if manifolds is None or len(manifolds) < 2:
-                            log(f'    SKIP {ep}: fewer than 2 usable manifolds.')
-                            continue
-
                         t0 = time.time()
-                        try:
-                            ret, ppc = glue_with_retry(
-                                manifolds, log, retry_seed=args.seed,
-                                indices=(band, condition, roi, scheme, ep),
-                                indices_name=['band', 'condition', 'roi', 'scheme', 'epoch'],
-                                analysis_type=args.analysis_type,
-                                n_hyperplanes=args.n_hyperplanes,
-                                shuffle=not args.no_shuffle,
-                                seed=args.seed,
-                            )
-                        except Exception:
-                            log(f'    FAILED glue for {band}/{roi}/{condition}/{ep}:')
-                            log(traceback.format_exc())
+                        draws = []
+                        for b in range(args.n_bootstrap):
+                            # A different draw seed per bootstrap = a different random
+                            # subset of the pooled points, so across draws the trials
+                            # the separability ceiling forces us to leave out of any
+                            # ONE fit still all get used.
+                            manifolds, cats, ppc = build_epoch_manifolds(
+                                P_all[:, ei, :], y, scheme, cell_cap,
+                                args.seed + 1000 * b, log=log)
+                            if manifolds is None or len(manifolds) < 2:
+                                break
+                            try:
+                                ret, used = glue_with_retry(
+                                    manifolds, log, retry_seed=args.seed + b,
+                                    indices=(band, condition, roi, scheme, ep),
+                                    indices_name=['band', 'condition', 'roi', 'scheme', 'epoch'],
+                                    analysis_type=args.analysis_type,
+                                    n_hyperplanes=args.n_hyperplanes,
+                                    shuffle=not args.no_shuffle,
+                                    seed=args.seed + b,
+                                )
+                            except Exception:
+                                log(f'      FAILED {ep} draw {b}:')
+                                log(traceback.format_exc())
+                                continue
+                            ret = ret.reset_index() if ret.index.names[0] else ret
+                            ret['bootstrap'] = b
+                            ret['points_per_manifold'] = int(used)
+                            draws.append(ret)
+                        if not draws:
+                            log(f'    SKIP {ep}: no successful bootstrap draws.')
                             continue
+                        allb = pd.concat(draws, ignore_index=True)
+                        allb['t_start'] = lo
+                        allb['t_stop'] = hi
+                        allb['n_subjects'] = info['n_subjects']
+                        allb['n_common_sources'] = info['n_common_sources']
+                        allb['identical_sources'] = info['identical_sources']
+                        allb['n_features'] = int(info['n_features'])
+                        allb['n_manifolds'] = n_man
+                        allb['n_bootstrap'] = len(draws)
+                        allb['pooled'] = True
+                        rows.append(allb)
 
-                        ret['t_start'] = lo
-                        ret['t_stop'] = hi
-                        ret['n_subjects'] = info['n_subjects']
-                        ret['n_common_sources'] = info['n_common_sources']
-                        ret['identical_sources'] = info['identical_sources']
-                        ret['n_features'] = int(manifolds[0].shape[0])
-                        ret['points_per_manifold'] = int(ppc)
-                        ret['n_manifolds'] = len(manifolds)
-                        ret['pooled'] = True
-                        cap = ret['capacity'].to_numpy() if 'capacity' in ret else np.array([np.nan])
-                        log(f'    {ep:12s} [{lo:+.2f},{hi:+.2f}) P={len(manifolds)} '
-                            f'pts/manifold={ppc} F={manifolds[0].shape[0]} '
-                            f'capacity={np.array2string(cap, precision=4)} '
-                            f'({time.time() - t0:.1f}s)')
-                        rows.append(ret)
-                del X, y, subj_ids
+                        # mean +/- SEM across draws -- the point of bootstrapping.
+                        msg = []
+                        for met in ('capacity', 'radius', 'dimension'):
+                            if met not in allb:
+                                continue
+                            real = allb[allb['shuffle'] == False][met] if 'shuffle' in allb else allb[met]
+                            if len(real):
+                                sem = real.std(ddof=1) / np.sqrt(len(real)) if len(real) > 1 else 0.0
+                                msg.append(f'{met}={real.mean():.4f}+/-{sem:.4f}')
+                        log(f'    {ep:12s} [{lo:+.2f},{hi:+.2f}) {len(draws)} draws x '
+                            f'{ppc} pts  ' + '  '.join(msg) + f'  ({time.time()-t0:.0f}s)')
+                del P_all, y, subj_ids
 
     if not rows:
         log('\nNo results produced.')
