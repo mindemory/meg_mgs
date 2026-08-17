@@ -25,8 +25,20 @@
 # other run_*.sh here. The label-shuffle null is cheap because the PCA basis is
 # computed once per epoch and reused across shuffles.
 #
+# PERFORMANCE BINS (arg 6, default 3): trials are split into tertiles of
+# initial-saccade error and the RDM/geometry computed per bin, with bin 'all'
+# always kept as a same-pipeline reference. The split is done WITHIN each target
+# location, because saccade error varies with location -- a global split would
+# load the "worst" bin with the hard locations and any geometry difference would
+# partly be a difference in which locations dominate each bin.
+#
+# NOTE this thins the data: 138-351 trials/subject over 10 locations and 3 bins
+# leaves ~5-12 trials per location per bin, and crossnobis drops any location
+# with fewer than 4. The per-cell log reports the smallest per-location count in
+# each bin; if that runs low, 2 bins (arg 6 = 2) roughly doubles it.
+#
 # Usage:
-#   bash run_visual_geometry_epochs.sh [voxRes] [max_parallel] [n_null] [force] [rois...]
+#   bash run_visual_geometry_epochs.sh [voxRes] [max_parallel] [n_null] [force] [rois...] [n_bins]
 #
 # Examples:
 #   bash run_visual_geometry_epochs.sh                  # 8mm, all 3 ROIs, 100 shuffles
@@ -37,6 +49,7 @@ set -euo pipefail
 
 VOX_RES="${1:-8mm}"
 N_NULL="${3:-100}"
+N_BINS="${6:-3}"      # performance tertiles from initial-saccade error
 FORCE_RAW="${4:-false}"
 FORCE_FLAG=()
 case "${FORCE_RAW}" in
@@ -95,6 +108,7 @@ for subjID in "${SUBJ_LIST[@]}"; do
           --rois "${ROIS[@]}" \
           --voxRes "${VOX_RES}" \
           --n_null "${N_NULL}" \
+          --n_bins "${N_BINS}" \
           --outdir "${DATA_DIR}" \
           ${FORCE_FLAG[@]+"${FORCE_FLAG[@]}"} \
     ) > "${LOG_DIR}/sub-${subjID}.log" 2>&1 &

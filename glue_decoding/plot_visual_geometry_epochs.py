@@ -80,17 +80,34 @@ EPOCH_LABELS = {'fixation': 'Fixation', 'stimulus': 'Stimulus',
 LOC_COLOURS = plt.cm.hsv(ANGLES_DEG / 360.0)
 
 
-def load_group(subjects, bids_root, voxRes, band, cond, roi, outdir):
-    """Returns (rdm_stack (n_subj,n_ep,10,10), null_stack or None, n_subj)."""
+def load_group(subjects, bids_root, voxRes, band, cond, roi, outdir, bin_name='all'):
+    """
+    Returns (rdm_stack (n_subj,n_ep,10,10), null_stack or None, n_subj) for one
+    performance bin. Files written before binning existed have no bin axis and
+    are treated as the single 'all' bin.
+    """
     rdms, nulls = [], []
     for s in subjects:
         fp = output_path(bids_root, s, band, cond, roi, voxRes, outdir)
         if not os.path.exists(fp):
             continue
         with np.load(fp, allow_pickle=True) as npz:
-            rdms.append(np.asarray(npz['rdm'], float)[:, _ORDER][:, :, _ORDER])
-            if 'rdm_null' in npz.files:
-                nulls.append(np.asarray(npz['rdm_null'], float)[:, :, _ORDER][:, :, :, _ORDER])
+            r = np.asarray(npz['rdm'], float)
+            nl = np.asarray(npz['rdm_null'], float) if 'rdm_null' in npz.files else None
+            if 'bins' in npz.files and r.ndim == 4:
+                names = [str(b) for b in npz['bins']]
+                if bin_name not in names:
+                    continue
+                bi = names.index(bin_name)
+                r = r[bi]
+                nl = nl[bi] if nl is not None else None
+            elif bin_name != 'all':
+                continue          # pre-binning file: only 'all' is available
+            if not np.isfinite(r).all():
+                continue          # a location dropped out for this subject/bin
+            rdms.append(r[:, _ORDER][:, :, _ORDER])
+            if nl is not None:
+                nulls.append(nl[:, :, _ORDER][:, :, :, _ORDER])
     if not rdms:
         return None, None, 0
     return np.stack(rdms), (np.stack(nulls) if nulls else None), len(rdms)
@@ -157,8 +174,8 @@ def _draw_ring(ax, coords, title):
     _style_ax(ax)
 
 
-def figure_mds(results, bands, cond, roi, voxRes, figdir):
-    bands = [b for b in bands if results.get((b, cond, roi), {}).get('n', 0) > 0]
+def figure_mds(results, bands, cond, roi, voxRes, figdir, bin_name='all'):
+    bands = [b for b in bands if results.get((b, cond, roi, bin_name), {}).get('n', 0) > 0]
     if not bands:
         return None
     n_r, n_c = len(bands), len(EPOCH_ORDER)
@@ -168,7 +185,7 @@ def figure_mds(results, bands, cond, roi, voxRes, figdir):
                             left=0.075, right=0.845,
                             top=1 - 1.25 / fig_h, bottom=0.35 / fig_h)
     for r, band in enumerate(bands):
-        e = results[(band, cond, roi)]
+        e = results[(band, cond, roi, bin_name)]
         for c, ep in enumerate(EPOCH_ORDER):
             ax = fig.add_subplot(gs[r, c])
             grp, m = e['cells'][c]
@@ -199,6 +216,7 @@ def figure_mds(results, bands, cond, roi, voxRes, figdir):
 
     fig.suptitle(
         f'MDS geometry by epoch  |  {COND_LABELS.get(cond, cond)}  |  '
+        f'{"" if bin_name=="all" else "bin=" + bin_name + "  |  "}'
         f'{roi.capitalize()}  |  {voxRes}\n'
         f"perfect ring at THESE 10 non-uniform angles: ring=1.00, "
         f"$\\lambda_2/\\lambda_1$={IDEAL_RING['lam2_over_lam1']:.2f} (NOT 1.0), "
@@ -206,15 +224,16 @@ def figure_mds(results, bands, cond, roi, voxRes, figdir):
         f"null: ring~0.38 (p95 0.61), $\\lambda_2/\\lambda_1$~0.64, top2~0.67",
         color=_FG, fontsize=10, fontweight='bold', y=1 - 0.14 / fig_h)
     os.makedirs(figdir, exist_ok=True)
-    fp = os.path.join(figdir, f'visual_geometry_epochs_mds_{cond}_{roi}_{voxRes}.png')
+    tag = '' if bin_name == 'all' else f'_{bin_name}'
+    fp = os.path.join(figdir, f'visual_geometry_epochs_mds_{cond}_{roi}{tag}_{voxRes}.png')
     fig.savefig(fp, dpi=150, bbox_inches='tight', facecolor=_BG)
     plt.close(fig)
     print(f'Saved: {fp}')
     return fp
 
 
-def figure_rdm(results, bands, cond, roi, voxRes, figdir):
-    bands = [b for b in bands if results.get((b, cond, roi), {}).get('n', 0) > 0]
+def figure_rdm(results, bands, cond, roi, voxRes, figdir, bin_name='all'):
+    bands = [b for b in bands if results.get((b, cond, roi, bin_name), {}).get('n', 0) > 0]
     if not bands:
         return None
     n_r, n_c = len(bands), len(EPOCH_ORDER)
@@ -225,7 +244,7 @@ def figure_rdm(results, bands, cond, roi, voxRes, figdir):
                             top=1 - 1.05 / fig_h, bottom=0.40 / fig_h)
     im = None
     for r, band in enumerate(bands):
-        e = results[(band, cond, roi)]
+        e = results[(band, cond, roi, bin_name)]
         for c, ep in enumerate(EPOCH_ORDER):
             ax = fig.add_subplot(gs[r, c])
             grp, m = e['cells'][c]
@@ -260,19 +279,21 @@ def figure_rdm(results, bands, cond, roi, voxRes, figdir):
         cb.ax.tick_params(colors=_FG, labelsize=7)
         cb.outline.set_edgecolor('#333333')
     fig.suptitle(f'Group RDM by epoch  |  {COND_LABELS.get(cond, cond)}  |  '
+                 f'{"" if bin_name=="all" else "bin=" + bin_name + "  |  "}'
                  f'{roi.capitalize()}  |  {voxRes}\n'
                  f'axes = true polar angle (deg); panel r = mean inter-subject '
                  f'RDM correlation (the gate)',
                  color=_FG, fontsize=10, fontweight='bold', y=1 - 0.12 / fig_h)
     os.makedirs(figdir, exist_ok=True)
-    fp = os.path.join(figdir, f'visual_geometry_epochs_rdm_{cond}_{roi}_{voxRes}.png')
+    tag = '' if bin_name == 'all' else f'_{bin_name}'
+    fp = os.path.join(figdir, f'visual_geometry_epochs_rdm_{cond}_{roi}{tag}_{voxRes}.png')
     fig.savefig(fp, dpi=150, bbox_inches='tight', facecolor=_BG)
     plt.close(fig)
     print(f'Saved: {fp}')
     return fp
 
 
-def write_csv(results, csvdir, rois, voxRes):
+def write_csv(results, csvdir, rois, voxRes, bins=('all',)):
     """One tidy table covering EVERY roi in `results`. The filename is built
     from the full roi list, not rois[0] -- naming a three-ROI table after just
     the first one invites it being read as visual-only later."""
@@ -281,23 +302,24 @@ def write_csv(results, csvdir, rois, voxRes):
     fp = os.path.join(csvdir, f'visual_geometry_epochs_{tag}_{voxRes}.csv')
     keys = ['ring_r', 'p_ring', 'lam2_over_lam1', 'top2_var_frac', 'pr_mds',
             'radial_cv', 'intersubj_r', 'Rgroup', 'neg_eig_frac']
-    lines = ['band,condition,roi,epoch,t_start,t_stop,n_subj,' + ','.join(keys)]
-    for (band, cond, r_), e in sorted(results.items()):
+    lines = ['band,condition,roi,bin,epoch,t_start,t_stop,n_subj,' + ','.join(keys)]
+    for key_tuple, e in sorted(results.items(), key=lambda kv: str(kv[0])):
+        band, cond, r_, bn = key_tuple
         if e['n'] == 0:
             continue
         for c, ep in enumerate(EPOCH_ORDER):
             _, m = e['cells'][c]
             lo, hi = EPOCHS[ep]
             vals = ','.join(f"{m.get(k, np.nan):.6g}" for k in keys)
-            lines.append(f'{band},{cond},{r_},{ep},{lo},{hi},{e["n"]},{vals}')
+            lines.append(f'{band},{cond},{r_},{bn},{ep},{lo},{hi},{e["n"]},{vals}')
     with open(fp, 'w') as fh:
         fh.write('\n'.join(lines) + '\n')
     print(f'Saved: {fp}')
     return fp
 
 
-def print_summary(results, bands, conditions, rois):
-    hdr = (f"{'band':10s} {'cond':9s} {'epoch':12s} {'n':>3s} {'ring':>6s} {'p':>6s} "
+def print_summary(results, bands, conditions, rois, bins=('all',)):
+    hdr = (f"{'band':10s} {'cond':9s} {'bin':6s} {'epoch':12s} {'n':>3s} {'ring':>6s} {'p':>6s} "
            f"{'l2/l1':>6s} {'top2':>5s} {'PR':>5s} {'radCV':>6s} {'interR':>7s} {'Rgrp':>6s}")
     print('\n' + '=' * len(hdr))
     print('SUMMARY by epoch')
@@ -312,17 +334,100 @@ def print_summary(results, bands, conditions, rois):
     for cond in conditions:
         for roi in rois:
             for band in bands:
-                e = results.get((band, cond, roi))
+              for bn in bins:
+                e = results.get((band, cond, roi, bn))
                 if e is None or e['n'] == 0:
                     continue
                 for c, ep in enumerate(EPOCH_ORDER):
                     _, m = e['cells'][c]
                     f = lambda k, w, p=2: (f"{m[k]:{w}.{p}f}"
                                             if np.isfinite(m.get(k, np.nan)) else f'{"-":>{w}}')
-                    print(f"{band:10s} {cond:9s} {ep:12s} {e['n']:3d} {f('ring_r',6)} "
+                    print(f"{band:10s} {cond:9s} {bn:6s} {ep:12s} {e['n']:3d} {f('ring_r',6)} "
                           f"{f('p_ring',6,3)} {f('lam2_over_lam1',6)} {f('top2_var_frac',5)} "
                           f"{f('pr_mds',5)} {f('radial_cv',6)} {f('intersubj_r',7)} "
                           f"{f('Rgroup',6)}")
+
+
+def discover_bins(subjects, bids_root, voxRes, bands, conds, rois, outdir):
+    """Bin names present in the saved files (falls back to ('all',))."""
+    for band in bands:
+        for cond in conds:
+            for roi in rois:
+                for s in subjects:
+                    fp = output_path(bids_root, s, band, cond, roi, voxRes, outdir)
+                    if os.path.exists(fp):
+                        with np.load(fp, allow_pickle=True) as npz:
+                            if 'bins' in npz.files:
+                                return tuple(str(b) for b in npz['bins'])
+                        return ('all',)
+    return ('all',)
+
+
+def figure_bin_comparison(results, bands, bins, cond, roi, voxRes, figdir):
+    """
+    The headline binning figure: each metric against performance bin, one line
+    per band, one column per epoch. This is what answers "does the geometry
+    depend on how well the trial was remembered" -- the per-bin MDS grids show
+    what the geometry looks like, this shows whether it moves.
+    """
+    plot_bins = [b for b in bins if b != 'all']
+    if len(plot_bins) < 2:
+        return None
+    METS = [('ring_r', 'Ring-ness'), ('lam2_over_lam1', r'$\lambda_2/\lambda_1$'),
+            ('top2_var_frac', 'Top-2 var. frac.'), ('radial_cv', 'Radial CV'),
+            ('intersubj_r', 'Inter-subject r')]
+    n_r, n_c = len(METS), len(EPOCH_ORDER)
+    fig_h = 1.9 * n_r + 1.5
+    fig = plt.figure(figsize=(3.1 * n_c + 1.6, fig_h), facecolor=_BG)
+    gs = gridspec.GridSpec(n_r, n_c, figure=fig, hspace=0.38, wspace=0.30,
+                            left=0.085, right=0.86,
+                            top=1 - 1.15 / fig_h, bottom=0.45 / fig_h)
+    cmap = plt.cm.viridis(np.linspace(0.15, 0.9, max(1, len(bands))))
+    x = np.arange(len(plot_bins))
+    for r, (key, lab) in enumerate(METS):
+        for c, ep in enumerate(EPOCH_ORDER):
+            ax = fig.add_subplot(gs[r, c])
+            for bi, band in enumerate(bands):
+                ys = []
+                for bn in plot_bins:
+                    e = results.get((band, cond, roi, bn))
+                    ys.append(e['cells'][c][1].get(key, np.nan)
+                              if e and e['n'] else np.nan)
+                if not np.isfinite(ys).any():
+                    continue
+                ax.plot(x, ys, 'o-', color=cmap[bi], lw=1.5, ms=4,
+                        label=BAND_LABELS.get(band, band) if (r == 0 and c == 0) else None)
+            ideal = IDEAL_RING.get(key)
+            if ideal is not None:
+                ax.axhline(ideal, color='#4EA1F3', lw=0.9, ls='--', zorder=0)
+            if key == 'intersubj_r':
+                ax.axhline(0.0, color='#555555', lw=0.8, ls=':', zorder=0)
+            ax.set_xticks(x); ax.set_xticklabels(plot_bins, fontsize=7.5)
+            ax.grid(True, color=_GRID, lw=0.4)
+            if r == 0:
+                ax.set_title(EPOCH_LABELS[ep], fontsize=9.5, color=_FG, fontweight='bold')
+            if c == 0:
+                ax.set_ylabel(lab, fontsize=8.5, color=_FG)
+            if r == n_r - 1:
+                ax.set_xlabel('performance bin', fontsize=8)
+            _style_ax(ax)
+    h, l = fig.axes[0].get_legend_handles_labels()
+    if h:
+        leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.87, 0.5),
+                         fontsize=8, framealpha=0.25, edgecolor='#444444', labelcolor=_FG)
+        leg.get_frame().set_facecolor('#1a1a1a')
+    fig.suptitle(f'Geometry vs memory performance  |  {COND_LABELS.get(cond, cond)}  |  '
+                 f'{roi.capitalize()}  |  {voxRes}\n'
+                 f'bins are tertiles of initial-saccade error WITHIN each target '
+                 f'location (so bins are not confounded by location difficulty); '
+                 f'dashed = perfect-ring reference',
+                 color=_FG, fontsize=10, fontweight='bold', y=1 - 0.14 / fig_h)
+    os.makedirs(figdir, exist_ok=True)
+    fp = os.path.join(figdir, f'visual_geometry_epochs_bincompare_{cond}_{roi}_{voxRes}.png')
+    fig.savefig(fp, dpi=150, bbox_inches='tight', facecolor=_BG)
+    plt.close(fig)
+    print(f'Saved: {fp}')
+    return fp
 
 
 def main():
@@ -333,23 +438,29 @@ def main():
                      default=['theta', 'alpha', 'beta', 'lowgamma', 'highgamma'])
     ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
     ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
+    ap.add_argument('--bins', nargs='+', default=None,
+                     help='Performance bins to plot (default: whatever is in the files).')
     ap.add_argument('--outdir', default=None)
     ap.add_argument('--figdir', required=True)
     ap.add_argument('--csvdir', required=True)
     args = ap.parse_args()
 
     bids_root = get_bids_root()
+    bins = args.bins or discover_bins(args.subjects, bids_root, args.voxRes,
+                                       args.bands, args.conditions, args.rois, args.outdir)
+    print(f'performance bins found: {list(bins)}')
     results = {}
     for band in args.bands:
         for cond in args.conditions:
             for roi in args.rois:
-                stack, nulls, n = load_group(args.subjects, bids_root, args.voxRes,
-                                              band, cond, roi, args.outdir)
-                if stack is None:
-                    results[(band, cond, roi)] = dict(cells=None, n=0)
-                    continue
-                results[(band, cond, roi)] = dict(cells=cell_metrics(stack, nulls), n=n)
-                print(f'  aggregated {band}/{cond}/{roi}: n={n}', flush=True)
+                for bn in bins:
+                    stack, nulls, n = load_group(args.subjects, bids_root, args.voxRes,
+                                                  band, cond, roi, args.outdir, bin_name=bn)
+                    if stack is None:
+                        results[(band, cond, roi, bn)] = dict(cells=None, n=0)
+                        continue
+                    results[(band, cond, roi, bn)] = dict(cells=cell_metrics(stack, nulls), n=n)
+                    print(f'  aggregated {band}/{cond}/{roi}/{bn}: n={n}', flush=True)
 
     if all(v['n'] == 0 for v in results.values()):
         print('Nothing to plot -- run visual_geometry_epochs_cell.py first.')
@@ -357,10 +468,13 @@ def main():
 
     for cond in args.conditions:
         for roi in args.rois:
-            figure_rdm(results, args.bands, cond, roi, args.voxRes, args.figdir)
-            figure_mds(results, args.bands, cond, roi, args.voxRes, args.figdir)
-    write_csv(results, args.csvdir, args.rois, args.voxRes)
-    print_summary(results, args.bands, args.conditions, args.rois)
+            for bn in bins:
+                figure_rdm(results, args.bands, cond, roi, args.voxRes, args.figdir, bin_name=bn)
+                figure_mds(results, args.bands, cond, roi, args.voxRes, args.figdir, bin_name=bn)
+            figure_bin_comparison(results, args.bands, bins, cond, roi,
+                                   args.voxRes, args.figdir)
+    write_csv(results, args.csvdir, args.rois, args.voxRes, bins)
+    print_summary(results, args.bands, args.conditions, args.rois, bins)
     print('\nDone.')
 
 

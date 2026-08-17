@@ -61,17 +61,103 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 
+from align import (load_behav, verify_alignment, g04_orig_row_index, attach_behav)
 from constants import AMP_PHASE_BANDS, ANGLE_MAPPING, get_bids_root
 from features import build_features
+from io_g03 import load_g03_unfiltered
 from io_g04 import load_g04_band
 from visual_geometry_cell import (
-    LOCATIONS, MAX_PCA_DIM, epoch_average, zscore_per_timepoint,
+    LOCATIONS, MAX_PCA_DIM, MIN_TRIALS_PER_LOC, epoch_average, zscore_per_timepoint,
 )
 from visual_geometry_ts_cell import run_timepoint
 
 LOCK_TYPE = 'stim'
 DEFAULT_N_SPLITS = 10
 DEFAULT_N_NULL = 100
+
+# Behavioural binning. i_sacc_err is initial-saccade error, so LOW = GOOD; bin 0
+# is therefore the best-performance third. Trials at or below the threshold are
+# excluded as invalid rather than counted as perfect -- a ~0 error almost always
+# means a missing/unparsed saccade, and the same threshold is used by
+# plot_decoding_ts.py's quantile analysis.
+I_SACC_ERR_THRESH = 0.001
+DEFAULT_N_BINS = 3
+BIN_NAMES = {2: ('better', 'worse'),
+             3: ('best', 'mid', 'worst'),
+             4: ('best', 'good', 'fair', 'worst')}
+
+
+def bin_labels(n_bins):
+    return BIN_NAMES.get(n_bins, tuple(f'q{i+1}' for i in range(n_bins)))
+
+
+def performance_bins(err, y, n_bins, scope='location', log=print):
+    """
+    Split trials into n_bins performance bins. Returns (n_trials,) int with the
+    bin index, or -1 for trials excluded as invalid.
+
+    scope='location' (default) bins WITHIN each target location, so every bin
+    gets ~1/n_bins of every location's trials. This matters: saccade error
+    varies systematically with target location (some locations are simply
+    harder), so a global split would load the "best" bin with easy locations and
+    the "worst" bin with hard ones, and any geometry difference between bins
+    would partly be a difference in which locations dominate them. Binning
+    within location isolates trial-to-trial performance from location
+    difficulty, and as a side effect keeps the per-location counts balanced,
+    which the RDM needs anyway.
+
+    scope='global' reproduces the simpler whole-session split if wanted.
+    """
+    err = np.asarray(err, dtype=float)
+    valid = np.isfinite(err) & (err > I_SACC_ERR_THRESH)
+    bins = np.full(err.shape, -1, dtype=int)
+    if valid.sum() == 0:
+        return bins
+
+    def _assign(mask):
+        vals = err[mask]
+        if vals.size < n_bins:
+            return
+        edges = np.quantile(vals, np.linspace(0, 1, n_bins + 1)[1:-1])
+        bins[mask] = np.clip(np.searchsorted(edges, vals, side='right'), 0, n_bins - 1)
+
+    if scope == 'location':
+        for loc in np.unique(y):
+            _assign(valid & (y == loc))
+    else:
+        _assign(valid)
+    return bins
+
+
+def subject_trial_behaviour(subjID, voxRes, bids_root, roi, n_trials, log=print):
+    """
+    i_sacc_err row-aligned to the G04 trial order, or None if unavailable.
+
+    The alignment is not optional bookkeeping: G04 concatenates trials grouped
+    by target location, so its row order differs from the original session
+    order that the behavioural file follows. g04_orig_row_index reconstructs the
+    mapping from G03's trialinfo, and verify_alignment runs the same checksum
+    S02B_organizeBehavForSource.m uses before anything is joined.
+    """
+    behav = load_behav(subjID, bids_root)
+    if behav is None:
+        log(f'    no behavioural file for sub-{subjID:02d} -- skipping bins.')
+        return None
+    try:
+        g03 = load_g03_unfiltered(subjID, LOCK_TYPE, voxRes, bids_root, roi=roi)
+    except (FileNotFoundError, OSError) as e:
+        log(f'    sub-{subjID:02d}: no G03 metadata ({e}) -- skipping bins.')
+        return None
+    if not verify_alignment(g03['trialinfo_col2'], behav['tarlocCode']):
+        log(f'    sub-{subjID:02d}: behavioural alignment CHECK FAILED -- skipping bins '
+            f'rather than risking a silent mis-join.')
+        return None
+    idx = g04_orig_row_index(g03['trialinfo_col2'])
+    if idx.shape[0] != n_trials:
+        log(f'    sub-{subjID:02d}: trial_idx length {idx.shape[0]} != {n_trials} '
+            f'-- skipping bins.')
+        return None
+    return attach_behav(idx, behav)['i_sacc_err']
 
 # (lo, hi) half-open. See module docstring for the 0.8-1.0 s gap.
 EPOCHS = {
@@ -94,7 +180,8 @@ def output_path(bids_root, subjID, band, condition, roi, voxRes, outdir=None):
 
 def run_cell(subjID, bands, conditions, rois, voxRes, bids_root,
              n_splits=DEFAULT_N_SPLITS, n_null=DEFAULT_N_NULL,
-             max_pca_dim=MAX_PCA_DIM, seed=0, outdir=None, force=False):
+             max_pca_dim=MAX_PCA_DIM, seed=0, n_bins=DEFAULT_N_BINS,
+             bin_scope='location', outdir=None, force=False):
     for band in bands:
         for condition in conditions:
             want_phase = (condition == 'ampPhase')
@@ -123,27 +210,53 @@ def run_cell(subjID, bands, conditions, rois, voxRes, bids_root,
                     del amp, phase, g04
                     X = zscore_per_timepoint(X)
 
-                    n_ep = len(EPOCH_ORDER)
-                    rdms = np.full((n_ep, len(LOCATIONS), len(LOCATIONS)), np.nan)
-                    rdms_null = (np.full((n_ep, n_null, len(LOCATIONS), len(LOCATIONS)),
+                    # Bin 0 is always ALL trials, so every binned result has a
+                    # same-pipeline reference to be read against.
+                    err = subject_trial_behaviour(subjID, voxRes, bids_root, roi,
+                                                   X.shape[0], log=print)
+                    if err is not None and n_bins > 1:
+                        bidx = performance_bins(err, y, n_bins, scope=bin_scope)
+                        bnames = ('all',) + bin_labels(n_bins)
+                        trial_sets = [np.ones(X.shape[0], bool)] + \
+                                     [bidx == b for b in range(n_bins)]
+                    else:
+                        bnames = ('all',)
+                        trial_sets = [np.ones(X.shape[0], bool)]
+
+                    n_ep, n_b = len(EPOCH_ORDER), len(bnames)
+                    rdms = np.full((n_b, n_ep, len(LOCATIONS), len(LOCATIONS)), np.nan)
+                    rdms_null = (np.full((n_b, n_ep, n_null, len(LOCATIONS), len(LOCATIONS)),
                                           np.nan) if n_null > 0 else None)
-                    pca_dims = np.zeros(n_ep, int)
-                    whit = np.zeros(n_ep, bool)
+                    pca_dims = np.zeros((n_b, n_ep), int)
+                    whit = np.zeros((n_b, n_ep), bool)
                     n_win = np.zeros(n_ep, int)
+                    n_bin_trials = np.array([int(m.sum()) for m in trial_sets])
+                    # Smallest per-location count in each bin -- crossnobis needs
+                    # >= MIN_TRIALS_PER_LOC per location or that location drops out.
+                    min_per_loc = np.array([
+                        int(min((int(((y == l) & m).sum()) for l in LOCATIONS), default=0))
+                        for m in trial_sets])
 
                     for i, ep in enumerate(EPOCH_ORDER):
                         lo, hi = EPOCHS[ep]
                         Xe, n_times = epoch_average(X, tv, lo, hi, hi_inclusive=False)
                         n_win[i] = n_times
-                        rdm, rdm_null, meta = run_timepoint(
-                            Xe, y, max_pca_dim, n_splits, n_null, seed)
-                        rdms[i] = rdm
-                        if n_null > 0:
-                            rdms_null[i] = rdm_null
-                        pca_dims[i], whit[i] = meta['pca_dim'], meta['whitened']
+                        for bi, m in enumerate(trial_sets):
+                            if m.sum() < len(LOCATIONS) * MIN_TRIALS_PER_LOC:
+                                continue
+                            rdm, rdm_null, meta = run_timepoint(
+                                Xe[m], y[m], max_pca_dim, n_splits, n_null, seed)
+                            rdms[bi, i] = rdm
+                            if n_null > 0:
+                                rdms_null[bi, i] = rdm_null
+                            pca_dims[bi, i], whit[bi, i] = meta['pca_dim'], meta['whitened']
 
                     save_kw = dict(
                         rdm                 = rdms.astype(np.float32),
+                        bins                = np.array(bnames),
+                        n_bin_trials        = n_bin_trials,
+                        min_trials_per_loc  = min_per_loc,
+                        bin_scope           = np.array([bin_scope]),
                         epochs              = np.array(EPOCH_ORDER),
                         epoch_bounds        = np.array([EPOCHS[e] for e in EPOCH_ORDER]),
                         n_window_times      = n_win,
@@ -165,11 +278,17 @@ def run_cell(subjID, bands, conditions, rois, voxRes, bids_root,
                         save_kw['rdm_null'] = rdms_null.astype(np.float32)
                     np.savez_compressed(out_path, **save_kw)
 
+                    thin = [f'{b}({t} tr, min {mp}/loc)'
+                            for b, t, mp in zip(bnames, n_bin_trials, min_per_loc)]
                     print(f'sub-{subjID:02d} | {band} | {condition} | {roi}: '
-                          f'N={X.shape[0]} F={X.shape[2]} | '
-                          f'epoch timepoints={list(n_win)} | k={int(np.median(pca_dims))} | '
-                          f'whitened={whit.mean()*100:.0f}% | n_null={n_null} | '
-                          f'{time.time() - t_start:.1f}s', flush=True)
+                          f'N={X.shape[0]} F={X.shape[2]} | bins: {", ".join(thin)} | '
+                          f'k={int(np.median(pca_dims))} | whitened={whit.mean()*100:.0f}% | '
+                          f'n_null={n_null} | {time.time() - t_start:.1f}s', flush=True)
+                    for b, mp in zip(bnames, min_per_loc):
+                        if b != 'all' and mp < MIN_TRIALS_PER_LOC:
+                            print(f'    NOTE bin {b!r}: smallest location has only {mp} '
+                                  f'trials (< {MIN_TRIALS_PER_LOC}); that location is '
+                                  f'dropped from this RDM.', flush=True)
                     del X
                 except (FileNotFoundError, ValueError) as e:
                     print(f'  SKIP sub-{subjID:02d} {band}/{condition}/{roi}: {e}', flush=True)
@@ -191,6 +310,13 @@ def main():
     ap.add_argument('--n_splits', type=int, default=DEFAULT_N_SPLITS)
     ap.add_argument('--n_null', type=int, default=DEFAULT_N_NULL)
     ap.add_argument('--max_pca_dim', type=int, default=MAX_PCA_DIM)
+    ap.add_argument('--n_bins', type=int, default=DEFAULT_N_BINS,
+                     help='Performance bins from i_sacc_err (default 3; 1 disables). '
+                          'Bin 0 of the output is always ALL trials as a reference.')
+    ap.add_argument('--bin_scope', default='location', choices=['location', 'global'],
+                     help="'location' (default) bins within each target location, so "
+                          "bins are not confounded by location difficulty; 'global' "
+                          "splits the whole session at once.")
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--outdir', default=None)
     ap.add_argument('--force', action='store_true')
@@ -206,6 +332,7 @@ def main():
     run_cell(args.subjID, list(args.bands), list(args.conditions), list(args.rois),
              args.voxRes, bids_root, n_splits=args.n_splits, n_null=args.n_null,
              max_pca_dim=args.max_pca_dim, seed=args.seed,
+             n_bins=args.n_bins, bin_scope=args.bin_scope,
              outdir=args.outdir, force=args.force)
     print(f'Done | sub-{args.subjID:02d} | total {time.time() - t0:.1f}s')
 
