@@ -45,6 +45,7 @@ from constants import SUBJECT_LIST, ANGLE_MAPPING, get_bids_root, open_h5
 from align import load_behav, verify_alignment, g04_orig_row_index, attach_behav
 from io_g03 import load_g03_unfiltered
 from io_g04 import load_g04_band
+from visual_geometry_cell import MIN_TRIALS_PER_LOC
 from visual_geometry_epochs_cell import (I_SACC_ERR_THRESH, performance_bins,
                                           bin_labels)
 
@@ -90,13 +91,19 @@ def audit(subjID, bids_root, voxRes, roi, n_bins):
     e = np.asarray(behav['i_sacc_err'], float)
     r['n_behav'] = e.size
     r['n_nan'] = int(np.isnan(e).sum())
-    r['n_at_thresh'] = int((np.isfinite(e) & (e <= I_SACC_ERR_THRESH)).sum())
-    valid = np.isfinite(e) & (e > I_SACC_ERR_THRESH)
+    fin = np.isfinite(e)
+    # EXACTLY zero vs merely small is the decisive distinction: an exact 0 is a
+    # missing/unparsed saccade flag and is rightly excluded, whereas a small but
+    # nonzero value is a real measurement that the threshold would be discarding.
+    r['n_zero'] = int((fin & (e == 0)).sum())
+    r['n_tiny'] = int((fin & (e > 0) & (e <= I_SACC_ERR_THRESH)).sum())
+    r['n_at_thresh'] = r['n_zero'] + r['n_tiny']
+    valid = fin & (e > I_SACC_ERR_THRESH)
     r['n_valid'] = int(valid.sum())
     if r['n_valid']:
         v = e[valid]
-        r['err_min'], r['err_med'], r['err_max'] = (float(v.min()), float(np.median(v)),
-                                                     float(v.max()))
+        r['err_min'] = float(v.min()); r['err_p5'] = float(np.percentile(v, 5))
+        r['err_med'] = float(np.median(v)); r['err_max'] = float(v.max())
     r['angle_all_nan'] = bool(np.all(~np.isfinite(np.asarray(behav['i_sacc_angle'], float))))
 
     # G03 metadata + alignment checksum
@@ -136,6 +143,14 @@ def audit(subjID, bids_root, voxRes, roi, n_bins):
                             for k in range(n_bins)]
     r['n_excluded'] = int((b < 0).sum())
     r['bin_names'] = names
+    # Would this subject survive at 2 / 3 / 4 bins? Computed from its OWN data
+    # rather than projected, so the choice of n_bins can be made from fact.
+    r['survives'] = {}
+    for nb in (2, 3, 4):
+        bb = performance_bins(err_g04, y, nb, scope='location')
+        mins = [int(min(int(((y == l) & (bb == k)).sum())
+                        for l in sorted(ANGLE_MAPPING))) for k in range(nb)]
+        r['survives'][nb] = (min(mins) >= MIN_TRIALS_PER_LOC, mins)
     r['ok'] = True
     return r
 
@@ -156,9 +171,9 @@ def main():
     out.append(f'Behavioural audit | voxRes={args.voxRes} | roi={args.roi} | '
                f'n_bins={args.n_bins} | i_sacc_err valid if > {I_SACC_ERR_THRESH}')
     out.append('')
-    hdr = (f"{'subj':>4s} {'behav':>6s} {'G04':>5s} {'align':>5s} {'NaN':>5s} "
-           f"{'<=thr':>6s} {'valid':>6s} {'%val':>5s} {'excl':>5s} "
-           f"{'min/loc per bin':>18s}  note")
+    hdr = (f"{'subj':>4s} {'behav':>6s} {'align':>5s} {'NaN':>5s} {'exact0':>7s} "
+           f"{'0<x<=t':>7s} {'valid':>6s} {'%val':>5s} "
+           f"{'err p5':>8s} {'err med':>8s} {'min/loc per bin':>16s}")
     out.append(hdr); out.append('-' * len(hdr))
     for r in rows:
         if not r['ok']:
@@ -168,12 +183,11 @@ def main():
             continue
         pct = 100.0 * r['n_valid'] / max(r['n_behav'], 1)
         out.append(
-            f"{r['subjID']:4d} {r['n_behav']:6d} {r['n_g04']:5d} "
-            f"{'yes' if r['aligned'] else 'NO':>5s} {r['n_nan']:5d} {r['n_at_thresh']:6d} "
-            f"{r['n_valid']:6d} {pct:5.0f} {r['n_excluded']:5d} "
-            f"{str(r['bin_min_per_loc']):>18s}  "
-            + ('ANGLE=NaN ' if r['angle_all_nan'] else '')
-            + (f"i_sacc_raw={r['i_sacc_raw_shape']}" if r['angle_all_nan'] else ''))
+            f"{r['subjID']:4d} {r['n_behav']:6d} "
+            f"{'yes' if r['aligned'] else 'NO':>5s} {r['n_nan']:5d} {r['n_zero']:7d} "
+            f"{r['n_tiny']:7d} {r['n_valid']:6d} {pct:5.0f} "
+            f"{r.get('err_p5', float('nan')):8.4g} {r.get('err_med', float('nan')):8.4g} "
+            f"{str(r['bin_min_per_loc']):>16s}")
 
     ok = [r for r in rows if r['ok']]
     out.append('')
@@ -192,6 +206,33 @@ def main():
                        f'({len(thin)}): ' + ', '.join(f'sub-{s:02d}{c}' for s, c in thin))
         else:
             out.append('  every subject/bin clears the 4-trial minimum for all locations.')
+    if ok:
+        out.append('')
+        out.append('EXCLUSION BREAKDOWN -- is the threshold discarding real data?')
+        tz = sum(r['n_zero'] for r in ok); tt = sum(r['n_tiny'] for r in ok)
+        out.append(f'  exactly 0 (missing/unparsed saccade, correctly excluded): {tz}')
+        out.append(f'  0 < err <= {I_SACC_ERR_THRESH} (real measurements the threshold '
+                   f'discards): {tt}')
+        if tt == 0:
+            out.append('  -> every excluded trial is an exact 0, so the threshold is only '
+                       'removing missing data and is doing its job. The low valid% in some '
+                       'subjects is genuinely missing eyetracking, not over-aggressive '
+                       'thresholding.')
+        else:
+            out.append(f'  -> {tt} trials sit strictly between 0 and the threshold. Compare '
+                       f'against the err p5 column: if p5 is orders of magnitude larger, '
+                       f'these are still effectively zero; if comparable, the threshold is '
+                       f'cutting into real data and should be lowered.')
+
+        out.append('')
+        out.append('BIN SURVIVAL -- subjects clearing the '
+                   f'{MIN_TRIALS_PER_LOC}-trial floor for EVERY location in EVERY bin:')
+        for nb in (2, 3, 4):
+            good = [r['subjID'] for r in ok if r['survives'][nb][0]]
+            lost = [r['subjID'] for r in ok if not r['survives'][nb][0]]
+            out.append(f'  {nb} bins: {len(good):2d}/{len(ok)} survive' +
+                       (f'   lost: ' + ', '.join(f'sub-{s:02d}' for s in lost) if lost else ''))
+
     bad = [r for r in rows if not r['ok']]
     if bad:
         out.append('')
