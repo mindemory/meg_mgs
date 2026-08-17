@@ -52,11 +52,31 @@ from visual_geometry_epochs_cell import (I_SACC_ERR_THRESH, performance_bins,
 LOCK_TYPE = 'stim'
 
 
-def raw_field_shapes(subjID, bids_root):
-    """Shapes of the stored fields, straight from the .mat, before any reshaping."""
+def behav_path(bids_root, subjID, behav_dir='eyetracking', raw=False):
+    """
+    Path to the behavioural file.
+
+    raw=False -> sub-XX_task-mgs-iisess_forSource.mat, S02B's OUTPUT and what
+                 the analyses actually read (align.load_behav).
+    raw=True  -> sub-XX_task-mgs-iisess.mat, S02B's INPUT. Comparing the two
+                 answers whether near-zero i_sacc_err originates upstream in
+                 iEye or is introduced by S02B's trial removal/reordering.
+
+    behav_dir lets the same audit be pointed at an alternative directory (e.g.
+    an 'eyetracking_old'), which is the only way to tell whether the directory
+    currently being read is the intended one -- NOTHING in this codebase
+    references any directory but 'eyetracking', so if a stale copy is in place
+    the code cannot tell.
+    """
     subName = f'sub-{subjID:02d}'
-    fp = os.path.join(bids_root, 'derivatives', subName, 'eyetracking',
-                       f'{subName}_task-mgs-iisess_forSource.mat')
+    fn = (f'{subName}_task-mgs-iisess.mat' if raw
+          else f'{subName}_task-mgs-iisess_forSource.mat')
+    return os.path.join(bids_root, 'derivatives', subName, behav_dir, fn)
+
+
+def raw_field_shapes(subjID, bids_root, behav_dir='eyetracking', raw=False):
+    """Shapes of the stored fields, straight from the .mat, before any reshaping."""
+    fp = behav_path(bids_root, subjID, behav_dir, raw)
     if not os.path.exists(fp):
         return None, f'file not found: {fp}'
     try:
@@ -64,7 +84,8 @@ def raw_field_shapes(subjID, bids_root):
     except Exception as e:
         return None, f'could not open: {e}'
     try:
-        grp = f['ii_sess_forSource']
+        key = 'ii_sess' if raw else 'ii_sess_forSource'
+        grp = f[key] if key in f else f[list(f.keys())[0]]
         shapes = {k: tuple(np.array(grp[k]).shape) for k in grp.keys()}
     except Exception as e:
         return None, f'could not read ii_sess_forSource: {e}'
@@ -164,6 +185,18 @@ def main():
     ap.add_argument('--voxRes', default='8mm')
     ap.add_argument('--roi', default='visual')
     ap.add_argument('--n_bins', type=int, default=3)
+    ap.add_argument('--behav_dir', default='eyetracking',
+                     help="Directory under derivatives/sub-XX/ to read (default "
+                          "'eyetracking'). Nothing in this codebase reads any other "
+                          "directory, so point this elsewhere to check whether the one "
+                          "in place is the intended one.")
+    ap.add_argument('--compare_raw', action='store_true',
+                     help="With --dist, also read S02B's INPUT (..._iisess.mat) so it is "
+                          "visible whether near-zero i_sacc_err comes from upstream iEye "
+                          "or is introduced by S02B.")
+    ap.add_argument('--compare_dir', default=None,
+                     help="With --dist, also read this directory (e.g. eyetracking_old) "
+                          "for a side-by-side comparison.")
     ap.add_argument('--dist', action='store_true',
                      help='Dump the distribution of i_sacc_err near zero, pooled across '
                           'subjects. This is what decides whether the threshold is '
@@ -176,13 +209,57 @@ def main():
     bids_root = get_bids_root()
 
     if args.dist:
-        pooled = []
-        for sid in args.subjects:
-            b = load_behav(sid, bids_root)
-            if b is not None:
-                pooled.append(np.asarray(b['i_sacc_err'], float))
-        e = np.concatenate(pooled)
+        def pull(behav_dir, raw):
+            vals, missing = [], 0
+            for sid in args.subjects:
+                fp = behav_path(bids_root, sid, behav_dir, raw)
+                if not os.path.exists(fp):
+                    missing += 1
+                    continue
+                try:
+                    f = open_h5(fp, os.path.basename(fp))
+                except Exception:
+                    missing += 1
+                    continue
+                try:
+                    key = 'ii_sess' if raw else 'ii_sess_forSource'
+                    grp = f[key] if key in f else f[list(f.keys())[0]]
+                    v = np.array(grp['i_sacc_err']).flatten()
+                    vals.append(np.asarray(v, float))
+                except Exception:
+                    missing += 1
+                finally:
+                    f.close()
+            return (np.concatenate(vals) if vals else np.array([])), missing
+
+        srcs = [(args.behav_dir, False, f'{args.behav_dir}/ ..._forSource.mat  (what the '
+                                        f'analyses read)')]
+        if args.compare_raw:
+            srcs.append((args.behav_dir, True,
+                         f'{args.behav_dir}/ ..._iisess.mat        (S02B INPUT)'))
+        if args.compare_dir:
+            srcs.append((args.compare_dir, False,
+                         f'{args.compare_dir}/ ..._forSource.mat'))
+            srcs.append((args.compare_dir, True,
+                         f'{args.compare_dir}/ ..._iisess.mat'))
+
+        for bd, raw, label in srcs:
+            e_all, miss = pull(bd, raw)
+            if e_all.size == 0:
+                print(f'\n{label}\n  not found / unreadable for all subjects '
+                      f'({miss} missing)')
+                continue
+            e = e_all[np.isfinite(e_all)]
+            print(f'\n{label}')
+            print(f'  {e_all.size} trials ({e_all.size - e.size} NaN, {miss} subjects '
+                  f'missing this file)')
+            print(f'  exactly 0: {int((e==0).sum())}   '
+                  f'<=0.001: {int((e<=I_SACC_ERR_THRESH).sum())} '
+                  f'({100*(e<=I_SACC_ERR_THRESH).mean():.1f}%)   '
+                  f'median of >0.001: {np.median(e[e>I_SACC_ERR_THRESH]):.3g}')
+        e = pull(args.behav_dir, False)[0]
         e = e[np.isfinite(e)]
+        print()
         edges = [0, 1e-12, 1e-8, 1e-6, 1e-5, 1e-4, 1e-3, 3e-3, 1e-2, 3e-2,
                  1e-1, 3e-1, 1.0, 3.0, 10.0, np.inf]
         print(f'Distribution of i_sacc_err across {len(pooled)} subjects '
