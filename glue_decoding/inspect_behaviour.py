@@ -164,10 +164,47 @@ def main():
     ap.add_argument('--voxRes', default='8mm')
     ap.add_argument('--roi', default='visual')
     ap.add_argument('--n_bins', type=int, default=3)
+    ap.add_argument('--dist', action='store_true',
+                     help='Dump the distribution of i_sacc_err near zero, pooled across '
+                          'subjects. This is what decides whether the threshold is '
+                          'removing a separate no-saccade population (a GAP below the '
+                          'cut) or trimming the low tail of real measurements (CONTINUITY '
+                          'through the cut).')
     ap.add_argument('--logfile', default=None)
     args = ap.parse_args()
 
     bids_root = get_bids_root()
+
+    if args.dist:
+        pooled = []
+        for sid in args.subjects:
+            b = load_behav(sid, bids_root)
+            if b is not None:
+                pooled.append(np.asarray(b['i_sacc_err'], float))
+        e = np.concatenate(pooled)
+        e = e[np.isfinite(e)]
+        edges = [0, 1e-12, 1e-8, 1e-6, 1e-5, 1e-4, 1e-3, 3e-3, 1e-2, 3e-2,
+                 1e-1, 3e-1, 1.0, 3.0, 10.0, np.inf]
+        print(f'Distribution of i_sacc_err across {len(pooled)} subjects '
+              f'({e.size} finite trials). Threshold = {I_SACC_ERR_THRESH}.')
+        print(f'\n{"range":>24s} {"count":>7s} {"%":>6s}')
+        print('-' * 40)
+        print(f'{"exactly 0":>24s} {int((e == 0).sum()):7d} {100*(e==0).mean():5.1f}%')
+        for lo, hi in zip(edges[1:-1], edges[2:]):
+            n = int(((e > lo) & (e <= hi)).sum())
+            mark = '   <== THRESHOLD' if lo == 1e-3 else ''
+            print(f'{f"({lo:g}, {hi:g}]":>24s} {n:7d} {100*n/e.size:5.1f}%{mark}')
+        print()
+        print('READ IT LIKE THIS:')
+        print('  A GAP (bins just below the threshold populated, bins just above EMPTY,')
+        print('  then the bulk far above) => a separate no-saccade population, correctly')
+        print('  excluded.')
+        print('  CONTINUITY (counts rising smoothly through the threshold into the bulk)')
+        print('  => the threshold is cutting into real measurements, and because those')
+        print('  are the SMALLEST errors it is removing the BEST-performing trials --')
+        print('  which biases exactly the "best" bin this analysis is built around.')
+        return
+
     rows = [audit(s, bids_root, args.voxRes, args.roi, args.n_bins) for s in args.subjects]
 
     out = []

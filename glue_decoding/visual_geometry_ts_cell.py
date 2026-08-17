@@ -116,7 +116,7 @@ def _noise_cov_inv(Xp, y, k):
     return np.linalg.pinv(Sigma), float(shrink), dof
 
 
-def run_timepoint(Xe, y, max_pca_dim, n_splits, n_null, seed):
+def run_timepoint(Xe, y, max_pca_dim, n_splits, n_null, seed, min_trials=None):
     """
     One timepoint -> (rdm, rdm_null (n_null,10,10), meta dict).
 
@@ -127,7 +127,8 @@ def run_timepoint(Xe, y, max_pca_dim, n_splits, n_null, seed):
     """
     Xp, k, explained = pca_project(Xe, max_pca_dim)
     Sinv, shrink, dof = _noise_cov_inv(Xp, y, k)
-    rdm, _ = crossvalidated_rdm(Xp, y, n_splits=n_splits, Sigma_inv=Sinv, seed=seed)
+    rdm, _ = crossvalidated_rdm(Xp, y, n_splits=n_splits, Sigma_inv=Sinv, seed=seed,
+                                 min_trials=min_trials)
 
     rdm_null = np.full((n_null, len(LOCATIONS), len(LOCATIONS)), np.nan)
     if n_null > 0:
@@ -136,7 +137,8 @@ def run_timepoint(Xe, y, max_pca_dim, n_splits, n_null, seed):
             y_perm = rng.permutation(y)
             Sinv_p, _, _ = _noise_cov_inv(Xp, y_perm, k)
             rdm_null[j], _ = crossvalidated_rdm(Xp, y_perm, n_splits=n_splits,
-                                                 Sigma_inv=Sinv_p, seed=seed + j)
+                                                 Sigma_inv=Sinv_p, seed=seed + j,
+                                                 min_trials=min_trials)
     meta = dict(pca_dim=k, pca_explained_var=explained,
                 whitened=Sinv is not None, lw_shrinkage=shrink, whiten_dof=dof)
     return rdm, rdm_null, meta

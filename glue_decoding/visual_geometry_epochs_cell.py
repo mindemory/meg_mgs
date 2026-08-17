@@ -181,7 +181,7 @@ def output_path(bids_root, subjID, band, condition, roi, voxRes, outdir=None):
 def run_cell(subjID, bands, conditions, rois, voxRes, bids_root,
              n_splits=DEFAULT_N_SPLITS, n_null=DEFAULT_N_NULL,
              max_pca_dim=MAX_PCA_DIM, seed=0, n_bins=DEFAULT_N_BINS,
-             bin_scope='location', outdir=None, force=False):
+             bin_scope='location', min_trials=None, outdir=None, force=False):
     for band in bands:
         for condition in conditions:
             want_phase = (condition == 'ampPhase')
@@ -241,11 +241,13 @@ def run_cell(subjID, bands, conditions, rois, voxRes, bids_root,
                         lo, hi = EPOCHS[ep]
                         Xe, n_times = epoch_average(X, tv, lo, hi, hi_inclusive=False)
                         n_win[i] = n_times
+                        min_tr = MIN_TRIALS_PER_LOC if min_trials is None else min_trials
                         for bi, m in enumerate(trial_sets):
-                            if m.sum() < len(LOCATIONS) * MIN_TRIALS_PER_LOC:
+                            if m.sum() < len(LOCATIONS) * min_tr:
                                 continue
                             rdm, rdm_null, meta = run_timepoint(
-                                Xe[m], y[m], max_pca_dim, n_splits, n_null, seed)
+                                Xe[m], y[m], max_pca_dim, n_splits, n_null, seed,
+                                min_trials=min_tr)
                             rdms[bi, i] = rdm
                             if n_null > 0:
                                 rdms_null[bi, i] = rdm_null
@@ -284,10 +286,11 @@ def run_cell(subjID, bands, conditions, rois, voxRes, bids_root,
                           f'N={X.shape[0]} F={X.shape[2]} | bins: {", ".join(thin)} | '
                           f'k={int(np.median(pca_dims))} | whitened={whit.mean()*100:.0f}% | '
                           f'n_null={n_null} | {time.time() - t_start:.1f}s', flush=True)
+                    _mt = MIN_TRIALS_PER_LOC if min_trials is None else min_trials
                     for b, mp in zip(bnames, min_per_loc):
-                        if b != 'all' and mp < MIN_TRIALS_PER_LOC:
+                        if b != 'all' and mp < _mt:
                             print(f'    NOTE bin {b!r}: smallest location has only {mp} '
-                                  f'trials (< {MIN_TRIALS_PER_LOC}); that location is '
+                                  f'trials (< {_mt}); that location is '
                                   f'dropped from this RDM.', flush=True)
                     del X
                 except (FileNotFoundError, ValueError) as e:
@@ -317,6 +320,10 @@ def main():
                      help="'location' (default) bins within each target location, so "
                           "bins are not confounded by location difficulty; 'global' "
                           "splits the whole session at once.")
+    ap.add_argument('--min_trials_per_loc', type=int, default=None,
+                     help=f'Minimum trials per location for a bin to use that location '
+                          f'(default {MIN_TRIALS_PER_LOC} = one per cross-validation fold, '
+                          f'the true minimum; crossnobis stays unbiased there).')
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--outdir', default=None)
     ap.add_argument('--force', action='store_true')
@@ -333,6 +340,7 @@ def main():
              args.voxRes, bids_root, n_splits=args.n_splits, n_null=args.n_null,
              max_pca_dim=args.max_pca_dim, seed=args.seed,
              n_bins=args.n_bins, bin_scope=args.bin_scope,
+             min_trials=args.min_trials_per_loc,
              outdir=args.outdir, force=args.force)
     print(f'Done | sub-{args.subjID:02d} | total {time.time() - t0:.1f}s')
 
