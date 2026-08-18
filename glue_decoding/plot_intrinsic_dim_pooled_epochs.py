@@ -3,9 +3,10 @@
 plot_intrinsic_dim_pooled_epochs.py
 
 Bar-plot summary of intrinsic_dim_pooled_epochs.py's output: for each of the
-two pooled per-location measures (participation ratio, normalized total
-variation), one figure of rows=bands x cols=ROIs, four bars per panel (the
-task epochs fixation/stimulus/early_delay/late_delay).
+three pooled per-location measures (participation ratio, normalized total
+variation, and the between-subject variance-share diagnostic), one figure
+of rows=bands x cols=ROIs, four bars per panel (the task epochs
+fixation/stimulus/early_delay/late_delay).
 
 Each cell in the source CSV is already a single POOLED-across-subjects
 estimate per (band, roi, epoch, location) -- there is no subject axis left
@@ -16,11 +17,20 @@ subjects have been pooled rather than kept separate: the unit being
 averaged (and whose spread the error bar reflects) is locations instead of
 subjects.
 
-One figure pair (PR, NTV) is produced PER CONDITION found in the CSV
-('ampOnly', 'ampPhase') -- ampPhase panels are limited to whichever
-bands/ROIs actually have rows (theta/alpha/beta x visual by default, per
-intrinsic_dim_pooled_epochs.py's phase restrictions), not the full
-bands/ROIs grid, so there are no empty panels.
+between_subj_share is the diagnostic that says how much to trust the
+pooled PR/NTV numbers for a given cell: it's the fraction of each
+location's pooled sum-of-squares explained by between-subject mean
+differences rather than genuine within-subject trial-to-trial variability
+(see intrinsic_dim_pooled_epochs.py's docstring). Low -> pooling is close
+to "more trials of the same manifold" and PR/NTV are trustworthy. High ->
+the pooled estimate is substantially reflecting which subjects were
+pooled, not single-manifold geometry.
+
+One figure triple (PR, NTV, between_subj_share) is produced PER CONDITION
+found in the CSV ('ampOnly', 'ampPhase') -- ampPhase panels are limited to
+whichever bands/ROIs actually have rows (theta/alpha/beta x all ROIs by
+default, per intrinsic_dim_pooled_epochs.py's band-only phase
+restriction), not the full bands/ROIs grid, so there are no empty panels.
 
 Usage:
     python plot_intrinsic_dim_pooled_epochs.py [--voxRes 8mm]
@@ -64,8 +74,10 @@ EPOCH_LABELS = {'fixation': 'Fixation', 'stimulus': 'Stimulus',
                  'early_delay': 'Early delay', 'late_delay': 'Late delay'}
 
 METRICS = {
-    'pr':  dict(col='pr',  label='Participation ratio (pooled, per location)'),
-    'ntv': dict(col='ntv', label='Normalized total variation (pooled, per location)'),
+    'pr':     dict(col='pr', label='Participation ratio (pooled, per location)'),
+    'ntv':    dict(col='ntv', label='Normalized total variation (pooled, per location)'),
+    'bshare': dict(col='between_subj_share',
+                    label='Between-subject variance share (pooling-validity diagnostic)'),
 }
 
 
@@ -127,6 +139,9 @@ def plot_metric_figure(df, metric, condition, bands, rois, voxRes, outdir):
             ax.bar(x, means, yerr=sems, color=shades, edgecolor=_FG,
                    linewidth=0.6, capsize=4,
                    error_kw=dict(ecolor=_FG, elinewidth=1.2, capthick=1.2))
+            if metric == 'bshare':
+                ax.set_ylim(0, 1)
+                ax.axhline(0.5, color='#888888', linewidth=0.8, linestyle=':', zorder=1)
             ax.set_xticks(x)
             ax.set_xticklabels([EPOCH_LABELS[e] for e in EPOCH_ORDER],
                                 rotation=30, ha='right', fontsize=8.5)
