@@ -606,14 +606,16 @@ def main():
                    f'(median {np.median(pv):.0f}%)')
         mins = [m for r in ok for m in r['bin_min_per_loc']]
         out.append(f'  smallest per-location count in any bin: {min(mins)} '
-                   f'(crossnobis needs >= 4; bins below that lose that location)')
+                   f'(crossnobis needs >= {MIN_TRIALS_PER_LOC}; bins below that lose '
+                   f'that location)')
         thin = [(r['subjID'], r['bin_min_per_loc']) for r in ok
-                if min(r['bin_min_per_loc']) < 4]
+                if min(r['bin_min_per_loc']) < MIN_TRIALS_PER_LOC]
         if thin:
-            out.append(f'  subjects with a bin below 4 trials for some location '
+            out.append(f'  subjects with a bin below {MIN_TRIALS_PER_LOC} trials for some location '
                        f'({len(thin)}): ' + ', '.join(f'sub-{s:02d}{c}' for s, c in thin))
         else:
-            out.append('  every subject/bin clears the 4-trial minimum for all locations.')
+            out.append(f'  every subject/bin clears the {MIN_TRIALS_PER_LOC}-trial '
+                       f'minimum for all locations.')
     if ok:
         out.append('')
         out.append('EXCLUSION BREAKDOWN -- is the threshold discarding real data?')
