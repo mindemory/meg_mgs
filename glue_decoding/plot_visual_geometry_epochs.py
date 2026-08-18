@@ -468,12 +468,35 @@ def main():
                      help='Fixed RDM colour limit in z-scored dissimilarity units '
                           '(default 0.3, i.e. scale runs -0.3 to +0.3) so every band/ '
                           'epoch/condition panel is comparable by eye.')
-    ap.add_argument('--outdir', default=None)
-    ap.add_argument('--figdir', required=True)
-    ap.add_argument('--csvdir', required=True)
+    ap.add_argument('--outdir', default=None,
+                     help='Where the per-subject visual_geometry_epochs_cell.py .npz '
+                          'caches live. Default: derivatives/glueDecoding/'
+                          'visualGeometryEpochs/data under bids_root -- the shared '
+                          'group-level location actually used in production (NOT '
+                          'visual_geometry_epochs_cell.py\'s own per-subject default '
+                          'of derivatives/sub-XX/sourceRecon/visualGeometryEpochs, '
+                          'which is only what you get running it without --outdir).')
+    ap.add_argument('--figdir', default=None,
+                     help='Default: derivatives/glueDecoding/visualGeometryEpochs/'
+                          'figures under bids_root, sibling to --outdir\'s default.')
+    ap.add_argument('--csvdir', default=None,
+                     help='Default: derivatives/glueDecoding/visualGeometryEpochs/'
+                          'csv under bids_root, sibling to --outdir\'s default.')
     args = ap.parse_args()
 
     bids_root = get_bids_root()
+    _default_base = os.path.join(bids_root, 'derivatives', 'glueDecoding',
+                                  'visualGeometryEpochs')
+    if args.outdir is None:
+        args.outdir = os.path.join(_default_base, 'data')
+    if args.figdir is None:
+        args.figdir = os.path.join(_default_base, 'figures')
+    if args.csvdir is None:
+        args.csvdir = os.path.join(_default_base, 'csv')
+    print(f'  outdir (reading caches from) = {args.outdir}\n'
+          f'  figdir (writing figures to)  = {args.figdir}\n'
+          f'  csvdir (writing csv to)      = {args.csvdir}')
+
     bins = args.bins or discover_bins(args.subjects, bids_root, args.voxRes,
                                        args.bands, args.conditions, args.rois, args.outdir)
     print(f'performance bins found: {list(bins)}')
