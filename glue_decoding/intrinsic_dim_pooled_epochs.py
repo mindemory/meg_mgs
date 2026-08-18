@@ -45,17 +45,34 @@ to respect here -- PR/NTV are covariance-based, not a linear-classifier
 fit, so pooling more trials per location is unambiguously beneficial with
 no analogous cap on how many points a manifold can use.
 
-Output: one long-format CSV row per (band, roi, epoch, location), written
-to derivatives/glueDecoding/intrinsicDimPooledEpochs/. Bar-plot summaries
-(mean +/- SEM across the 10 locations, matching the "average with error
-bars" convention used elsewhere in this repo) are produced separately by
-plot_intrinsic_dim_pooled_epochs.py.
+Both amplitude-only and amplitude+phase conditions are covered:
+'ampOnly' runs on every band; 'ampPhase' is restricted to the bands that
+actually have phase saved (theta/alpha/beta -- no phase for lowgamma/
+highgamma, matching manifold_capacity_epochs.py's AMP_PHASE_BANDS) and to
+--phase_rois (default just 'visual', again matching manifold_capacity_
+epochs.py, since that's the only ROI phase pooling was validated for).
+build_features already produces the correct 2x ampPhase representation
+([amp*cos(phase), amp*sin(phase)]), not a redundant 3x [amp, cos, sin] --
+confirmed by reading features.py directly, so no fix was needed there.
+
+Output: one long-format CSV row per (band, roi, condition, epoch,
+location), written to derivatives/glueDecoding/intrinsicDimPooledEpochs/.
+Bar-plot summaries (mean +/- SEM across the 10 locations, matching the
+"average with error bars" convention used elsewhere in this repo) are
+produced separately by plot_intrinsic_dim_pooled_epochs.py.
+
+Parallelism: each (band, roi, condition) cell pools all subjects and does
+its own PCA/shrinkage independently of every other cell, so cells are
+embarrassingly parallel -- run via joblib, one process per cell (default
+n_jobs = number of cells, capped by --n_jobs).
 
 Usage:
     python intrinsic_dim_pooled_epochs.py
         [--subjects 1 2 ...] [--bands theta alpha beta lowgamma highgamma]
-        [--rois visual parietal frontal] [--voxRes 8mm]
+        [--rois visual parietal frontal] [--conditions ampOnly ampPhase]
+        [--phase_rois visual] [--voxRes 8mm]
         [--max_pca_dim 50] [--min_trials 2] [--outdir <path>] [--force]
+        [--n_jobs 8]
 """
 
 import os
@@ -74,15 +91,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 
-from constants import AMP_ONLY_BANDS, SUBJECT_LIST, ANGLE_MAPPING, get_bids_root
+from constants import AMP_ONLY_BANDS, AMP_PHASE_BANDS, SUBJECT_LIST, ANGLE_MAPPING, get_bids_root
 from visual_geometry_cell import (
     LOCATIONS, MAX_PCA_DIM, MIN_TRIALS_PER_LOC, pca_project, _ledoit_wolf_cov,
 )
 from visual_geometry_epochs_cell import EPOCH_ORDER
-from manifold_capacity_epochs import load_pooled, LOCK_TYPE
-
-CONDITION = 'ampOnly'   # matches intrinsic_dim_epochs.py / the per-subject version
+from manifold_capacity_epochs import load_pooled, LOCK_TYPE, PHASE_CONDITIONS
 
 
 def output_csv_path(bids_root, voxRes, outdir=None):
@@ -131,11 +147,12 @@ def per_location_geometry(Xp, y, min_trials):
     return out
 
 
-def run_cell(subjects, band, roi, voxRes, bids_root, max_pca_dim, min_trials, log=print):
+def run_cell(subjects, band, roi, condition, voxRes, bids_root, max_pca_dim,
+             min_trials, log=print):
     P_pooled, y_pooled, subj_pooled, info = load_pooled(
-        subjects, band, CONDITION, roi, voxRes, bids_root, log=log)
+        subjects, band, condition, roi, voxRes, bids_root, log=log)
     if P_pooled is None:
-        log(f'  {band}/{roi}: nothing to pool, skipping.')
+        log(f'  {band}/{roi}/{condition}: nothing to pool, skipping.')
         return []
 
     rows = []
@@ -145,7 +162,7 @@ def run_cell(subjects, band, roi, voxRes, bids_root, max_pca_dim, min_trials, lo
         geo = per_location_geometry(Xp, y_pooled, min_trials)
         for li, loc in enumerate(LOCATIONS):
             rows.append(dict(
-                band=band, roi=roi, epoch=ep, epoch_index=ei,
+                band=band, roi=roi, condition=condition, epoch=ep, epoch_index=ei,
                 location=loc, angle_deg=ANGLE_MAPPING[loc],
                 n_pooled=int(geo['n'][li]), n_subjects=info['n_subjects'],
                 n_features=info['n_common_sources'], pca_dim=k,
@@ -162,6 +179,41 @@ def run_cell(subjects, band, roi, voxRes, bids_root, max_pca_dim, min_trials, lo
     return rows
 
 
+def _build_cell_list(bands, rois, conditions, phase_rois):
+    """
+    (band, roi, condition) triples to run, respecting the same restrictions
+    manifold_capacity_epochs.py applies: ampPhase only for bands that have
+    saved phase (AMP_PHASE_BANDS) and only for --phase_rois.
+    """
+    cells = []
+    for condition in conditions:
+        for band in bands:
+            if condition in PHASE_CONDITIONS and band not in AMP_PHASE_BANDS:
+                continue
+            for roi in rois:
+                if condition in PHASE_CONDITIONS and roi not in phase_rois:
+                    continue
+                cells.append((band, roi, condition))
+    return cells
+
+
+def _run_cell_worker(cell, subjects, voxRes, bids_root, max_pca_dim, min_trials):
+    band, roi, condition = cell
+    tag = f'{band}/{roi}/{condition}'
+    log = lambda msg: print(f'[{tag}] {msg}', flush=True)
+    t1 = time.time()
+    log('-- start --')
+    try:
+        rows = run_cell(subjects, band, roi, condition, voxRes, bids_root,
+                         max_pca_dim, min_trials, log=log)
+        log(f'done in {time.time() - t1:.1f}s ({len(rows)} rows)')
+        return rows
+    except Exception:
+        log('FAILED:')
+        traceback.print_exc()
+        return []
+
+
 def main():
     ap = argparse.ArgumentParser(
         description='Pooled (cross-subject) per-location participation ratio '
@@ -169,11 +221,18 @@ def main():
     ap.add_argument('--subjects', nargs='+', type=int, default=list(SUBJECT_LIST))
     ap.add_argument('--bands', nargs='+', default=list(AMP_ONLY_BANDS))
     ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
+    ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
+    ap.add_argument('--phase_rois', nargs='+', default=['visual'],
+                     help='ROIs to run ampPhase (or other PHASE_CONDITIONS) on; '
+                          'ampOnly always runs on all --rois.')
     ap.add_argument('--voxRes', default='8mm')
     ap.add_argument('--max_pca_dim', type=int, default=MAX_PCA_DIM)
     ap.add_argument('--min_trials', type=int, default=MIN_TRIALS_PER_LOC)
     ap.add_argument('--outdir', default=None)
     ap.add_argument('--force', action='store_true')
+    ap.add_argument('--n_jobs', type=int, default=None,
+                     help='Parallel workers (one per (band, roi, condition) cell). '
+                          'Default: number of cells.')
     args = ap.parse_args()
 
     bids_root = get_bids_root()
@@ -182,24 +241,21 @@ def main():
         print(f'SKIP (exists, use --force to overwrite): {out_csv}')
         return
 
+    cells = _build_cell_list(args.bands, args.rois, args.conditions, args.phase_rois)
+    n_jobs = args.n_jobs if args.n_jobs else max(1, len(cells))
+
     print(f'intrinsic_dim_pooled_epochs | subjects={args.subjects} | '
-          f'bands={args.bands} | rois={args.rois} | {args.voxRes} | '
-          f'min_trials={args.min_trials}', flush=True)
+          f'bands={args.bands} | rois={args.rois} | conditions={args.conditions} | '
+          f'phase_rois={args.phase_rois} | {args.voxRes} | min_trials={args.min_trials} | '
+          f'{len(cells)} cells | n_jobs={n_jobs}', flush=True)
 
     t0 = time.time()
-    all_rows = []
-    for band in args.bands:
-        for roi in args.rois:
-            print(f'-- {band} / {roi} --', flush=True)
-            t1 = time.time()
-            try:
-                rows = run_cell(args.subjects, band, roi, args.voxRes, bids_root,
-                                 args.max_pca_dim, args.min_trials)
-                all_rows.extend(rows)
-                print(f'   {time.time() - t1:.1f}s', flush=True)
-            except Exception:
-                print(f'  FAILED {band}/{roi}:', flush=True)
-                traceback.print_exc()
+    results = Parallel(n_jobs=n_jobs, prefer='processes', verbose=5)(
+        delayed(_run_cell_worker)(cell, args.subjects, args.voxRes, bids_root,
+                                   args.max_pca_dim, args.min_trials)
+        for cell in cells
+    )
+    all_rows = [row for rows in results for row in rows]
 
     if not all_rows:
         print('Nothing computed -- no output written.')

@@ -16,10 +16,17 @@ subjects have been pooled rather than kept separate: the unit being
 averaged (and whose spread the error bar reflects) is locations instead of
 subjects.
 
+One figure pair (PR, NTV) is produced PER CONDITION found in the CSV
+('ampOnly', 'ampPhase') -- ampPhase panels are limited to whichever
+bands/ROIs actually have rows (theta/alpha/beta x visual by default, per
+intrinsic_dim_pooled_epochs.py's phase restrictions), not the full
+bands/ROIs grid, so there are no empty panels.
+
 Usage:
     python plot_intrinsic_dim_pooled_epochs.py [--voxRes 8mm]
         [--bands theta alpha beta lowgamma highgamma]
-        [--rois visual parietal frontal] [--outdir <path>]
+        [--rois visual parietal frontal]
+        [--conditions ampOnly ampPhase] [--outdir <path>]
 """
 
 import os
@@ -74,9 +81,10 @@ def epoch_shades(roi_name, n=4):
     return shades
 
 
-def aggregate(df, band, roi, epoch, col):
+def aggregate(df, band, roi, condition, epoch, col):
     """Mean +/- SEM across the 10 locations. Returns (mean, sem, n_locs)."""
-    vals = df[(df.band == band) & (df.roi == roi) & (df.epoch == epoch)][col].values
+    vals = df[(df.band == band) & (df.roi == roi) & (df.condition == condition) &
+              (df.epoch == epoch)][col].values
     vals = vals[~np.isnan(vals)]
     if vals.size == 0:
         return None, None, 0
@@ -97,7 +105,7 @@ def style_ax(ax):
     ax.set_axisbelow(True)
 
 
-def plot_metric_figure(df, metric, bands, rois, voxRes, outdir):
+def plot_metric_figure(df, metric, condition, bands, rois, voxRes, outdir):
     spec = METRICS[metric]
     n_r, n_c = len(bands), len(rois)
     fig, axes = plt.subplots(n_r, n_c, figsize=(3.4 * n_c + 1.6, 2.6 * n_r + 1.0),
@@ -110,7 +118,7 @@ def plot_metric_figure(df, metric, bands, rois, voxRes, outdir):
             shades = epoch_shades(roi)
             means, sems, ns = [], [], []
             for ep in EPOCH_ORDER:
-                m, se, n = aggregate(df, band, roi, ep, spec['col'])
+                m, se, n = aggregate(df, band, roi, condition, ep, spec['col'])
                 means.append(m if m is not None else np.nan)
                 sems.append(se if se is not None else 0.0)
                 ns.append(n)
@@ -135,13 +143,15 @@ def plot_metric_figure(df, metric, bands, rois, voxRes, outdir):
             ax.text(0.98, 0.98, f'n_loc={n_str}', transform=ax.transAxes,
                     fontsize=6.5, color='#888888', ha='right', va='top')
 
-    metric_str = metric
+    condition_label = {'ampOnly': 'amplitude only', 'ampPhase': 'amplitude + phase'}.get(
+        condition, condition)
     fig.suptitle(
-        f'{spec["label"]} -- pooled across subjects, {voxRes}',
+        f'{spec["label"]} -- pooled across subjects, {condition_label}, {voxRes}',
         color=_FG, fontsize=15, fontweight='bold', y=1.01)
     fig.tight_layout(rect=[0.06, 0, 1, 1])
 
-    fp = os.path.join(outdir, f'group_task-mgs_intrinsicDimPooledEpochs_{metric_str}_{voxRes}.png')
+    fp = os.path.join(
+        outdir, f'group_task-mgs_intrinsicDimPooledEpochs_{metric}_{condition}_{voxRes}.png')
     fig.savefig(fp, dpi=150, bbox_inches='tight', facecolor=_BG)
     plt.close(fig)
     print(f'Saved: {fp}')
@@ -152,6 +162,7 @@ def main():
     ap.add_argument('--voxRes', default='8mm')
     ap.add_argument('--bands', nargs='+', default=list(AMP_ONLY_BANDS))
     ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
+    ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
     ap.add_argument('--outdir', default=None)
     args = ap.parse_args()
 
@@ -165,8 +176,21 @@ def main():
     outdir = args.outdir or os.path.dirname(in_csv)
     os.makedirs(outdir, exist_ok=True)
 
-    for metric in METRICS:
-        plot_metric_figure(df, metric, list(args.bands), list(args.rois), args.voxRes, outdir)
+    present_conditions = set(df.condition.unique())
+    for condition in args.conditions:
+        if condition not in present_conditions:
+            print(f'Skipping {condition}: no rows in {in_csv}')
+            continue
+        cdf = df[df.condition == condition]
+        # Restrict to bands/ROIs actually present for this condition (ampPhase
+        # is typically theta/alpha/beta x visual only) so panels aren't empty.
+        bands = [b for b in args.bands if b in set(cdf.band.unique())]
+        rois = [r for r in args.rois if r in set(cdf.roi.unique())]
+        if not bands or not rois:
+            print(f'Skipping {condition}: no matching bands/rois in {in_csv}')
+            continue
+        for metric in METRICS:
+            plot_metric_figure(cdf, metric, condition, bands, rois, args.voxRes, outdir)
 
 
 if __name__ == '__main__':
