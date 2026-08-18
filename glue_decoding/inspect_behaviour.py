@@ -94,6 +94,111 @@ def raw_field_shapes(subjID, bids_root, behav_dir='eyetracking', raw=False):
     return shapes, None
 
 
+# ── Post-hoc calibration comparison ──────────────────────────────────────────
+#
+# run_iipreproc.m step 14 "use this fixation to further calibrate gaze data to
+# known target position", using the stable fixation at the END of the feedback
+# stimulus. That step is optional (skip_steps can contain 'calibration'), which
+# is why two directories exist with and without it.
+#
+# WHY IT CAN BE HARMFUL FOR i_sacc_err SPECIFICALLY: the calibration warps the
+# trial's gaze toward the KNOWN target, and i_sacc_err is then measured as the
+# distance from that same known target. On trials where the subject went
+# straight to the target and stayed there, the fixation used to calibrate is
+# effectively the same gaze position being scored, so the error it reports is
+# driven toward 0 by construction rather than measured. The intended target of
+# that step is the FINAL fixation, not the initial saccade -- when the initial
+# saccade is dragged along too, i_sacc_err collapses.
+#
+# THE DOWNSTREAM COST: load_behav feeds i_sacc_err to performance_bins, which
+# treats err <= I_SACC_ERR_THRESH (0.001) as a missing/unparsed saccade and
+# drops the trial. So every trial the calibration nulls is silently EXCLUDED --
+# and they are exactly the most accurate trials, i.e. the "best" performance
+# bin loses the trials that most belong in it. That is the mechanism behind
+# subjects losing large numbers of trials.
+#
+# A LEGITIMATE calibration shifts the whole error distribution modestly
+# downward (better registration => smaller errors everywhere). A PATHOLOGICAL
+# one leaves the bulk roughly where it was and adds a spike of trials at ~0.
+# The comparison below separates those two by looking at the near-zero pile-up
+# and the median shift separately rather than at overall error alone.
+
+def read_isacc_err(subjID, bids_root, behav_dir, raw=False):
+    """i_sacc_err straight from the .mat, or (None, reason)."""
+    fp = behav_path(bids_root, subjID, behav_dir, raw)
+    if not os.path.exists(fp):
+        return None, 'file not found'
+    try:
+        f = open_h5(fp, os.path.basename(fp))
+    except Exception as e:
+        return None, f'unreadable ({e})'
+    try:
+        key = 'ii_sess' if raw else 'ii_sess_forSource'
+        grp = f[key] if key in f else f[list(f.keys())[0]]
+        if 'i_sacc_err' not in grp:
+            return None, f'no i_sacc_err (fields: {sorted(grp.keys())[:6]}...)'
+        return np.asarray(np.array(grp['i_sacc_err']).flatten(), float), None
+    except Exception as e:
+        return None, f'read failed ({e})'
+    finally:
+        f.close()
+
+
+def err_stats(e, implausible_deg):
+    """Summary of one i_sacc_err vector. Pure function of the array."""
+    if e is None:
+        return None
+    fin = np.isfinite(e)
+    v = e[fin]
+    valid = v[v > I_SACC_ERR_THRESH]
+    return dict(
+        n=int(e.size),
+        n_nan=int((~fin).sum()),
+        n_zero=int((v == 0).sum()),
+        # Trials the threshold silently drops (this is the trial loss).
+        n_subthresh=int((v <= I_SACC_ERR_THRESH).sum()),
+        # Below any plausible saccade endpoint precision -- these are the
+        # signature of calibration nulling the error rather than measuring it.
+        n_implausible=int(((v > 0) & (v < implausible_deg)).sum()),
+        n_valid=int(valid.size),
+        med=float(np.median(valid)) if valid.size else float('nan'),
+        p5=float(np.percentile(valid, 5)) if valid.size else float('nan'),
+    )
+
+
+def calib_verdict(cal, old, pileup_frac=0.02):
+    """
+    Recommend which directory to use for one subject.
+
+    cal/old: err_stats dicts (or None if that directory is missing).
+    pileup_frac: fraction of trials newly pushed below the threshold that
+    counts as the calibration nulling errors rather than improving them.
+
+    Returns (choice, reason). choice in {'calib', 'old', 'calib?', 'n/a'}.
+    """
+    if cal is None and old is None:
+        return 'n/a', 'neither directory readable'
+    if old is None:
+        return 'calib', 'only the calibrated directory exists'
+    if cal is None:
+        return 'old', 'only the uncalibrated directory exists'
+
+    n = max(cal['n'], old['n'], 1)
+    excess = cal['n_subthresh'] - old['n_subthresh']
+    d_valid = cal['n_valid'] - old['n_valid']
+
+    if excess > max(pileup_frac * n, 3):
+        return 'old', (f'calibration pushes {excess} extra trials under the '
+                       f'threshold ({100*excess/n:.0f}% of trials) -> silently dropped')
+    if d_valid < -max(pileup_frac * n, 3):
+        return 'old', f'calibration costs {-d_valid} valid trials'
+    if np.isfinite(cal['med']) and np.isfinite(old['med']) and cal['med'] < old['med']:
+        return 'calib', (f'no near-zero pile-up (+{excess} sub-threshold) and median '
+                         f'error improves {old["med"]:.2f}->{cal["med"]:.2f} deg')
+    return 'calib?', (f'no near-zero pile-up (+{excess} sub-threshold) but median '
+                      f'error does not improve ({old["med"]:.2f}->{cal["med"]:.2f} deg)')
+
+
 def audit(subjID, bids_root, voxRes, roi, n_bins):
     r = dict(subjID=subjID, ok=False, note='')
 
@@ -203,10 +308,89 @@ def main():
                           'removing a separate no-saccade population (a GAP below the '
                           'cut) or trimming the low tail of real measurements (CONTINUITY '
                           'through the cut).')
+    ap.add_argument('--compare_calib', action='store_true',
+                     help='PER-SUBJECT side-by-side of --behav_dir against --compare_dir '
+                          '(default eyetracking_old), to decide subject by subject whether '
+                          'run_iipreproc step 14 post-hoc calibration helped or nulled '
+                          'i_sacc_err. Prints a recommendation per subject.')
+    ap.add_argument('--implausible_deg', type=float, default=0.25,
+                     help='Errors below this (deg) are treated as implausibly small for a '
+                          'real saccade endpoint. Default 0.25, matching the saccade '
+                          'detection threshold used upstream.')
+    ap.add_argument('--pileup_frac', type=float, default=0.02,
+                     help='Fraction of a subject\'s trials newly pushed under '
+                          'I_SACC_ERR_THRESH by calibration that counts as nulling rather '
+                          'than improving (default 0.02).')
     ap.add_argument('--logfile', default=None)
     args = ap.parse_args()
 
     bids_root = get_bids_root()
+
+    if args.compare_calib:
+        cmp_dir = args.compare_dir or 'eyetracking_old'
+        out = []
+        out.append(f'Post-hoc calibration comparison | "{args.behav_dir}" (calibrated) vs '
+                   f'"{cmp_dir}" (uncalibrated)')
+        out.append(f'threshold={I_SACC_ERR_THRESH} (trials at/below are dropped by the '
+                   f'binning) | implausible<{args.implausible_deg} deg')
+        out.append('')
+        hdr = (f"{'subj':>4s} {'dir':>12s} {'n':>5s} {'NaN':>5s} {'==0':>5s} "
+               f"{'<=thr':>6s} {'<imp':>5s} {'valid':>6s} {'med':>7s} {'p5':>7s}   verdict")
+        out.append(hdr); out.append('-' * (len(hdr) + 30))
+
+        picks = {}
+        for sid in args.subjects:
+            e_cal, err_cal = read_isacc_err(sid, bids_root, args.behav_dir)
+            e_old, err_old = read_isacc_err(sid, bids_root, cmp_dir)
+            s_cal, s_old = err_stats(e_cal, args.implausible_deg), err_stats(e_old, args.implausible_deg)
+            choice, reason = calib_verdict(s_cal, s_old, args.pileup_frac)
+            picks[sid] = choice
+
+            def line(tag, s, note):
+                if s is None:
+                    return f"{'':>4s} {tag:>12s} {note}"
+                return (f"{'':>4s} {tag:>12s} {s['n']:5d} {s['n_nan']:5d} {s['n_zero']:5d} "
+                        f"{s['n_subthresh']:6d} {s['n_implausible']:5d} {s['n_valid']:6d} "
+                        f"{s['med']:7.2f} {s['p5']:7.3f}")
+
+            out.append(f"sub-{sid:02d}".rjust(4))
+            out.append(line('calibrated', s_cal, err_cal or ''))
+            out.append(line('uncalib', s_old, err_old or ''))
+            out.append(f"{'':>4s} {'':>12s} -> {choice.upper():6s} {reason}")
+            out.append('')
+
+        from collections import Counter
+        tally = Counter(picks.values())
+        out.append('SUMMARY')
+        for k in ('calib', 'calib?', 'old', 'n/a'):
+            if tally.get(k):
+                subs = [f'sub-{s:02d}' for s, c in picks.items() if c == k]
+                out.append(f'  {k:6s} {tally[k]:2d}: ' + ', '.join(subs))
+        out.append('')
+        out.append('HOW TO READ IT')
+        out.append('  A LEGITIMATE calibration shifts the whole distribution down a bit:')
+        out.append('    median improves, "<=thr" barely moves.')
+        out.append('  A PATHOLOGICAL one leaves the bulk where it was and adds a spike at')
+        out.append('    ~0: "<=thr" and "<imp" jump. Those trials are then SILENTLY DROPPED')
+        out.append('    by the binning threshold -- and they are the most accurate trials,')
+        out.append('    so the "best" performance bin loses exactly what belongs in it.')
+        out.append('  "valid" is what actually reaches the analyses; compare it across the')
+        out.append('    two rows to see the trial loss this choice costs each subject.')
+        out.append('')
+        out.append('NOTE nothing in this codebase reads any directory but "eyetracking" '
+                   '(align.load_behav hardcodes it), so acting on a per-subject choice '
+                   'needs align.load_behav to take the directory per subject -- it cannot '
+                   'currently express one.')
+
+        text = '\n'.join(out)
+        print(text)
+        logfile = args.logfile or os.path.join(
+            bids_root, 'derivatives', 'glueDecoding', 'calibration_comparison.log')
+        os.makedirs(os.path.dirname(logfile), exist_ok=True)
+        with open(logfile, 'w') as fh:
+            fh.write(text + '\n')
+        print(f'\nSaved: {logfile}')
+        return
 
     if args.dist:
         def pull(behav_dir, raw):
@@ -262,7 +446,7 @@ def main():
         print()
         edges = [0, 1e-12, 1e-8, 1e-6, 1e-5, 1e-4, 1e-3, 3e-3, 1e-2, 3e-2,
                  1e-1, 3e-1, 1.0, 3.0, 10.0, np.inf]
-        print(f'Distribution of i_sacc_err across {len(pooled)} subjects '
+        print(f'Distribution of i_sacc_err across {len(args.subjects)} subjects '
               f'({e.size} finite trials). Threshold = {I_SACC_ERR_THRESH}.')
         print(f'\n{"range":>24s} {"count":>7s} {"%":>6s}')
         print('-' * 40)
