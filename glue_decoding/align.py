@@ -27,16 +27,32 @@ import numpy as np
 
 from constants import open_h5
 
+# Which behavioural stream the analyses read. Must match S02B's BEHAV_DIR,
+# since that is the script that writes the _forSource file read below.
+#
+# 'eyetracking_old' is the stream produced WITHOUT run_iipreproc's step-14
+# post-hoc calibration. That step warps trial gaze toward the KNOWN target and
+# i_sacc_err is then measured against that same target, so on trials where the
+# subject went straight to the target and stayed, the error collapses toward 0
+# by construction rather than being measured. Those trials then fall under
+# I_SACC_ERR_THRESH and are dropped as "missing saccade" -- and they are the
+# most accurate trials, so the best performance bin loses exactly what belongs
+# in it. Measured across all 21 subjects (inspect_behaviour.py --compare_calib):
+# the calibration creates 620 such trials, cutting usable trials 4637 -> 4016;
+# reading this stream instead recovers 621 (+15%). No subject has more usable
+# trials with the calibration than without, so it is applied uniformly.
+BEHAV_DIR = 'eyetracking_old'
 
-def load_behav(subjID, bids_root):
+
+def load_behav(subjID, bids_root, behav_dir=BEHAV_DIR):
     """
-    Loads derivatives/sub-{XX}/eyetracking/sub-{XX}_task-mgs-iisess_forSource.mat
+    Loads derivatives/sub-{XX}/{behav_dir}/sub-{XX}_task-mgs-iisess_forSource.mat
     -> {'tarlocCode': (n,), 'i_sacc_err': (n,), 'i_sacc_angle': (n,)}.
     Returns None if the file doesn't exist (e.g. behavioral data not organized
-    for this subject yet).
+    for this subject yet -- S02B must have been run with the matching BEHAV_DIR).
     """
     subName = f'sub-{subjID:02d}'
-    behav_path = os.path.join(bids_root, 'derivatives', subName, 'eyetracking',
+    behav_path = os.path.join(bids_root, 'derivatives', subName, behav_dir,
                                f'{subName}_task-mgs-iisess_forSource.mat')
     if not os.path.exists(behav_path):
         return None

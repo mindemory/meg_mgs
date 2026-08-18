@@ -42,7 +42,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 
 from constants import SUBJECT_LIST, ANGLE_MAPPING, get_bids_root, open_h5
-from align import load_behav, verify_alignment, g04_orig_row_index, attach_behav
+from align import (load_behav, verify_alignment, g04_orig_row_index, attach_behav,
+                    BEHAV_DIR)
 from io_g03 import load_g03_unfiltered
 from io_g04 import load_g04_band
 from visual_geometry_cell import MIN_TRIALS_PER_LOC
@@ -52,7 +53,7 @@ from visual_geometry_epochs_cell import (I_SACC_ERR_THRESH, performance_bins,
 LOCK_TYPE = 'stim'
 
 
-def behav_path(bids_root, subjID, behav_dir='eyetracking', raw=False):
+def behav_path(bids_root, subjID, behav_dir=None, raw=False):
     """
     Path to the behavioural file.
 
@@ -62,19 +63,20 @@ def behav_path(bids_root, subjID, behav_dir='eyetracking', raw=False):
                  answers whether near-zero i_sacc_err originates upstream in
                  iEye or is introduced by S02B's trial removal/reordering.
 
-    behav_dir lets the same audit be pointed at an alternative directory (e.g.
-    an 'eyetracking_old'), which is the only way to tell whether the directory
-    currently being read is the intended one -- NOTHING in this codebase
-    references any directory but 'eyetracking', so if a stale copy is in place
-    the code cannot tell.
+    behav_dir defaults to align.BEHAV_DIR -- the stream the analyses actually
+    read -- so this audit cannot drift out of sync with them. Pass it
+    explicitly to point the same audit at the other stream.
     """
     subName = f'sub-{subjID:02d}'
+    # Default follows align.BEHAV_DIR so the audit reports the stream the
+    # analyses actually read, rather than a directory chosen independently here.
+    behav_dir = BEHAV_DIR if behav_dir is None else behav_dir
     fn = (f'{subName}_task-mgs-iisess.mat' if raw
           else f'{subName}_task-mgs-iisess_forSource.mat')
     return os.path.join(bids_root, 'derivatives', subName, behav_dir, fn)
 
 
-def raw_field_shapes(subjID, bids_root, behav_dir='eyetracking', raw=False):
+def raw_field_shapes(subjID, bids_root, behav_dir=None, raw=False):
     """Shapes of the stored fields, straight from the .mat, before any reshaping."""
     fp = behav_path(bids_root, subjID, behav_dir, raw)
     if not os.path.exists(fp):
@@ -362,7 +364,7 @@ def main():
     ap.add_argument('--voxRes', default='8mm')
     ap.add_argument('--roi', default='visual')
     ap.add_argument('--n_bins', type=int, default=3)
-    ap.add_argument('--behav_dir', default='eyetracking',
+    ap.add_argument('--behav_dir', default=BEHAV_DIR,
                      help="Directory under derivatives/sub-XX/ to read (default "
                           "'eyetracking'). Nothing in this codebase reads any other "
                           "directory, so point this elsewhere to check whether the one "
@@ -399,7 +401,8 @@ def main():
     bids_root = get_bids_root()
 
     if args.compare_calib:
-        cmp_dir = args.compare_dir or 'eyetracking_old'
+        cmp_dir = args.compare_dir or ('eyetracking'
+                  if args.behav_dir == 'eyetracking_old' else 'eyetracking_old')
         out = []
         out.append(f'Post-hoc calibration comparison | "{args.behav_dir}" (calibrated) vs '
                    f'"{cmp_dir}" (uncalibrated)')
@@ -481,10 +484,10 @@ def main():
         out.append('    analyses today; "valid" on uncalib/raw is roughly what switching')
         out.append('    would recover, before S02B trial removal.')
         out.append('')
-        out.append('NOTE nothing in this codebase reads any directory but "eyetracking" '
-                   '(align.load_behav hardcodes it), so acting on a per-subject choice '
-                   'needs align.load_behav to take the directory per subject -- it cannot '
-                   'currently express one.')
+        out.append(f'NOTE the analyses currently read "{BEHAV_DIR}" '
+                   f'(align.BEHAV_DIR, matched by S02B\'s BEHAV_DIR). Change both '
+                   f'together -- S02B writes the _forSource file that align reads, so '
+                   f'if they disagree the analyses read a stale or missing file.')
 
         text = '\n'.join(out)
         print(text)

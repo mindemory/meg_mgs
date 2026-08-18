@@ -27,21 +27,60 @@ is_hpc = contains(hostname, {'login', 'compute', 'node', 'hpc'}) || ...
          ~isempty(getenv('SLURM_JOB_ID')) || ...
          ~isempty(getenv('PBS_JOBID'));
 
+%% Behavioural input / output directories
+%
+% READ the raw ii_sess from 'eyetracking_old', which was produced WITHOUT
+% run_iipreproc's step-14 post-hoc calibration ("use this fixation to further
+% calibrate gaze data to known target position"). That step warps trial gaze
+% toward the KNOWN target, and i_sacc_err is then measured against that same
+% target, so on trials where the subject went straight to the target and
+% stayed, the reported error collapses toward 0 by construction rather than
+% being measured. Downstream those trials fall under the analyses'
+% i_sacc_err threshold (0.001) and are silently dropped as "missing saccade" --
+% and they are the MOST accurate trials, so the best performance bin loses
+% exactly the trials that belong in it.
+%
+% Measured across all 21 subjects (glue_decoding/inspect_behaviour.py
+% --compare_calib, log at derivatives/glueDecoding/calibration_comparison.log):
+% the calibration creates 620 such near-zero trials, cutting usable trials
+% from 4637 to 4016. Reading the uncalibrated copy instead recovers 621 trials
+% (+15%). NO subject has more usable trials with the calibration than without,
+% and the uncalibrated median error is equal or better in 14 of 21 -- so this
+% is applied uniformly rather than per subject.
+%
+% The _forSource output is written back into the SAME directory, so each
+% directory stays a self-contained pipeline product: 'eyetracking' is the
+% calibrated stream and 'eyetracking_old' the uncalibrated one, each with its
+% own raw ii_sess and its own _forSource beside it. Nothing is mixed, so which
+% stream any given _forSource came from is unambiguous from its path alone.
+% The readers are pointed here to match -- glue_decoding/align.py's BEHAV_DIR.
+BEHAV_DIR = 'eyetracking_old';
+
 %% Setup paths based on environment
 if is_hpc
     % HPC paths
     fieldtrip_path = '/scratch/mdd9787/meg_prf_greene/fieldtrip-20250318/';
     project_path = '/scratch/mdd9787/meg_prf_greene/megScripts';
-    subeyePath = sprintf('/scratch/mdd9787/meg_prf_greene/MEG_HPC/derivatives/sub-%02d/eyetracking/sub-%02d_task-mgs-iisess.mat', subjID, subjID);
-    megPath = sprintf('/scratch/mdd9787/meg_prf_greene/MEG_HPC/derivatives/sub-%02d/meg/sub-%02d_task-mgs_stimlocked_lineremoved.mat', subjID, subjID);
-
+    derivRoot = '/scratch/mdd9787/meg_prf_greene/MEG_HPC/derivatives';
 else
     % Local machine paths
     fieldtrip_path = '/d/DATD/hyper/software/fieldtrip-20250318/';
     project_path = '/d/DATD/hyper/experiments/Mrugank/meg_mgs';
-    subeyePath = sprintf('/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-%02d/eyetracking/sub-%02d_task-mgs-iisess.mat', subjID, subjID);
-    megPath = sprintf('/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives/sub-%02d/meg/sub-%02d_task-mgs_stimlocked_lineremoved.mat', subjID, subjID);
+    derivRoot = '/d/DATD/datd/MEG_MGS/MEG_BIDS/derivatives';
 end
+
+subDir     = sprintf('%s/sub-%02d', derivRoot, subjID);
+outEyeDir  = sprintf('%s/%s', subDir, BEHAV_DIR);
+subeyePath = sprintf('%s/sub-%02d_task-mgs-iisess.mat', outEyeDir, subjID);
+megPath    = sprintf('%s/meg/sub-%02d_task-mgs_stimlocked_lineremoved.mat', subDir, subjID);
+
+if ~isfile(subeyePath)
+    error('S02B:missingBehav', ...
+          ['Raw behavioural file not found:\n  %s\n' ...
+           'BEHAV_DIR is set to ''%s''. Set it to ''eyetracking'' to fall back ' ...
+           'to the calibrated copy for this subject.'], subeyePath, BEHAV_DIR);
+end
+fprintf('Behavioural directory (read + write): %s\n', outEyeDir);
 
 %% Setup and Initialization
 addpath(fieldtrip_path);
@@ -201,9 +240,11 @@ fprintf('Created ii_sess_forSource with left trials first, then right trials\n')
 %% Save ii_sess_forSource
 fprintf('Saving ii_sess_forSource to new file...\n');
 
-% Create new file path for processed behavioral data
-[filepath, filename, ext] = fileparts(subeyePath);
-newBehavPath = fullfile(filepath, sprintf('%s_forSource%s', filename, ext));
+% Written beside its own raw ii_sess in BEHAV_DIR, so the directory stays a
+% self-contained pipeline product and the provenance of any _forSource file is
+% readable from its path.
+[~, filename, ext] = fileparts(subeyePath);
+newBehavPath = fullfile(outEyeDir, sprintf('%s_forSource%s', filename, ext));
 
 % Save ii_sess_forSource to new file
 save(newBehavPath, 'ii_sess_forSource', '-v7.3');
