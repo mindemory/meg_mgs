@@ -123,11 +123,55 @@ def raw_field_shapes(subjID, bids_root, behav_dir='eyetracking', raw=False):
 # The comparison below separates those two by looking at the near-zero pile-up
 # and the median shift separately rather than at overall error alone.
 
+def _is_hdf5(fp):
+    """True if the file really is HDF5 (MATLAB -v7.3), by its magic bytes."""
+    try:
+        with open(fp, 'rb') as fh:
+            return fh.read(8) == b'\x89HDF\r\n\x1a\n'
+    except OSError:
+        return False
+
+
+def _read_isacc_err_v7(fp):
+    """
+    i_sacc_err from a pre-v7.3 MAT-file (the 'MATLAB 5.0 MAT-file' format).
+
+    iEye's run_iipreproc saves ii_sess with MATLAB's DEFAULT save(), which is
+    MAT-file 5 -- a proprietary compressed binary, NOT HDF5. h5py cannot read
+    it at all: it fails with "file signature not found", which is a FORMAT
+    error and not a locking one, so open_h5's locking=False / copy-to-scratch /
+    retry machinery cannot help (it just retries a deterministic failure five
+    times). S02B writes its _forSource output with -v7.3, which is why that one
+    file reads fine through h5py and these do not. scipy.io.loadmat handles
+    v4/v6/v7 but not v7.3, so the two paths are complementary.
+    """
+    from scipy.io import loadmat
+    m = loadmat(fp, squeeze_me=True, struct_as_record=False)
+    keys = [k for k in m if not k.startswith('__')]
+    obj = m.get('ii_sess', m.get('ii_sess_forSource'))
+    if obj is None:
+        if not keys:
+            return None, 'no non-metadata variables in file'
+        obj = m[keys[0]]
+    fields = list(getattr(obj, '_fieldnames', []))
+    if 'i_sacc_err' not in fields:
+        return None, f'no i_sacc_err (fields: {sorted(fields)[:6]}...)'
+    return np.asarray(np.ravel(getattr(obj, 'i_sacc_err')), float), None
+
+
 def read_isacc_err(subjID, bids_root, behav_dir, raw=False):
-    """i_sacc_err straight from the .mat, or (None, reason)."""
+    """i_sacc_err straight from the .mat, or (None, reason). Handles both the
+    HDF5 (-v7.3) and the older MAT-file 5 layouts -- see _read_isacc_err_v7."""
     fp = behav_path(bids_root, subjID, behav_dir, raw)
     if not os.path.exists(fp):
         return None, 'file not found'
+    if not _is_hdf5(fp):
+        # Sniffed rather than discovered by failure, so a v7 file does not go
+        # through open_h5's five retries just to fail deterministically.
+        try:
+            return _read_isacc_err_v7(fp)
+        except Exception as e:
+            return None, f'unreadable as MAT-file 5 ({e})'
     try:
         f = open_h5(fp, os.path.basename(fp))
     except Exception as e:
