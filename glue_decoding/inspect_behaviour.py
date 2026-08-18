@@ -334,29 +334,55 @@ def main():
         out.append(f'threshold={I_SACC_ERR_THRESH} (trials at/below are dropped by the '
                    f'binning) | implausible<{args.implausible_deg} deg')
         out.append('')
-        hdr = (f"{'subj':>4s} {'dir':>12s} {'n':>5s} {'NaN':>5s} {'==0':>5s} "
+        hdr = (f"{'subj':>4s} {'source':>16s} {'n':>5s} {'NaN':>5s} {'==0':>5s} "
                f"{'<=thr':>6s} {'<imp':>5s} {'valid':>6s} {'med':>7s} {'p5':>7s}   verdict")
         out.append(hdr); out.append('-' * (len(hdr) + 30))
 
         picks = {}
         for sid in args.subjects:
-            e_cal, err_cal = read_isacc_err(sid, bids_root, args.behav_dir)
-            e_old, err_old = read_isacc_err(sid, bids_root, cmp_dir)
-            s_cal, s_old = err_stats(e_cal, args.implausible_deg), err_stats(e_old, args.implausible_deg)
-            choice, reason = calib_verdict(s_cal, s_old, args.pileup_frac)
+            # THREE sources, because they answer different questions and only one
+            # pairing is apples-to-apples:
+            #   forSource (calibrated) -- S02B's OUTPUT, what the analyses actually
+            #     read, but S02B removes/reorders trials so its n differs from raw.
+            #   raw (calibrated)   \  both are S02B's INPUT, straight from iEye, so
+            #   raw (uncalibrated) /  they differ ONLY by the step-14 calibration.
+            # The verdict is therefore taken on raw-vs-raw; forSource is shown so the
+            # trial count the analyses see is visible next to it.
+            e_fs,  er_fs  = read_isacc_err(sid, bids_root, args.behav_dir, raw=False)
+            e_cal, er_cal = read_isacc_err(sid, bids_root, args.behav_dir, raw=True)
+            e_old, er_old = read_isacc_err(sid, bids_root, cmp_dir,        raw=True)
+            # Fall back to the old dir's forSource if it happens to have one.
+            if e_old is None:
+                e_old2, er_old2 = read_isacc_err(sid, bids_root, cmp_dir, raw=False)
+                if e_old2 is not None:
+                    e_old, er_old = e_old2, er_old2
+
+            s_fs = err_stats(e_fs, args.implausible_deg)
+            s_cal = err_stats(e_cal, args.implausible_deg)
+            s_old = err_stats(e_old, args.implausible_deg)
+
+            # Prefer the clean raw-vs-raw comparison; fall back to forSource-vs-raw
+            # with the caveat flagged, rather than silently comparing unlike things.
+            if s_cal is not None and s_old is not None:
+                choice, reason = calib_verdict(s_cal, s_old, args.pileup_frac)
+            else:
+                choice, reason = calib_verdict(s_fs, s_old, args.pileup_frac)
+                if s_fs is not None and s_old is not None:
+                    reason += '  [forSource vs raw -- trial counts not comparable]'
             picks[sid] = choice
 
             def line(tag, s, note):
                 if s is None:
-                    return f"{'':>4s} {tag:>12s} {note}"
-                return (f"{'':>4s} {tag:>12s} {s['n']:5d} {s['n_nan']:5d} {s['n_zero']:5d} "
+                    return f"{'':>4s} {tag:>16s} {note}"
+                return (f"{'':>4s} {tag:>16s} {s['n']:5d} {s['n_nan']:5d} {s['n_zero']:5d} "
                         f"{s['n_subthresh']:6d} {s['n_implausible']:5d} {s['n_valid']:6d} "
                         f"{s['med']:7.2f} {s['p5']:7.3f}")
 
             out.append(f"sub-{sid:02d}".rjust(4))
-            out.append(line('calibrated', s_cal, err_cal or ''))
-            out.append(line('uncalib', s_old, err_old or ''))
-            out.append(f"{'':>4s} {'':>12s} -> {choice.upper():6s} {reason}")
+            out.append(line('calib/forSource', s_fs, er_fs or ''))
+            out.append(line('calib/raw', s_cal, er_cal or ''))
+            out.append(line('uncalib/raw', s_old, er_old or ''))
+            out.append(f"{'':>4s} {'':>16s} -> {choice.upper():6s} {reason}")
             out.append('')
 
         from collections import Counter
@@ -374,8 +400,14 @@ def main():
         out.append('    ~0: "<=thr" and "<imp" jump. Those trials are then SILENTLY DROPPED')
         out.append('    by the binning threshold -- and they are the most accurate trials,')
         out.append('    so the "best" performance bin loses exactly what belongs in it.')
-        out.append('  "valid" is what actually reaches the analyses; compare it across the')
-        out.append('    two rows to see the trial loss this choice costs each subject.')
+        out.append('  The VERDICT compares calib/raw against uncalib/raw -- both are S02B')
+        out.append('    INPUTS, so they differ only by the step-14 calibration. calib/')
+        out.append('    forSource is S02B OUTPUT (what the analyses actually read); its n')
+        out.append('    differs because S02B removes/reorders trials, so do not read a')
+        out.append('    forSource-vs-raw difference in n as a calibration effect.')
+        out.append('  "valid" on the calib/forSource row is what actually reaches the')
+        out.append('    analyses today; "valid" on uncalib/raw is roughly what switching')
+        out.append('    would recover, before S02B trial removal.')
         out.append('')
         out.append('NOTE nothing in this codebase reads any directory but "eyetracking" '
                    '(align.load_behav hardcodes it), so acting on a per-subject choice '
