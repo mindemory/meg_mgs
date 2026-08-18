@@ -68,6 +68,18 @@ from circular_tgm_cell import output_path, CHANCE_ERROR_DEG
 _BG, _FG, _GRID = '#000000', '#e0e0e0', '#1c1c1c'
 _FLAG = '#888888'
 
+# Font sizes -- kept as named constants so every panel in both figures uses
+# the same scale; bumped up across the board (titles/labels bold+big, ticks
+# still legible but out of the way) per feedback that the previous sizes
+# were too small to read at a glance.
+FS_SUPTITLE   = 18
+FS_PANEL_TTL  = 14
+FS_AXIS_LABEL = 13
+FS_ROW_LABEL  = 14
+FS_TICK       = 10
+FS_CBAR_LABEL = 12
+FS_CBAR_TICK  = 9.5
+
 BAND_LABELS = {'theta': 'Theta (4-8 Hz)', 'alpha': 'Alpha (8-12 Hz)',
                'beta': 'Beta (13-30 Hz)', 'lowgamma': 'Low gamma (30-80 Hz)',
                'highgamma': 'High gamma (80-150 Hz)'}
@@ -82,7 +94,7 @@ def _style_ax(ax):
     ax.set_facecolor(_BG)
     for sp in ax.spines.values():
         sp.set_color('#333333')
-    ax.tick_params(colors=_FG, labelsize=7)
+    ax.tick_params(colors=_FG, labelsize=FS_TICK)
     ax.xaxis.label.set_color(_FG)
     ax.yaxis.label.set_color(_FG)
     ax.title.set_color(_FG)
@@ -185,9 +197,9 @@ def _time_ticks(ax, tv, axis='x'):
     idx = idx[::max(1, len(idx) // 6)]
     locs, labs = idx, [f'{tv[i]:.1f}' for i in idx]
     if axis == 'x':
-        ax.set_xticks(locs); ax.set_xticklabels(labs, fontsize=6.5)
+        ax.set_xticks(locs); ax.set_xticklabels(labs, fontsize=FS_TICK)
     else:
-        ax.set_yticks(locs); ax.set_yticklabels(labs, fontsize=6.5)
+        ax.set_yticks(locs); ax.set_yticklabels(labs, fontsize=FS_TICK)
 
 
 def _bands_with_data(data, bands, rois, cond):
@@ -255,30 +267,27 @@ def figure_tgm(data, bands, rois, cond, voxRes, figdir, metric,
                         ls='--', alpha=0.95, zorder=6)
             _time_ticks(ax, tv, 'x'); _time_ticks(ax, tv, 'y')
             if r == 0:
-                ax.set_title(f'{roi.capitalize()}  (n={n_subj})', fontsize=9,
-                             color=_FG, fontweight='bold', pad=4)
+                ax.set_title(f'{roi.capitalize()} (n={n_subj})', fontsize=FS_PANEL_TTL,
+                             color=_FG, fontweight='bold', pad=6)
             if r == n_r - 1:
-                ax.set_xlabel('Test time (s)', fontsize=8)
+                ax.set_xlabel('Test time (s)', fontsize=FS_AXIS_LABEL, fontweight='bold')
             if c == 0:
-                ax.set_ylabel('Train time (s)', fontsize=8)
-                ax.annotate(BAND_LABELS.get(band, band), xy=(-0.34, 0.5),
-                            xycoords='axes fraction', fontsize=9.5, color=_FG,
+                ax.set_ylabel('Train time (s)', fontsize=FS_AXIS_LABEL, fontweight='bold')
+                ax.annotate(BAND_LABELS.get(band, band), xy=(-0.40, 0.5),
+                            xycoords='axes fraction', fontsize=FS_ROW_LABEL, color=_FG,
                             ha='right', va='center', rotation=90, fontweight='bold')
             _style_ax(ax)
 
     if im is not None:
         cax = fig.add_axes([0.915, 0.25, 0.013, 0.45])
         cb = fig.colorbar(im, cax=cax)
-        cb.set_label('circular error (deg)  |  WARM = lower error = better',
-                     color=_FG, fontsize=8)
-        cb.ax.tick_params(colors=_FG, labelsize=7)
+        cb.set_label('error (deg)  |  warm = better',
+                     color=_FG, fontsize=FS_CBAR_LABEL, fontweight='bold')
+        cb.ax.tick_params(colors=_FG, labelsize=FS_CBAR_TICK)
         cb.outline.set_edgecolor('#333333')
 
-    fig.suptitle(f'Circular TGM (LOO ridge, sin/cos)  |  {COND_LABELS.get(cond, cond)}  |  '
-                 f'{voxRes}  |  ERP removed  |  metric={metric}\n'
-                 f'chance = {CHANCE_ERROR_DEG:.0f} deg; colour fixed to '
-                 f'[{clim[0]:.0f}, {clim[1]:.0f}] deg; dashed = diagonal',
-                 color=_FG, fontsize=10.5, fontweight='bold', y=1 - 0.10 / fig_h)
+    fig.suptitle(f'Circular TGM  |  {COND_LABELS.get(cond, cond)}',
+                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1 - 0.06 / fig_h)
     os.makedirs(figdir, exist_ok=True)
     fp = os.path.join(figdir, f'circular_tgm_{cond}_{voxRes}.png')
     fig.savefig(fp, dpi=150, bbox_inches='tight', facecolor=_BG)
@@ -329,22 +338,19 @@ def figure_diagonal(data, bands, rois, cond, voxRes, figdir, n_perm, alpha, metr
             ax.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
             ax.grid(True, color=_GRID, lw=0.4)
             if r == 0:
-                ax.set_title(f'{roi.capitalize()}  (n={n_subj})', fontsize=9,
+                ax.set_title(f'{roi.capitalize()} (n={n_subj})', fontsize=FS_PANEL_TTL,
                              color=_FG, fontweight='bold')
             if r == n_r - 1:
-                ax.set_xlabel('Time (s)', fontsize=8)
+                ax.set_xlabel('Time (s)', fontsize=FS_AXIS_LABEL, fontweight='bold')
             if c == 0:
-                ax.set_ylabel('error (deg)\n(inverted)', fontsize=7.5, color=_FG)
-                ax.annotate(BAND_LABELS.get(band, band), xy=(-0.26, 0.5),
-                            xycoords='axes fraction', fontsize=9, color=_FG,
+                ax.set_ylabel('Error (deg)', fontsize=FS_AXIS_LABEL, color=_FG, fontweight='bold')
+                ax.annotate(BAND_LABELS.get(band, band), xy=(-0.32, 0.5),
+                            xycoords='axes fraction', fontsize=FS_ROW_LABEL, color=_FG,
                             ha='right', va='center', rotation=90, fontweight='bold')
             _style_ax(ax)
 
-    fig.suptitle(f'Circular TGM DIAGONAL (= decoding over time)  |  '
-                 f'{COND_LABELS.get(cond, cond)}  |  {voxRes}  |  ERP removed\n'
-                 f'y-axis INVERTED so upward = better; dots = cluster permutation '
-                 f'vs {CHANCE_ERROR_DEG:.0f} deg chance, p<{alpha}',
-                 color=_FG, fontsize=10.5, fontweight='bold', y=1 - 0.10 / fig_h)
+    fig.suptitle(f'Decoding over time  |  {COND_LABELS.get(cond, cond)}',
+                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1 - 0.06 / fig_h)
     os.makedirs(figdir, exist_ok=True)
     fp = os.path.join(figdir, f'circular_tgm_diagonal_{cond}_{voxRes}.png')
     fig.savefig(fp, dpi=150, bbox_inches='tight', facecolor=_BG)
@@ -380,10 +386,10 @@ def main():
     ap = argparse.ArgumentParser(description='Aggregate + plot circular TGM across subjects.')
     ap.add_argument('--voxRes', default='8mm')
     ap.add_argument('--subjects', nargs='+', type=int, default=SUBJECT_LIST)
-    ap.add_argument('--bands', nargs='+',
-                     default=['theta', 'alpha', 'beta', 'lowgamma', 'highgamma'],
-                     help='lowgamma/highgamma have no saved phase, so they appear in '
-                          'the ampOnly figures only (rows with no data are dropped).')
+    ap.add_argument('--bands', nargs='+', default=['theta', 'alpha', 'beta'],
+                     help='Default theta/alpha/beta for both ampOnly and ampPhase '
+                          '(lowgamma/highgamma have no saved phase; pass them '
+                          'explicitly for an ampOnly-only run).')
     ap.add_argument('--rois', nargs='+', default=list(ROI_NAMES))
     ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
     ap.add_argument('--metric', default='signed', choices=['signed', 'unsigned'])
