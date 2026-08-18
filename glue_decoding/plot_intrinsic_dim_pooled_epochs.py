@@ -27,15 +27,13 @@ the pooled estimate is substantially reflecting which subjects were
 pooled, not single-manifold geometry.
 
 One figure triple (PR, NTV, between_subj_share) is produced PER CONDITION
-found in the CSV ('ampOnly', 'ampPhase') -- ampPhase panels are limited to
-whichever bands/ROIs actually have rows (theta/alpha/beta x all ROIs by
-default, per intrinsic_dim_pooled_epochs.py's band-only phase
-restriction), not the full bands/ROIs grid, so there are no empty panels.
+found in the CSV ('ampOnly', 'ampPhase'). Bands default to theta/alpha/beta
+for both conditions; panels are further limited to whichever bands/ROIs
+actually have rows for that condition, so there are no empty panels.
 
 Usage:
     python plot_intrinsic_dim_pooled_epochs.py [--voxRes 8mm]
-        [--bands theta alpha beta lowgamma highgamma]
-        [--rois visual parietal frontal]
+        [--bands theta alpha beta] [--rois visual parietal frontal]
         [--conditions ampOnly ampPhase] [--outdir <path>]
 """
 
@@ -53,13 +51,21 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
-from constants import AMP_ONLY_BANDS, get_bids_root
+from constants import get_bids_root
 from visual_geometry_epochs_cell import EPOCH_ORDER
 from intrinsic_dim_pooled_epochs import output_csv_path
 
 _BG        = '#000000'
 _FG        = '#e0e0e0'
 _GRID      = '#1c1c1c'
+
+# Font sizes -- same scale as plot_circular_tgm.py / plot_visual_geometry_*.py,
+# so every figure in this project reads consistently: big, bold, legible.
+FS_SUPTITLE   = 18
+FS_PANEL_TTL  = 14
+FS_AXIS_LABEL = 13
+FS_ROW_LABEL  = 14
+FS_TICK       = 10
 
 ROI_COLOURS = {
     'visual':   '#FFC629',
@@ -74,11 +80,12 @@ EPOCH_LABELS = {'fixation': 'Fixation', 'stimulus': 'Stimulus',
                  'early_delay': 'Early delay', 'late_delay': 'Late delay'}
 
 METRICS = {
-    'pr':     dict(col='pr', label='Participation ratio (pooled, per location)'),
-    'ntv':    dict(col='ntv', label='Normalized total variation (pooled, per location)'),
-    'bshare': dict(col='between_subj_share',
-                    label='Between-subject variance share (pooling-validity diagnostic)'),
+    'pr':     dict(col='pr', label='Participation ratio'),
+    'ntv':    dict(col='ntv', label='Normalized total variation'),
+    'bshare': dict(col='between_subj_share', label='Between-subject variance share'),
 }
+
+COND_LABELS = {'ampOnly': 'Amplitude', 'ampPhase': 'Amplitude + Phase'}
 
 
 def epoch_shades(roi_name, n=4):
@@ -107,7 +114,7 @@ def aggregate(df, band, roi, condition, epoch, col):
 
 def style_ax(ax):
     ax.set_facecolor(_BG)
-    ax.tick_params(colors=_FG, which='both', labelsize=11)
+    ax.tick_params(colors=_FG, which='both', labelsize=FS_TICK)
     ax.xaxis.label.set_color(_FG)
     ax.yaxis.label.set_color(_FG)
     ax.title.set_color(_FG)
@@ -120,7 +127,9 @@ def style_ax(ax):
 def plot_metric_figure(df, metric, condition, bands, rois, voxRes, outdir):
     spec = METRICS[metric]
     n_r, n_c = len(bands), len(rois)
-    fig, axes = plt.subplots(n_r, n_c, figsize=(3.4 * n_c + 1.6, 2.6 * n_r + 1.0),
+    # Wider/taller than the original 3.4x2.6 per panel: the bigger fonts below
+    # need the room, and the rotated epoch tick labels want horizontal space.
+    fig, axes = plt.subplots(n_r, n_c, figsize=(4.0 * n_c + 1.8, 3.0 * n_r + 1.2),
                               facecolor=_BG, squeeze=False)
 
     for r, band in enumerate(bands):
@@ -144,26 +153,26 @@ def plot_metric_figure(df, metric, condition, bands, rois, voxRes, outdir):
                 ax.axhline(0.5, color='#888888', linewidth=0.8, linestyle=':', zorder=1)
             ax.set_xticks(x)
             ax.set_xticklabels([EPOCH_LABELS[e] for e in EPOCH_ORDER],
-                                rotation=30, ha='right', fontsize=8.5)
+                                rotation=30, ha='right', fontsize=FS_TICK)
 
             if r == 0:
-                ax.set_title(roi.capitalize(), fontsize=12, color=ROI_COLOURS.get(roi, _FG),
-                             fontweight='bold', pad=6)
+                ax.set_title(roi.capitalize(), fontsize=FS_PANEL_TTL,
+                             color=ROI_COLOURS.get(roi, _FG), fontweight='bold', pad=8)
             if c == 0:
-                ax.text(-0.42, 0.5, BAND_LABELS.get(band, band), transform=ax.transAxes,
-                        fontsize=11, color=_FG, ha='right', va='center',
+                # No y-axis label: the suptitle already names the metric (one
+                # metric per figure), and spelling it out again per row collided
+                # with the band label for the longer names.
+                ax.text(-0.22, 0.5, BAND_LABELS.get(band, band), transform=ax.transAxes,
+                        fontsize=FS_ROW_LABEL, color=_FG, ha='right', va='center',
                         rotation=90, fontweight='bold')
 
             n_str = '/'.join(str(n) for n in ns)
             ax.text(0.98, 0.98, f'n_loc={n_str}', transform=ax.transAxes,
-                    fontsize=6.5, color='#888888', ha='right', va='top')
+                    fontsize=8, color='#888888', ha='right', va='top')
 
-    condition_label = {'ampOnly': 'amplitude only', 'ampPhase': 'amplitude + phase'}.get(
-        condition, condition)
-    fig.suptitle(
-        f'{spec["label"]} -- pooled across subjects, {condition_label}, {voxRes}',
-        color=_FG, fontsize=15, fontweight='bold', y=1.01)
-    fig.tight_layout(rect=[0.06, 0, 1, 1])
+    fig.suptitle(f'{spec["label"]}  |  {COND_LABELS.get(condition, condition)}',
+                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.01)
+    fig.tight_layout(rect=[0.05, 0, 1, 1])
 
     fp = os.path.join(
         outdir, f'group_task-mgs_intrinsicDimPooledEpochs_{metric}_{condition}_{voxRes}.png')
@@ -175,7 +184,10 @@ def plot_metric_figure(df, metric, condition, bands, rois, voxRes, outdir):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--voxRes', default='8mm')
-    ap.add_argument('--bands', nargs='+', default=list(AMP_ONLY_BANDS))
+    ap.add_argument('--bands', nargs='+', default=['theta', 'alpha', 'beta'],
+                     help='Default theta/alpha/beta for both ampOnly and ampPhase; '
+                          'pass lowgamma/highgamma explicitly to include them (they '
+                          'exist in the CSV for ampOnly only -- no saved phase).')
     ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
     ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
     ap.add_argument('--outdir', default=None)
