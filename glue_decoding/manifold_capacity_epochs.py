@@ -50,6 +50,19 @@ pooled-vs-per-subject. Read it as "is there a location code shared across
 brains in a common anatomical space", which is the manifold-capacity analogue
 of the inter-subject RDM correlation used elsewhere here.
 
+HOW MUCH does between-subject variability actually inflate the radius? That
+used to be an unquantified warning; every output row now carries a
+`between_subj_share` column measuring it directly -- the fraction of each
+pooled manifold's spread attributable to subjects sitting in different places
+in the common source space rather than to within-subject trial variability
+(exact one-way ANOVA split, see variance_partition_by_group). Near 0, pooling
+behaves like "more trials of the same manifold" and capacity reads as a shared
+code; near 1, radius (and the capacity that follows) is largely reporting WHICH
+subjects were pooled. This is the same diagnostic, on the same pooled data,
+that intrinsic_dim_pooled_epochs.py reports next to its participation ratio and
+normalized total variation, so glue's dimension/radius and those two can be
+compared with a matching validity check on each side.
+
 POINTS PER MANIFOLD -- there is a HARD CEILING, and it is not a compute budget.
 glue requires the manifolds to be LINEARLY SEPARABLE and raises
 "Data is not linearly separable" otherwise. By Cover's theorem, points in
@@ -79,12 +92,17 @@ Requires the `glue` package (github.com/cnchou/glue) importable -- activate the
 env that has it first (e.g. `conda activate eegmne`); this script only calls
 python3.
 
+Cells -- (band, roi, condition) triples -- each pool their own subjects and fit
+independently, so they are embarrassingly parallel and run one process per cell
+via joblib (--n_jobs). BLAS is pinned to one thread at import, so this does not
+oversubscribe.
+
 Usage:
     python manifold_capacity_epochs.py [--bands theta alpha beta]
         [--conditions ampOnly ampPhase] [--rois visual parietal frontal]
-        [--phase_rois visual] [--schemes 10] [--voxRes 8mm]
+        [--phase_rois visual parietal frontal] [--schemes 10] [--voxRes 8mm]
         [--points_per_category 0] [--n_hyperplanes 200] [--seed 42]
-        [--subjects 1 2 ...] [--outdir <path>] [--force]
+        [--subjects 1 2 ...] [--n_jobs 18] [--outdir <path>] [--force]
 """
 
 import os
@@ -103,6 +121,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 
 from constants import (AMP_PHASE_BANDS, SUBJECT_LIST, get_bids_root,
                         CATEGORY_SCHEMES, category_labels_for_scheme, balance_categories)
@@ -229,7 +248,7 @@ def load_pooled(subjects, band, condition, roi, voxRes, bids_root, log=print):
 
     if len(per_subj) < 2:
         log(f'    only {len(per_subj)} usable subject(s) -- nothing to pool.')
-        return None, None, None, None, None
+        return None, None, None, None
 
     # --- common source set (template-grid indices), consistently ordered ---
     id_lists = [np.asarray(g['inside_pos']).astype(np.int64).ravel() for _, g in per_subj]
@@ -238,7 +257,7 @@ def load_pooled(subjects, band, condition, roi, voxRes, bids_root, log=print):
         common = np.intersect1d(common, ids)
     if common.size == 0:
         log('    no template-grid sources common to all subjects -- cannot pool.')
-        return None, None, None, None, None
+        return None, None, None, None
     identical = all(ids.size == common.size and np.array_equal(np.sort(ids), common)
                     for ids in id_lists)
     sizes = [ids.size for ids in id_lists]
@@ -286,7 +305,7 @@ def load_pooled(subjects, band, condition, roi, voxRes, bids_root, log=print):
         del X, Pe, g
 
     if len(Xs) < 2:
-        return None, None, None, None, None
+        return None, None, None, None
 
     P_pooled = np.concatenate(Xs, axis=0)
     y_pooled = np.concatenate(ys, axis=0)
@@ -298,6 +317,62 @@ def load_pooled(subjects, band, condition, roi, voxRes, bids_root, log=print):
         f'{P_pooled.shape[2]} features, epoch-averaged '
         f'({P_pooled.nbytes/1e6:.0f} MB)')
     return P_pooled, y_pooled, subj_pooled, info
+
+
+def variance_partition_by_group(Xe, group_labels, subj_ids, min_trials=2):
+    """
+    How much of each pooled manifold's spread is BETWEEN-SUBJECT rather than
+    within-subject trial-to-trial variability.
+
+    This script's docstring already states the central caveat of pooling --
+    "each manifold now contains trials from ~21 different brains, so
+    BETWEEN-SUBJECT variability sits INSIDE the manifolds and inflates their
+    radius" -- but only qualitatively. This measures it, so pooled radius (and
+    the capacity that follows from it) can be read with the actual number in
+    hand instead of an unquantified warning.
+
+    For each manifold (group of trials sharing a category label), its total
+    sum-of-squares about its OWN mean is split by the exact one-way ANOVA
+    identity
+
+        total_ss = between_ss + within_ss
+
+    where between_ss is the subject-mean spread (weighted by trial count) and
+    within_ss is the residual after removing each subject's own mean. The
+    reported share is between_ss / total_ss in [0, 1]:
+
+        near 0  pooling behaves like "more trials of the same manifold" --
+                the manifold's radius reflects genuine trial variability, and
+                pooled capacity is measuring a shared code.
+        near 1  the manifold's extent is mostly the subjects sitting in
+                different places in the common source space, so its radius
+                (and hence capacity) is substantially reporting WHICH subjects
+                were pooled rather than any within-manifold structure.
+
+    Xe: (n_trials, n_features) one epoch's pooled trials. Deliberately the RAW
+    sum-of-squares partition (no shrinkage) -- this is a variance decomposition,
+    not a covariance estimate, so it needs no regularizing.
+
+    Returns (shares dict {group: share}, mean share over groups).
+    """
+    shares = {}
+    for g in np.unique(group_labels):
+        idx = np.where(group_labels == g)[0]
+        if idx.size < min_trials:
+            continue
+        Xg, Sg = Xe[idx], subj_ids[idx]
+        subs = np.unique(Sg)
+        g_mean = Xg.mean(axis=0)
+        total_ss = float(np.sum((Xg - g_mean) ** 2))
+        if total_ss <= 1e-30 or subs.size < 2:
+            continue
+        between_ss = 0.0
+        for s in subs:
+            xs = Xg[Sg == s]
+            between_ss += xs.shape[0] * float(np.sum((xs.mean(axis=0) - g_mean) ** 2))
+        shares[g] = between_ss / total_ss
+    mean_share = float(np.mean(list(shares.values()))) if shares else np.nan
+    return shares, mean_share
 
 
 def build_epoch_manifolds(P, y, scheme, points_per_category, seed, log=print):
@@ -419,9 +494,15 @@ def main():
     ap.add_argument('--bands', nargs='+', default=['theta', 'alpha', 'beta'])
     ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
     ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
-    ap.add_argument('--phase_rois', nargs='+', default=['visual'],
-                     help='ROIs for which ampPhase is run (default visual only -- '
-                          'ampPhase doubles the feature count and the QP cost).')
+    ap.add_argument('--phase_rois', nargs='+', default=['visual', 'parietal', 'frontal'],
+                     help='ROIs for which ampPhase is run. Defaults to ALL --rois, '
+                          'matching intrinsic_dim_pooled_epochs.py: phase availability '
+                          'is gated by BAND (theta/alpha/beta) not by ROI, since '
+                          'precompute_roi_splits.py caches phase for every ROI. NOTE '
+                          'ampPhase doubles the feature count, which both doubles the '
+                          'QP cost per fit AND doubles the Cover separability ceiling '
+                          '(2F/P), so these cells are slower but can use more points. '
+                          'Pass --phase_rois visual to go back to the cheap subset.')
     ap.add_argument('--schemes', nargs='+', type=int, default=[10],
                      choices=sorted(CATEGORY_SCHEMES),
                      help='Default 10 = one manifold per location (all ten, including '
@@ -453,6 +534,11 @@ def main():
     ap.add_argument('--analysis_type', default='ONE_VERSUS_REST')
     ap.add_argument('--no_shuffle', action='store_true')
     ap.add_argument('--seed', type=int, default=42)
+    ap.add_argument('--n_jobs', type=int, default=None,
+                     help='Parallel workers, one per (band, roi, condition) cell. '
+                          'Each cell pools its own subjects and fits independently, '
+                          'and BLAS is pinned to one thread at import, so cells are '
+                          'embarrassingly parallel. Default: one per cell.')
     ap.add_argument('--outdir', default=None)
     ap.add_argument('--force', action='store_true')
     args = ap.parse_args()
@@ -481,92 +567,14 @@ def main():
         f'epochs={list(EPOCH_ORDER)} | n_subjects={len(args.subjects)} | '
         f'points_per_category cap={ppc_cap} | n_hyperplanes={args.n_hyperplanes}')
 
-    rows, t_run = [], time.time()
-    for band in args.bands:
-        for roi in args.rois:
-            for condition in args.conditions:
-                if condition in PHASE_CONDITIONS:
-                    if roi not in args.phase_rois:
-                        continue
-                    if band not in AMP_PHASE_BANDS:
-                        log(f'-- {band}/{roi}/{condition}: SKIP (no saved phase)')
-                        continue
+    cells = build_cell_list(args)
+    n_jobs = args.n_jobs if args.n_jobs else max(1, len(cells))
+    log(f'{len(cells)} cells | n_jobs={n_jobs}')
 
-                log(f'\n-- band={band} roi={roi} condition={condition} --')
-                P_all, y, subj_ids, info = load_pooled(
-                    args.subjects, band, condition, roi, args.voxRes, bids_root, log=log)
-                if P_all is None:
-                    continue
-
-                for scheme in args.schemes:
-                    n_man = len(CATEGORY_SCHEMES[scheme]['groups'])
-                    cover = cover_max_points(info['n_features'], n_man)
-                    cell_cap = cover if ppc_cap is None else min(ppc_cap, cover)
-                    log(f'    scheme={scheme}: P={n_man} manifolds, F={info["n_features"]} '
-                        f'features -> separability ceiling {cover} pts/manifold '
-                        f'({int(COVER_SAFETY*100)}% of Cover 2F/P); using {cell_cap}, '
-                        f'x{args.n_bootstrap} bootstrap draws')
-                    for ei, ep in enumerate(EPOCH_ORDER):
-                        if args.epochs and ep not in args.epochs:
-                            continue
-                        lo, hi = EPOCHS[ep]
-                        t0 = time.time()
-                        draws = []
-                        for b in range(args.n_bootstrap):
-                            # A different draw seed per bootstrap = a different random
-                            # subset of the pooled points, so across draws the trials
-                            # the separability ceiling forces us to leave out of any
-                            # ONE fit still all get used.
-                            manifolds, cats, ppc = build_epoch_manifolds(
-                                P_all[:, ei, :], y, scheme, cell_cap,
-                                args.seed + 1000 * b, log=log)
-                            if manifolds is None or len(manifolds) < 2:
-                                break
-                            try:
-                                ret, used = glue_with_retry(
-                                    manifolds, log, retry_seed=args.seed + b,
-                                    indices=(band, condition, roi, scheme, ep),
-                                    indices_name=['band', 'condition', 'roi', 'scheme', 'epoch'],
-                                    analysis_type=args.analysis_type,
-                                    n_hyperplanes=args.n_hyperplanes,
-                                    shuffle=not args.no_shuffle,
-                                    seed=args.seed + b,
-                                )
-                            except Exception:
-                                log(f'      FAILED {ep} draw {b}:')
-                                log(traceback.format_exc())
-                                continue
-                            ret = ret.reset_index() if ret.index.names[0] else ret
-                            ret['bootstrap'] = b
-                            ret['points_per_manifold'] = int(used)
-                            draws.append(ret)
-                        if not draws:
-                            log(f'    SKIP {ep}: no successful bootstrap draws.')
-                            continue
-                        allb = pd.concat(draws, ignore_index=True)
-                        allb['t_start'] = lo
-                        allb['t_stop'] = hi
-                        allb['n_subjects'] = info['n_subjects']
-                        allb['n_common_sources'] = info['n_common_sources']
-                        allb['identical_sources'] = info['identical_sources']
-                        allb['n_features'] = int(info['n_features'])
-                        allb['n_manifolds'] = n_man
-                        allb['n_bootstrap'] = len(draws)
-                        allb['pooled'] = True
-                        rows.append(allb)
-
-                        # mean +/- SEM across draws -- the point of bootstrapping.
-                        msg = []
-                        for met in ('capacity', 'radius', 'dimension'):
-                            if met not in allb:
-                                continue
-                            real = allb[allb['shuffle'] == False][met] if 'shuffle' in allb else allb[met]
-                            if len(real):
-                                sem = real.std(ddof=1) / np.sqrt(len(real)) if len(real) > 1 else 0.0
-                                msg.append(f'{met}={real.mean():.4f}+/-{sem:.4f}')
-                        log(f'    {ep:12s} [{lo:+.2f},{hi:+.2f}) {len(draws)} draws x '
-                            f'{ppc} pts  ' + '  '.join(msg) + f'  ({time.time()-t0:.0f}s)')
-                del P_all, y, subj_ids
+    t_run = time.time()
+    results = Parallel(n_jobs=n_jobs, prefer='processes', verbose=5)(
+        delayed(run_cell_worker)(cell, args, bids_root, ppc_cap) for cell in cells)
+    rows = [df for cell_rows in results for df in cell_rows]
 
     if not rows:
         log('\nNo results produced.')
@@ -574,6 +582,134 @@ def main():
     df = pd.concat(rows)
     df.to_csv(out_csv)
     log(f'\nSaved ({len(df)} rows): {out_csv}  [total {time.time() - t_run:.1f}s]')
+
+
+def build_cell_list(args):
+    """(band, roi, condition) triples to fit, after the phase restrictions."""
+    cells = []
+    for band in args.bands:
+        for roi in args.rois:
+            for condition in args.conditions:
+                if condition in PHASE_CONDITIONS:
+                    if roi not in args.phase_rois or band not in AMP_PHASE_BANDS:
+                        continue
+                cells.append((band, roi, condition))
+    return cells
+
+
+def run_cell_worker(cell, args, bids_root, ppc_cap):
+    """One (band, roi, condition) cell, start to finish. Returns a list of
+    per-epoch DataFrames. Each cell pools its own subjects and fits its own
+    manifolds independently of every other cell, so cells are embarrassingly
+    parallel; BLAS is already pinned to one thread at import, so one process
+    per cell does not oversubscribe."""
+    band, roi, condition = cell
+    tag = f'{band}/{roi}/{condition}'
+
+    def log(m=''):
+        print(f'[{tag}] {m}', flush=True)
+
+    try:
+        return run_cell(band, roi, condition, args, bids_root, ppc_cap, log)
+    except Exception:
+        log('FAILED:')
+        traceback.print_exc()
+        return []
+
+
+def run_cell(band, roi, condition, args, bids_root, ppc_cap, log):
+    rows = []
+    log('-- start --')
+    P_all, y, subj_ids, info = load_pooled(
+        args.subjects, band, condition, roi, args.voxRes, bids_root, log=log)
+    if P_all is None:
+        return rows
+
+    for scheme in args.schemes:
+        n_man = len(CATEGORY_SCHEMES[scheme]['groups'])
+        cover = cover_max_points(info['n_features'], n_man)
+        cell_cap = cover if ppc_cap is None else min(ppc_cap, cover)
+        log(f'    scheme={scheme}: P={n_man} manifolds, F={info["n_features"]} '
+            f'features -> separability ceiling {cover} pts/manifold '
+            f'({int(COVER_SAFETY*100)}% of Cover 2F/P); using {cell_cap}, '
+            f'x{args.n_bootstrap} bootstrap draws')
+        # Group labels are what the variance partition below splits on,
+        # so they must come from the SAME scheme the manifolds use.
+        grp_labels, grp_keep = category_labels_for_scheme(y, scheme)
+        for ei, ep in enumerate(EPOCH_ORDER):
+            if args.epochs and ep not in args.epochs:
+                continue
+            lo, hi = EPOCHS[ep]
+            t0 = time.time()
+            # Measured on the FULL pooled set for this epoch, not on the
+            # capped/bootstrapped subsample: it is a property of the data
+            # being pooled, not of any one draw.
+            _, bshare = variance_partition_by_group(
+                P_all[:, ei, :][grp_keep], grp_labels, subj_ids[grp_keep])
+            draws = []
+            for b in range(args.n_bootstrap):
+                # A different draw seed per bootstrap = a different random
+                # subset of the pooled points, so across draws the trials
+                # the separability ceiling forces us to leave out of any
+                # ONE fit still all get used.
+                manifolds, cats, ppc = build_epoch_manifolds(
+                    P_all[:, ei, :], y, scheme, cell_cap,
+                    args.seed + 1000 * b, log=log)
+                if manifolds is None or len(manifolds) < 2:
+                    break
+                try:
+                    ret, used = glue_with_retry(
+                        manifolds, log, retry_seed=args.seed + b,
+                        indices=(band, condition, roi, scheme, ep),
+                        indices_name=['band', 'condition', 'roi', 'scheme', 'epoch'],
+                        analysis_type=args.analysis_type,
+                        n_hyperplanes=args.n_hyperplanes,
+                        shuffle=not args.no_shuffle,
+                        seed=args.seed + b,
+                    )
+                except Exception:
+                    log(f'      FAILED {ep} draw {b}:')
+                    log(traceback.format_exc())
+                    continue
+                ret = ret.reset_index() if ret.index.names[0] else ret
+                ret['bootstrap'] = b
+                ret['points_per_manifold'] = int(used)
+                draws.append(ret)
+            if not draws:
+                log(f'    SKIP {ep}: no successful bootstrap draws.')
+                continue
+            allb = pd.concat(draws, ignore_index=True)
+            allb['t_start'] = lo
+            allb['t_stop'] = hi
+            allb['n_subjects'] = info['n_subjects']
+            allb['n_common_sources'] = info['n_common_sources']
+            allb['identical_sources'] = info['identical_sources']
+            allb['n_features'] = int(info['n_features'])
+            allb['n_manifolds'] = n_man
+            allb['n_bootstrap'] = len(draws)
+            allb['pooled'] = True
+            # How much of the pooled manifolds' spread is between-subject
+            # rather than within-subject (see variance_partition_by_group):
+            # the number behind this script's "pooling inflates the radius"
+            # caveat, carried alongside every capacity/radius/dimension row
+            # so the two can be read together.
+            allb['between_subj_share'] = bshare
+            rows.append(allb)
+
+            # mean +/- SEM across draws -- the point of bootstrapping.
+            msg = []
+            for met in ('capacity', 'radius', 'dimension'):
+                if met not in allb:
+                    continue
+                real = allb[allb['shuffle'] == False][met] if 'shuffle' in allb else allb[met]
+                if len(real):
+                    sem = real.std(ddof=1) / np.sqrt(len(real)) if len(real) > 1 else 0.0
+                    msg.append(f'{met}={real.mean():.4f}+/-{sem:.4f}')
+            log(f'    {ep:12s} [{lo:+.2f},{hi:+.2f}) {len(draws)} draws x '
+                f'{ppc} pts  ' + '  '.join(msg) +
+                f'  bshare={bshare:.3f}  ({time.time()-t0:.0f}s)')
+    del P_all, y, subj_ids
+    return rows
 
 
 if __name__ == '__main__':
