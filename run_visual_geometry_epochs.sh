@@ -25,20 +25,29 @@
 # other run_*.sh here. The label-shuffle null is cheap because the PCA basis is
 # computed once per epoch and reused across shuffles.
 #
-# PERFORMANCE BINS (arg 6, default 3): trials are split into tertiles of
+# PERFORMANCE BINS (args 5-6, default 3 bins x 0.4): trials are split by
 # initial-saccade error and the RDM/geometry computed per bin, with bin 'all'
 # always kept as a same-pipeline reference. The split is done WITHIN each target
 # location, because saccade error varies with location -- a global split would
 # load the "worst" bin with the hard locations and any geometry difference would
 # partly be a difference in which locations dominate each bin.
 #
-# NOTE this thins the data: 138-351 trials/subject over 10 locations and 3 bins
-# leaves ~5-12 trials per location per bin, and crossnobis drops any location
-# with fewer than 4. The per-cell log reports the smallest per-location count in
-# each bin; if that runs low, 2 bins (arg 5 = 2) roughly doubles it.
+# bin_frac (arg 6) sets each bin's width as a fraction of trials. The default
+# 0.4 with 3 bins gives bottom 40% / middle 40% / top 40% -- OVERLAPPING windows
+# [0,.4] [.3,.7] [.6,1]. That is ~20% more trials per bin than disjoint
+# tertiles, which matters because thinness is the binding constraint here, but
+# adjacent bins then SHARE 25% of their trials: they are not independent
+# samples, and the bin-to-bin contrast is diluted. Bins 0 and n-1 remain fully
+# disjoint, so first-vs-last is the clean comparison. Pass "" for tertiles.
+#
+# NOTE this still thins the data: 138-351 trials/subject over 10 locations
+# leaves single-digit counts per location per bin, and crossnobis drops any
+# location below MIN_TRIALS_PER_LOC (2). The per-cell log reports the smallest
+# per-location count in each bin; if that runs low, 2 bins (arg 5 = 2) roughly
+# doubles it.
 #
 # Usage:
-#   bash run_visual_geometry_epochs.sh [voxRes] [max_parallel] [n_null] [force] [n_bins] [rois...]
+#   bash run_visual_geometry_epochs.sh [voxRes] [max_parallel] [n_null] [force] [n_bins] [bin_frac] [rois...]
 #
 # n_bins comes BEFORE the ROI list: the ROI list is variadic, so nothing fixed
 # can follow it.
@@ -68,12 +77,20 @@ VOX_RES="${1:-8mm}"
 MAX_PARALLEL="${2:-${#SUBJ_LIST[@]}}"
 N_NULL="${3:-100}"
 FORCE_RAW="${4:-false}"
-N_BINS="${5:-3}"      # performance tertiles from initial-saccade error
+N_BINS="${5:-3}"      # performance bins from initial-saccade error
+# Width of each bin as a fraction of trials. 0.4 with N_BINS=3 = bottom 40% /
+# middle 40% / top 40%, i.e. OVERLAPPING windows [0,.4] [.3,.7] [.6,1]: ~20%
+# more trials per bin than tertiles, at the cost of adjacent bins sharing 25%
+# of their trials (so they are not independent; first-vs-last stays disjoint).
+# Set to "" for disjoint tertiles.
+BIN_FRAC="${6:-0.4}"
+BIN_FRAC_FLAG=()
+[ -n "${BIN_FRAC}" ] && BIN_FRAC_FLAG=(--bin_frac "${BIN_FRAC}")
 FORCE_FLAG=()
 case "${FORCE_RAW}" in
     [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]) FORCE_FLAG=(--force) ;;
 esac
-shift $(( $# > 5 ? 5 : $# )) || true
+shift $(( $# > 6 ? 6 : $# )) || true
 ROIS=("$@"); [ ${#ROIS[@]} -eq 0 ] && ROIS=(visual parietal frontal)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -97,8 +114,8 @@ echo "========================================================"
 echo " Epoch-based RDM -> MDS Geometry Runner"
 echo " VoxRes       : ${VOX_RES}"
 echo " Max Parallel : ${MAX_PARALLEL}"
+echo " Bins         : ${N_BINS} x ${BIN_FRAC:-disjoint}"
 echo " N null       : ${N_NULL} label shuffles per epoch"
-echo " N bins       : ${N_BINS} (performance tertiles of i_sacc_err)"
 echo " Force        : ${FORCE_RAW}"
 echo " Bands        : ${BANDS[*]}"
 echo " Conditions   : ${CONDITIONS[*]}  (ampPhase skipped for the gamma bands)"
@@ -122,6 +139,7 @@ for subjID in "${SUBJ_LIST[@]}"; do
           --voxRes "${VOX_RES}" \
           --n_null "${N_NULL}" \
           --n_bins "${N_BINS}" \
+          "${BIN_FRAC_FLAG[@]}" \
           --outdir "${DATA_DIR}" \
           ${FORCE_FLAG[@]+"${FORCE_FLAG[@]}"} \
     ) > "${LOG_DIR}/sub-${subjID}.log" 2>&1 &

@@ -94,11 +94,14 @@ def load_group(subjects, bids_root, voxRes, band, cond, roi, outdir, bin_name='a
     are treated as the single 'all' bin.
     """
     rdms, nulls, dropped = [], [], []
+    bin_frac = np.nan
     for s in subjects:
         fp = output_path(bids_root, s, band, cond, roi, voxRes, outdir)
         if not os.path.exists(fp):
             continue
         with np.load(fp, allow_pickle=True) as npz:
+            if 'bin_frac' in npz.files:
+                bin_frac = float(np.asarray(npz['bin_frac']).ravel()[0])
             r = np.asarray(npz['rdm'], float)
             nl = np.asarray(npz['rdm_null'], float) if 'rdm_null' in npz.files else None
             if 'bins' in npz.files and r.ndim == 4:
@@ -125,8 +128,8 @@ def load_group(subjects, bids_root, voxRes, band, cond, roi, outdir, bin_name='a
               f'with an under-populated location: '
               f'{", ".join(f"sub-{d:02d}" for d in dropped)}', flush=True)
     if not rdms:
-        return None, None, 0
-    return np.stack(rdms), (np.stack(nulls) if nulls else None), len(rdms)
+        return None, None, 0, bin_frac
+    return np.stack(rdms), (np.stack(nulls) if nulls else None), len(rdms), bin_frac
 
 
 def cell_metrics(rdm_stack, null_stack):
@@ -450,9 +453,20 @@ def figure_bin_comparison(results, bands, bins, cond, roi, voxRes, figdir):
     # "within each location" is the thing that makes these bins interpretable
     # (they are not confounded by location difficulty), so it should not be
     # dropped just to shorten the headline.
-    fig.text(0.5, 1 - 0.85 / fig_h,
-             'bins = tertiles of initial-saccade error within each target location  |  '
-             'dashed = perfect-ring reference',
+    bfrac = next((results[k].get('bin_frac') for k in results
+                  if k[1] == cond and k[2] == roi
+                  and np.isfinite(results[k].get('bin_frac', np.nan))), np.nan)
+    if np.isfinite(bfrac):
+        # OVERLAPPING windows: say so on the figure. Adjacent bins share trials,
+        # so the bin-to-bin contrast here is diluted and the bins are not
+        # independent -- reading this plot without that is the main way to
+        # over-interpret it.
+        bin_txt = (f'bins = overlapping {bfrac:.0%}-wide windows of initial-saccade '
+                   f'error within each target location (adjacent bins share trials)')
+    else:
+        bin_txt = ('bins = disjoint quantiles of initial-saccade error within each '
+                   'target location')
+    fig.text(0.5, 1 - 0.85 / fig_h, bin_txt + '  |  dashed = perfect-ring reference',
              ha='center', va='top', color='#aaaaaa', fontsize=11)
     os.makedirs(figdir, exist_ok=True)
     fp = os.path.join(figdir, f'visual_geometry_epochs_bincompare_{cond}_{roi}_{voxRes}.png')
@@ -523,12 +537,15 @@ def main():
         for cond in args.conditions:
             for roi in args.rois:
                 for bn in bins:
-                    stack, nulls, n = load_group(args.subjects, bids_root, args.voxRes,
-                                                  band, cond, roi, args.outdir, bin_name=bn)
+                    stack, nulls, n, bfrac = load_group(
+                        args.subjects, bids_root, args.voxRes, band, cond, roi,
+                        args.outdir, bin_name=bn)
                     if stack is None:
-                        results[(band, cond, roi, bn)] = dict(cells=None, n=0)
+                        results[(band, cond, roi, bn)] = dict(cells=None, n=0,
+                                                              bin_frac=bfrac)
                         continue
-                    results[(band, cond, roi, bn)] = dict(cells=cell_metrics(stack, nulls), n=n)
+                    results[(band, cond, roi, bn)] = dict(
+                        cells=cell_metrics(stack, nulls), n=n, bin_frac=bfrac)
                     print(f'  aggregated {band}/{cond}/{roi}/{bn}: n={n}', flush=True)
 
     if all(v['n'] == 0 for v in results.values()):

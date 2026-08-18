@@ -91,41 +91,109 @@ def bin_labels(n_bins):
     return BIN_NAMES.get(n_bins, tuple(f'q{i+1}' for i in range(n_bins)))
 
 
-def performance_bins(err, y, n_bins, scope='location', log=print):
+def bin_windows(n_bins, bin_frac):
     """
-    Split trials into n_bins performance bins. Returns (n_trials,) int with the
-    bin index, or -1 for trials excluded as invalid.
+    [(lo, hi)] percentile windows for each bin, as fractions in [0, 1].
+
+    bin_frac=None -> disjoint quantile bins, each 1/n_bins wide (tertiles at
+    n_bins=3), i.e. the windows tile [0,1] exactly once.
+
+    bin_frac=f -> each bin is a window covering fraction f of the trials, the
+    windows evenly spaced so bin 0 starts at the best trial and bin n-1 ends at
+    the worst: stride = (1 - f) / (n_bins - 1). At n_bins=3, f=0.4 this gives
+    [0,0.4], [0.3,0.7], [0.6,1.0] -- "bottom 40% / middle 40% / top 40%".
+    """
+    if bin_frac is None:
+        w = 1.0 / n_bins
+        return [(b * w, (b + 1) * w) for b in range(n_bins)]
+    if not (0 < bin_frac <= 1):
+        raise ValueError(f'bin_frac must be in (0, 1], got {bin_frac}')
+    if n_bins == 1:
+        return [(0.0, 1.0)]
+    stride = (1.0 - bin_frac) / (n_bins - 1)
+    return [(b * stride, b * stride + bin_frac) for b in range(n_bins)]
+
+
+def performance_bin_masks(err, y, n_bins, scope='location', bin_frac=None, log=print):
+    """
+    (n_bins, n_trials) bool -- which trials fall in each performance bin.
+    Trials that are invalid (see I_SACC_ERR_THRESH) are in no bin.
+
+    Ranking is by i_sacc_err, so LOW = GOOD and bin 0 is the best-performance
+    bin.
 
     scope='location' (default) bins WITHIN each target location, so every bin
-    gets ~1/n_bins of every location's trials. This matters: saccade error
-    varies systematically with target location (some locations are simply
-    harder), so a global split would load the "best" bin with easy locations and
-    the "worst" bin with hard ones, and any geometry difference between bins
-    would partly be a difference in which locations dominate them. Binning
-    within location isolates trial-to-trial performance from location
-    difficulty, and as a side effect keeps the per-location counts balanced,
-    which the RDM needs anyway.
+    draws from every location. This matters: saccade error varies
+    systematically with target location (some locations are simply harder), so
+    a global split would load the "best" bin with easy locations and the
+    "worst" bin with hard ones, and any geometry difference between bins would
+    partly be a difference in which locations dominate them. Binning within
+    location isolates trial-to-trial performance from location difficulty, and
+    as a side effect keeps the per-location counts balanced, which the RDM
+    needs anyway. scope='global' reproduces the simpler whole-session split.
 
-    scope='global' reproduces the simpler whole-session split if wanted.
+    bin_frac=None gives DISJOINT bins (tertiles at n_bins=3). bin_frac=f gives
+    OVERLAPPING windows of width f (see bin_windows).
+
+    ON OVERLAP -- what it buys and what it costs. At n_bins=3, f=0.4 each bin
+    holds 40% of a location's trials rather than 33%, i.e. ~20% more, which is
+    the point: the per-location counts here are small enough that estimator
+    variance, not bias, is the binding constraint. The cost is that adjacent
+    bins SHARE trials -- windows [0,0.4] and [0.3,0.7] overlap on 10% of the
+    trials, which is 25% of each bin's contents. Consequences:
+      * the bins are NOT independent samples, so a difference between adjacent
+        bins cannot be tested as if they were;
+      * that shared mass DILUTES the contrast -- the true best-vs-worst effect
+        is attenuated relative to disjoint tertiles, so a null here is weaker
+        evidence of no effect than a null from tertiles would be;
+      * the outer bins (0 and n-1) overlap only one neighbour while the middle
+        overlaps two, so the middle bin is the most diluted.
+    Only bins 0 and n-1 are fully disjoint from each other (at f<=0.5), so the
+    cleanest contrast remains first-vs-last.
     """
     err = np.asarray(err, dtype=float)
     valid = np.isfinite(err) & (err > I_SACC_ERR_THRESH)
-    bins = np.full(err.shape, -1, dtype=int)
+    masks = np.zeros((n_bins, err.size), dtype=bool)
     if valid.sum() == 0:
-        return bins
+        return masks
+    wins = bin_windows(n_bins, bin_frac)
 
     def _assign(mask):
-        vals = err[mask]
+        idx = np.flatnonzero(mask)
+        vals = err[idx]
         if vals.size < n_bins:
             return
-        edges = np.quantile(vals, np.linspace(0, 1, n_bins + 1)[1:-1])
-        bins[mask] = np.clip(np.searchsorted(edges, vals, side='right'), 0, n_bins - 1)
+        # Rank percentile of each trial within this group: the trial at rank r
+        # of n sits at (r + 0.5) / n, so the windows split by COUNT rather than
+        # by error value. Ties are broken stably; with a value-based cut a
+        # cluster of identical errors would land wholly in one bin and unbalance
+        # the counts the RDM depends on.
+        order = np.argsort(vals, kind='stable')
+        pct = np.empty(vals.size, dtype=float)
+        pct[order] = (np.arange(vals.size) + 0.5) / vals.size
+        for b, (lo, hi) in enumerate(wins):
+            sel = (pct >= lo) & (pct < hi) if hi < 1.0 else (pct >= lo)
+            masks[b, idx[sel]] = True
 
     if scope == 'location':
         for loc in np.unique(y):
             _assign(valid & (y == loc))
     else:
         _assign(valid)
+    return masks
+
+
+def performance_bins(err, y, n_bins, scope='location', log=print):
+    """
+    Disjoint-bin view of performance_bin_masks: (n_trials,) int giving the bin
+    index, or -1 for trials excluded as invalid. Only valid for DISJOINT bins,
+    so it always uses bin_frac=None -- an overlapping trial has no single index
+    and callers that need overlap must use performance_bin_masks directly.
+    """
+    masks = performance_bin_masks(err, y, n_bins, scope=scope, bin_frac=None, log=log)
+    bins = np.full(np.asarray(err).shape, -1, dtype=int)
+    for b in range(n_bins):
+        bins[masks[b]] = b
     return bins
 
 
@@ -181,7 +249,8 @@ def output_path(bids_root, subjID, band, condition, roi, voxRes, outdir=None):
 def run_cell(subjID, bands, conditions, rois, voxRes, bids_root,
              n_splits=DEFAULT_N_SPLITS, n_null=DEFAULT_N_NULL,
              max_pca_dim=MAX_PCA_DIM, seed=0, n_bins=DEFAULT_N_BINS,
-             bin_scope='location', min_trials=None, outdir=None, force=False):
+             bin_scope='location', bin_frac=None, min_trials=None,
+             outdir=None, force=False):
     for band in bands:
         for condition in conditions:
             want_phase = (condition == 'ampPhase')
@@ -215,10 +284,11 @@ def run_cell(subjID, bands, conditions, rois, voxRes, bids_root,
                     err = subject_trial_behaviour(subjID, voxRes, bids_root, roi,
                                                    X.shape[0], log=print)
                     if err is not None and n_bins > 1:
-                        bidx = performance_bins(err, y, n_bins, scope=bin_scope)
+                        bmasks = performance_bin_masks(err, y, n_bins, scope=bin_scope,
+                                                        bin_frac=bin_frac)
                         bnames = ('all',) + bin_labels(n_bins)
                         trial_sets = [np.ones(X.shape[0], bool)] + \
-                                     [bidx == b for b in range(n_bins)]
+                                     [bmasks[b] for b in range(n_bins)]
                     else:
                         bnames = ('all',)
                         trial_sets = [np.ones(X.shape[0], bool)]
@@ -259,6 +329,12 @@ def run_cell(subjID, bands, conditions, rois, voxRes, bids_root,
                         n_bin_trials        = n_bin_trials,
                         min_trials_per_loc  = min_per_loc,
                         bin_scope           = np.array([bin_scope]),
+                        # NaN encodes disjoint bins; a value encodes overlapping
+                        # windows of that width (see performance_bin_masks).
+                        bin_frac            = np.array([np.nan if bin_frac is None
+                                                        else float(bin_frac)]),
+                        bin_windows         = np.array(bin_windows(n_bins, bin_frac)
+                                                       if n_bins > 1 else [(0.0, 1.0)]),
                         epochs              = np.array(EPOCH_ORDER),
                         epoch_bounds        = np.array([EPOCHS[e] for e in EPOCH_ORDER]),
                         n_window_times      = n_win,
@@ -316,6 +392,14 @@ def main():
     ap.add_argument('--n_bins', type=int, default=DEFAULT_N_BINS,
                      help='Performance bins from i_sacc_err (default 3; 1 disables). '
                           'Bin 0 of the output is always ALL trials as a reference.')
+    ap.add_argument('--bin_frac', type=float, default=None,
+                     help='Width of each performance bin as a fraction of trials. '
+                          'Omitted = disjoint quantile bins (tertiles at --n_bins 3). '
+                          '0.4 with --n_bins 3 = bottom 40%% / middle 40%% / top 40%%, '
+                          'i.e. OVERLAPPING windows [0,.4] [.3,.7] [.6,1]: ~20%% more '
+                          'trials per bin than tertiles, but adjacent bins share 25%% of '
+                          'their trials, so they are not independent and the contrast '
+                          'between them is diluted (first-vs-last stays disjoint).')
     ap.add_argument('--bin_scope', default='location', choices=['location', 'global'],
                      help="'location' (default) bins within each target location, so "
                           "bins are not confounded by location difficulty; 'global' "
@@ -339,7 +423,7 @@ def main():
     run_cell(args.subjID, list(args.bands), list(args.conditions), list(args.rois),
              args.voxRes, bids_root, n_splits=args.n_splits, n_null=args.n_null,
              max_pca_dim=args.max_pca_dim, seed=args.seed,
-             n_bins=args.n_bins, bin_scope=args.bin_scope,
+             n_bins=args.n_bins, bin_scope=args.bin_scope, bin_frac=args.bin_frac,
              min_trials=args.min_trials_per_loc,
              outdir=args.outdir, force=args.force)
     print(f'Done | sub-{args.subjID:02d} | total {time.time() - t0:.1f}s')

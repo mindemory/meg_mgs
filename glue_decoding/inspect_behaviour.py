@@ -47,8 +47,8 @@ from align import (load_behav, verify_alignment, g04_orig_row_index, attach_beha
 from io_g03 import load_g03_unfiltered
 from io_g04 import load_g04_band
 from visual_geometry_cell import MIN_TRIALS_PER_LOC
-from visual_geometry_epochs_cell import (I_SACC_ERR_THRESH, performance_bins,
-                                          bin_labels)
+from visual_geometry_epochs_cell import (I_SACC_ERR_THRESH, performance_bin_masks,
+                                          bin_labels, bin_windows)
 
 LOCK_TYPE = 'stim'
 
@@ -273,7 +273,7 @@ def calib_verdict(cal, old, pileup_frac=0.02):
                       f'error does not improve ({old["med"]:.2f}->{cal["med"]:.2f} deg)')
 
 
-def audit(subjID, bids_root, voxRes, roi, n_bins):
+def audit(subjID, bids_root, voxRes, roi, n_bins, bin_frac=None):
     r = dict(subjID=subjID, ok=False, note='')
 
     shapes, err = raw_field_shapes(subjID, bids_root)
@@ -338,20 +338,24 @@ def audit(subjID, bids_root, voxRes, roi, n_bins):
         return r
 
     err_g04 = attach_behav(idx, behav)['i_sacc_err']
-    b = performance_bins(err_g04, y, n_bins, scope='location')
+    b = performance_bin_masks(err_g04, y, n_bins, scope='location', bin_frac=bin_frac)
     names = bin_labels(n_bins)
-    r['bin_counts'] = [int((b == k).sum()) for k in range(n_bins)]
-    r['bin_min_per_loc'] = [int(min(int(((y == l) & (b == k)).sum())
+    r['bin_counts'] = [int(b[k].sum()) for k in range(n_bins)]
+    r['bin_min_per_loc'] = [int(min(int(((y == l) & b[k]).sum())
                                      for l in sorted(ANGLE_MAPPING)))
                             for k in range(n_bins)]
-    r['n_excluded'] = int((b < 0).sum())
+    # Trials in NO bin -- i.e. excluded as invalid. With overlapping bins the
+    # bin counts can sum to more than the trial count, so this is derived from
+    # "in no bin" rather than from the bin totals.
+    r['n_excluded'] = int((~b.any(axis=0)).sum())
+    r['n_shared'] = int((b.sum(axis=0) > 1).sum())
     r['bin_names'] = names
     # Would this subject survive at 2 / 3 / 4 bins? Computed from its OWN data
     # rather than projected, so the choice of n_bins can be made from fact.
     r['survives'] = {}
     for nb in (2, 3, 4):
-        bb = performance_bins(err_g04, y, nb, scope='location')
-        mins = [int(min(int(((y == l) & (bb == k)).sum())
+        bb = performance_bin_masks(err_g04, y, nb, scope='location', bin_frac=bin_frac)
+        mins = [int(min(int(((y == l) & bb[k]).sum())
                         for l in sorted(ANGLE_MAPPING))) for k in range(nb)]
         r['survives'][nb] = (min(mins) >= MIN_TRIALS_PER_LOC, mins)
     r['ok'] = True
@@ -364,6 +368,12 @@ def main():
     ap.add_argument('--voxRes', default='8mm')
     ap.add_argument('--roi', default='visual')
     ap.add_argument('--n_bins', type=int, default=3)
+    ap.add_argument('--bin_frac', type=float, default=None,
+                     help='Match visual_geometry_epochs_cell.py: omitted = disjoint '
+                          'quantile bins; 0.4 with --n_bins 3 = overlapping bottom/'
+                          'middle/top 40%% windows. Set this to the value the cell '
+                          'script will run with, or the audit reports counts for bins '
+                          'that will not be the ones computed.')
     ap.add_argument('--behav_dir', default=BEHAV_DIR,
                      help="Directory under derivatives/sub-XX/ to read (default "
                           "'eyetracking'). Nothing in this codebase reads any other "
@@ -573,11 +583,17 @@ def main():
         print('  which biases exactly the "best" bin this analysis is built around.')
         return
 
-    rows = [audit(s, bids_root, args.voxRes, args.roi, args.n_bins) for s in args.subjects]
+    rows = [audit(s, bids_root, args.voxRes, args.roi, args.n_bins, args.bin_frac)
+            for s in args.subjects]
 
     out = []
+    _wins = bin_windows(args.n_bins, args.bin_frac) if args.n_bins > 1 else [(0., 1.)]
+    _wtxt = ('disjoint' if args.bin_frac is None
+             else f'{args.bin_frac:g}-wide OVERLAPPING windows')
     out.append(f'Behavioural audit | voxRes={args.voxRes} | roi={args.roi} | '
                f'n_bins={args.n_bins} | i_sacc_err valid if > {I_SACC_ERR_THRESH}')
+    out.append(f'bins: {_wtxt} -> ' +
+               '  '.join(f'[{lo:.2f},{hi:.2f}]' for lo, hi in _wins))
     out.append('')
     hdr = (f"{'subj':>4s} {'behav':>6s} {'align':>5s} {'NaN':>5s} {'exact0':>7s} "
            f"{'0<x<=t':>7s} {'valid':>6s} {'%val':>5s} "
