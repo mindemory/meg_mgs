@@ -44,7 +44,9 @@ Usage:
                                  [--rois visual parietal frontal]
                                  [--conditions ampOnly ampPhase]
                                  [--subjects 1 2 ...] [--metric signed|unsigned]
-                                 [--n_perm 1000] [--outdir <path>] [--figdir <path>]
+                                 [--n_perm 1000] [--outdir <path>]
+                                 [--figdir <path>]  # default: bids_root/derivatives/
+                                                     # glueDecoding/circularTGM/figures
 """
 
 import os
@@ -416,10 +418,16 @@ def main():
                      help='Fixed colour limits in deg (default 60 120, symmetric about '
                           '90 deg chance) so conditions are comparable by eye.')
     ap.add_argument('--outdir', default=None)
-    ap.add_argument('--figdir', required=True)
+    ap.add_argument('--figdir', default=None,
+                     help='Default: derivatives/glueDecoding/circularTGM/figures under '
+                          'bids_root, matching circular_tgm_cell.py\'s own output '
+                          'convention.')
     args = ap.parse_args()
 
     bids_root = get_bids_root()
+    if args.figdir is None:
+        args.figdir = os.path.join(bids_root, 'derivatives', 'glueDecoding',
+                                    'circularTGM', 'figures')
     print(f'Loading | {args.voxRes} | bands={args.bands} | rois={args.rois} | '
           f'conditions={args.conditions} | metric={args.metric} | '
           f'span=[{args.tmin}, {args.tmax}] | '
