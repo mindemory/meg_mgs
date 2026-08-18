@@ -417,14 +417,22 @@ def main():
                      metavar=('LO', 'HI'),
                      help='Fixed colour limits in deg (default 60 120, symmetric about '
                           '90 deg chance) so conditions are comparable by eye.')
-    ap.add_argument('--outdir', default=None)
+    ap.add_argument('--outdir', default=None,
+                     help='Where the per-subject circular_tgm_cell.py .npz caches live. '
+                          'Default: derivatives/glueDecoding/circularTGM/data under '
+                          'bids_root -- the shared group-level location actually used '
+                          'in production (NOT circular_tgm_cell.py\'s own per-subject '
+                          'default of derivatives/sub-XX/sourceRecon/circularTGM, which '
+                          'is only what you get if you run it without --outdir).')
     ap.add_argument('--figdir', default=None,
                      help='Default: derivatives/glueDecoding/circularTGM/figures under '
-                          'bids_root, matching circular_tgm_cell.py\'s own output '
-                          'convention.')
+                          'bids_root, sibling to --outdir\'s default.')
     args = ap.parse_args()
 
     bids_root = get_bids_root()
+    if args.outdir is None:
+        args.outdir = os.path.join(bids_root, 'derivatives', 'glueDecoding',
+                                    'circularTGM', 'data')
     if args.figdir is None:
         args.figdir = os.path.join(bids_root, 'derivatives', 'glueDecoding',
                                     'circularTGM', 'figures')
@@ -432,7 +440,9 @@ def main():
           f'conditions={args.conditions} | metric={args.metric} | '
           f'span=[{args.tmin}, {args.tmax}] | '
           f'clim={args.clim} | cluster_alpha={args.cluster_alpha} (forming) '
-          f'alpha={args.alpha} (cluster-level)')
+          f'alpha={args.alpha} (cluster-level)\n'
+          f'  outdir (reading caches from) = {args.outdir}\n'
+          f'  figdir (writing figures to)  = {args.figdir}')
     data = load_all(args.subjects, bids_root, args.voxRes, args.bands, args.rois,
                     args.conditions, args.metric, args.outdir,
                     tmin=args.tmin, tmax=args.tmax)
