@@ -65,7 +65,14 @@ from plot_visual_geometry_ts import (
     mds_spectrum, geometry_metrics, group_rdm_and_consistency,
     spearman_brown, IDEAL_RING, LOC_BY_ANGLE, ANGLES_DEG, _ORDER, _style_ax,
     _BG, _FG, _GRID,
+    FS_SUPTITLE, FS_PANEL_TTL, FS_AXIS_LABEL, FS_ROW_LABEL, FS_TICK,
+    FS_CBAR_LABEL, FS_CBAR_TICK,
 )
+
+# The MDS panel titles pack 3 metrics into 2 lines inside a small (~2.5in)
+# panel -- FS_PANEL_TTL is too big to fit there without overlapping the plot
+# above it, so this gets its own, still-legible-but-denser size.
+FS_MDS_METRICS = 10.5
 
 BAND_LABELS = {'theta': 'Theta (4-8 Hz)', 'alpha': 'Alpha (8-12 Hz)',
                'beta': 'Beta (13-30 Hz)', 'lowgamma': 'Low gamma (30-80 Hz)',
@@ -159,7 +166,7 @@ def _legend_handles():
 def _draw_ring(ax, coords, title):
     if coords is None:
         ax.text(0.5, 0.5, 'degenerate', ha='center', va='center',
-                transform=ax.transAxes, color=_FG, fontsize=8)
+                transform=ax.transAxes, color=_FG, fontsize=10)
         _style_ax(ax); ax.set_xticks([]); ax.set_yticks([])
         return
     o = np.argsort(ANGLES_DEG)
@@ -178,7 +185,7 @@ def _draw_ring(ax, coords, title):
                edgecolors='k', linewidths=0.6)
     ax.set_aspect('equal', adjustable='datalim')
     ax.set_xticks([]); ax.set_yticks([])
-    ax.set_title(title, fontsize=7.2, color=_FG, pad=3)
+    ax.set_title(title, fontsize=FS_MDS_METRICS, color=_FG, fontweight='bold', pad=4)
     ax.margins(0.16)
     _style_ax(ax)
 
@@ -188,11 +195,14 @@ def figure_mds(results, bands, cond, roi, voxRes, figdir, bin_name='all'):
     if not bands:
         return None
     n_r, n_c = len(bands), len(EPOCH_ORDER)
-    fig_h = 2.55 * n_r + 1.7
+    # Extra header room (2.6in vs the old 1.7in) for the bigger fonts below --
+    # a brief bold suptitle, a smaller reference-values line, and the epoch
+    # column headers all have to fit without colliding.
+    fig_h = 2.55 * n_r + 2.6
     fig = plt.figure(figsize=(2.55 * n_c + 2.4, fig_h), facecolor=_BG)
     gs = gridspec.GridSpec(n_r, n_c, figure=fig, hspace=0.34, wspace=0.16,
                             left=0.075, right=0.845,
-                            top=1 - 1.25 / fig_h, bottom=0.35 / fig_h)
+                            top=1 - 2.0 / fig_h, bottom=0.35 / fig_h)
     for r, band in enumerate(bands):
         e = results[(band, cond, roi, bin_name)]
         for c, ep in enumerate(EPOCH_ORDER):
@@ -204,34 +214,36 @@ def figure_mds(results, bands, cond, roi, voxRes, figdir, bin_name='all'):
                    f"top2={m.get('top2_var_frac', np.nan):.2f}")
             _draw_ring(ax, coords, ttl)
             if r == 0:
-                ax.text(0.5, 1.30, EPOCH_LABELS[ep], transform=ax.transAxes,
-                        ha='center', va='bottom', fontsize=10, color=_FG,
+                ax.text(0.5, 1.16, EPOCH_LABELS[ep], transform=ax.transAxes,
+                        ha='center', va='bottom', fontsize=FS_PANEL_TTL, color=_FG,
                         fontweight='bold')
-                ax.text(0.5, 1.21, f'{EPOCHS[ep][0]:+.1f} to {EPOCHS[ep][1]:+.1f}s',
-                        transform=ax.transAxes, ha='center', va='bottom',
-                        fontsize=6.5, color='#999999')
             if c == 0:
                 ax.annotate(f"{BAND_LABELS.get(band, band)}\n(n={e['n']})",
-                            xy=(-0.14, 0.5), xycoords='axes fraction',
-                            fontsize=8.5, color=_FG, ha='right', va='center',
+                            xy=(-0.16, 0.5), xycoords='axes fraction',
+                            fontsize=FS_ROW_LABEL, color=_FG, ha='right', va='center',
                             rotation=90, fontweight='bold')
 
     leg = fig.legend(handles=_legend_handles(), loc='center left',
-                     bbox_to_anchor=(0.855, 0.5), fontsize=8, framealpha=0.25,
+                     bbox_to_anchor=(0.855, 0.5), fontsize=10, framealpha=0.25,
                      edgecolor='#444444', labelcolor=_FG, title='Target angle')
     leg.get_frame().set_facecolor('#1a1a1a')
     leg.get_title().set_color(_FG)
-    leg.get_title().set_fontsize(8.5)
+    leg.get_title().set_fontsize(FS_AXIS_LABEL)
 
+    # Brief bold headline, then the ring/lambda2/lambda1/top2 reference values
+    # as a smaller, separate line -- keeping both (per feedback: brief titles,
+    # but keep the metric reference numbers), just not sharing one font size.
     fig.suptitle(
         f'MDS geometry by epoch  |  {COND_LABELS.get(cond, cond)}  |  '
         f'{"" if bin_name=="all" else "bin=" + bin_name + "  |  "}'
-        f'{roi.capitalize()}  |  {voxRes}\n'
-        f"perfect ring at THESE 10 non-uniform angles: ring=1.00, "
-        f"$\\lambda_2/\\lambda_1$={IDEAL_RING['lam2_over_lam1']:.2f} (NOT 1.0), "
-        f"top2={IDEAL_RING['top2_var_frac']:.2f}   |   "
-        f"null: ring~0.38 (p95 0.61), $\\lambda_2/\\lambda_1$~0.64, top2~0.67",
-        color=_FG, fontsize=10, fontweight='bold', y=1 - 0.14 / fig_h)
+        f'{roi.capitalize()}',
+        color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1 - 0.16 / fig_h)
+    fig.text(0.5, 1 - 0.60 / fig_h,
+             f"perfect ring: ring=1.00, "
+             f"$\\lambda_2/\\lambda_1$={IDEAL_RING['lam2_over_lam1']:.2f}, "
+             f"top2={IDEAL_RING['top2_var_frac']:.2f}   |   "
+             f"null: ring~0.38, $\\lambda_2/\\lambda_1$~0.64, top2~0.67",
+             ha='center', va='top', color='#aaaaaa', fontsize=11)
     os.makedirs(figdir, exist_ok=True)
     tag = '' if bin_name == 'all' else f'_{bin_name}'
     fp = os.path.join(figdir, f'visual_geometry_epochs_mds_{cond}_{roi}{tag}_{voxRes}.png')
@@ -241,16 +253,16 @@ def figure_mds(results, bands, cond, roi, voxRes, figdir, bin_name='all'):
     return fp
 
 
-def figure_rdm(results, bands, cond, roi, voxRes, figdir, bin_name='all'):
+def figure_rdm(results, bands, cond, roi, voxRes, figdir, bin_name='all', clim=0.3):
     bands = [b for b in bands if results.get((b, cond, roi, bin_name), {}).get('n', 0) > 0]
     if not bands:
         return None
     n_r, n_c = len(bands), len(EPOCH_ORDER)
-    fig_h = 2.5 * n_r + 1.5
+    fig_h = 2.5 * n_r + 2.1
     fig = plt.figure(figsize=(2.5 * n_c + 2.0, fig_h), facecolor=_BG)
     gs = gridspec.GridSpec(n_r, n_c, figure=fig, hspace=0.30, wspace=0.22,
                             left=0.085, right=0.86,
-                            top=1 - 1.05 / fig_h, bottom=0.40 / fig_h)
+                            top=1 - 1.5 / fig_h, bottom=0.40 / fig_h)
     im = None
     for r, band in enumerate(bands):
         e = results[(band, cond, roi, bin_name)]
@@ -259,40 +271,42 @@ def figure_rdm(results, bands, cond, roi, voxRes, figdir, bin_name='all'):
             grp, m = e['cells'][c]
             if grp is None:
                 ax.text(0.5, 0.5, 'No data', ha='center', va='center',
-                        transform=ax.transAxes, color=_FG, fontsize=8)
+                        transform=ax.transAxes, color=_FG, fontsize=10)
                 _style_ax(ax); continue
-            off = grp[~np.eye(grp.shape[0], dtype=bool)]
-            v = np.nanmax(np.abs(off)) if np.isfinite(off).any() else 1.0
-            im = ax.imshow(grp, cmap='RdBu_r', vmin=-v, vmax=v, interpolation='nearest')
+            # FIXED colour limits (-0.3 to 0.3 by default) rather than
+            # per-panel data-driven ones, so every band/epoch/condition panel
+            # is directly comparable by eye -- matches plot_circular_tgm.py's
+            # fixed-clim convention for the same reason.
+            im = ax.imshow(grp, cmap='RdBu_r', vmin=-clim, vmax=clim,
+                           interpolation='nearest')
             ticks = range(len(LOC_BY_ANGLE))
             ax.set_xticks(ticks); ax.set_yticks(ticks)
             lbl = [f'{int(a)}' for a in ANGLES_DEG]
-            ax.set_xticklabels(lbl, fontsize=5, rotation=90)
-            ax.set_yticklabels(lbl, fontsize=5)
-            ax.set_title(f"r={m.get('intersubj_r', np.nan):.2f}", fontsize=7,
-                         color=_FG, pad=2)
+            ax.set_xticklabels(lbl, fontsize=FS_TICK, rotation=90)
+            ax.set_yticklabels(lbl, fontsize=FS_TICK)
+            ax.set_title(f"r={m.get('intersubj_r', np.nan):.2f}", fontsize=FS_PANEL_TTL,
+                         color=_FG, fontweight='bold', pad=3)
             if r == 0:
-                ax.text(0.5, 1.30, EPOCH_LABELS[ep], transform=ax.transAxes,
-                        ha='center', va='bottom', fontsize=10, color=_FG,
+                ax.text(0.5, 1.16, EPOCH_LABELS[ep], transform=ax.transAxes,
+                        ha='center', va='bottom', fontsize=FS_PANEL_TTL, color=_FG,
                         fontweight='bold')
             if c == 0:
                 ax.annotate(f"{BAND_LABELS.get(band, band)}\n(n={e['n']})",
-                            xy=(-0.30, 0.5), xycoords='axes fraction',
-                            fontsize=8.5, color=_FG, ha='right', va='center',
+                            xy=(-0.32, 0.5), xycoords='axes fraction',
+                            fontsize=FS_ROW_LABEL, color=_FG, ha='right', va='center',
                             rotation=90, fontweight='bold')
             _style_ax(ax)
     if im is not None:
         cax = fig.add_axes([0.875, 0.25, 0.014, 0.45])
         cb = fig.colorbar(im, cax=cax)
-        cb.set_label('z-scored dissimilarity', color=_FG, fontsize=8)
-        cb.ax.tick_params(colors=_FG, labelsize=7)
+        cb.set_label('z-scored dissimilarity', color=_FG, fontsize=FS_CBAR_LABEL,
+                     fontweight='bold')
+        cb.ax.tick_params(colors=_FG, labelsize=FS_CBAR_TICK)
         cb.outline.set_edgecolor('#333333')
     fig.suptitle(f'Group RDM by epoch  |  {COND_LABELS.get(cond, cond)}  |  '
                  f'{"" if bin_name=="all" else "bin=" + bin_name + "  |  "}'
-                 f'{roi.capitalize()}  |  {voxRes}\n'
-                 f'axes = true polar angle (deg); panel r = mean inter-subject '
-                 f'RDM correlation (the gate)',
-                 color=_FG, fontsize=10, fontweight='bold', y=1 - 0.12 / fig_h)
+                 f'{roi.capitalize()}',
+                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1 - 0.28 / fig_h)
     os.makedirs(figdir, exist_ok=True)
     tag = '' if bin_name == 'all' else f'_{bin_name}'
     fp = os.path.join(figdir, f'visual_geometry_epochs_rdm_{cond}_{roi}{tag}_{voxRes}.png')
@@ -443,12 +457,17 @@ def main():
     ap = argparse.ArgumentParser(description='Epoch-based group RDM + MDS geometry figures.')
     ap.add_argument('--voxRes', default='8mm')
     ap.add_argument('--subjects', nargs='+', type=int, default=SUBJECT_LIST)
-    ap.add_argument('--bands', nargs='+',
-                     default=['theta', 'alpha', 'beta', 'lowgamma', 'highgamma'])
+    ap.add_argument('--bands', nargs='+', default=['theta', 'alpha', 'beta'],
+                     help='Default theta/alpha/beta for both ampOnly and ampPhase; '
+                          'pass lowgamma/highgamma explicitly for an ampOnly-only run.')
     ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
     ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
     ap.add_argument('--bins', nargs='+', default=None,
                      help='Performance bins to plot (default: whatever is in the files).')
+    ap.add_argument('--rdm_clim', type=float, default=0.3,
+                     help='Fixed RDM colour limit in z-scored dissimilarity units '
+                          '(default 0.3, i.e. scale runs -0.3 to +0.3) so every band/ '
+                          'epoch/condition panel is comparable by eye.')
     ap.add_argument('--outdir', default=None)
     ap.add_argument('--figdir', required=True)
     ap.add_argument('--csvdir', required=True)
@@ -478,7 +497,8 @@ def main():
     for cond in args.conditions:
         for roi in args.rois:
             for bn in bins:
-                figure_rdm(results, args.bands, cond, roi, args.voxRes, args.figdir, bin_name=bn)
+                figure_rdm(results, args.bands, cond, roi, args.voxRes, args.figdir,
+                           bin_name=bn, clim=args.rdm_clim)
                 figure_mds(results, args.bands, cond, roi, args.voxRes, args.figdir, bin_name=bn)
             figure_bin_comparison(results, args.bands, bins, cond, roi,
                                    args.voxRes, args.figdir)

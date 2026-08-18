@@ -106,6 +106,18 @@ from visual_geometry_ts_cell import output_path
 from visual_geometry_cell import LOCATIONS
 
 _BG, _FG, _GRID, _FLAG = '#000000', '#e0e0e0', '#1c1c1c', '#888888'
+
+# Font sizes -- shared with plot_visual_geometry_epochs.py (which imports
+# _style_ax from here), matching plot_circular_tgm.py's scale so every
+# figure across the two scripts reads consistently: big, bold, legible.
+FS_SUPTITLE   = 18
+FS_PANEL_TTL  = 14
+FS_AXIS_LABEL = 13
+FS_ROW_LABEL  = 14
+FS_TICK       = 10
+FS_CBAR_LABEL = 12
+FS_CBAR_TICK  = 9.5
+
 BAND_LABELS = {'theta': 'Theta (4-8 Hz)', 'alpha': 'Alpha (8-12 Hz)',
                'beta': 'Beta (13-30 Hz)'}
 FEATURE_LABELS = {'ampOnly': 'Amplitude', 'ampPhase': 'Amplitude + Phase'}
@@ -136,7 +148,7 @@ def _style_ax(ax):
     ax.set_facecolor(_BG)
     for sp in ax.spines.values():
         sp.set_color('#333333')
-    ax.tick_params(colors=_FG, labelsize=7)
+    ax.tick_params(colors=_FG, labelsize=FS_TICK)
     ax.xaxis.label.set_color(_FG)
     ax.yaxis.label.set_color(_FG)
     ax.title.set_color(_FG)
@@ -306,7 +318,7 @@ def figure_metrics(results, bands, fr, roi, voxRes, figdir):
     fig_h = 1.85 * n_r + 1.5
     fig = plt.figure(figsize=(4.0 * n_c + 1.0, fig_h), facecolor=_BG)
     gs = gridspec.GridSpec(n_r, n_c, figure=fig, hspace=0.35, wspace=0.26,
-                            left=0.10, right=0.985,
+                            left=0.125, right=0.985,
                             top=1 - 1.15 / fig_h, bottom=0.55 / fig_h)
 
     for r, (key, label, hint) in enumerate(METRICS):
@@ -339,28 +351,28 @@ def figure_metrics(results, bands, fr, roi, voxRes, figdir):
             ax.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
             ax.grid(True, color=_GRID, lw=0.4, zorder=0)
             if r == 0:
-                ax.set_title(BAND_LABELS.get(band, band), fontsize=10,
+                ax.set_title(BAND_LABELS.get(band, band), fontsize=FS_PANEL_TTL,
                              color=_FG, fontweight='bold')
             if r == n_r - 1:
-                ax.set_xlabel('Time (s)', fontsize=8)
+                ax.set_xlabel('Time (s)', fontsize=FS_AXIS_LABEL, fontweight='bold')
             if c == 0:
-                ax.set_ylabel(label, fontsize=8.5, color=_FG)
-                ax.annotate(hint, xy=(-0.135, 0.5), xycoords='axes fraction',
-                            fontsize=5.8, color='#9a9a9a', ha='right', va='center',
+                ax.set_ylabel(label, fontsize=FS_AXIS_LABEL, color=_FG,
+                               fontweight='bold', labelpad=10)
+                ax.annotate(hint, xy=(-0.32, 0.5), xycoords='axes fraction',
+                            fontsize=7.5, color='#9a9a9a', ha='right', va='center',
                             rotation=90)
             if r == 0 and c == n_c - 1:
-                leg = ax.legend(fontsize=6, loc='upper right', framealpha=0.25,
+                leg = ax.legend(fontsize=9, loc='upper right', framealpha=0.25,
                                 edgecolor='#444444', labelcolor=_FG)
                 leg.get_frame().set_facecolor('#1a1a1a')
             _style_ax(ax)
 
     n_show = results.get((bands[0], fr, roi), {}).get('n', 0)
     fig.suptitle(f'Time-resolved MDS geometry  |  {FEATURE_LABELS.get(fr, fr)}  |  '
-                 f'{roi.capitalize()}  |  {voxRes}  |  n={n_show}\n'
-                 r'NB: $\lambda_2/\lambda_1$ for a PERFECT ring at these 10 non-uniform '
-                 'angles is 0.44, NOT 1.0 (null averages 0.64) -- read against the dashed '
-                 'reference, never against 1',
-                 color=_FG, fontsize=10.5, fontweight='bold', y=1 - 0.13 / fig_h)
+                 f'{roi.capitalize()}  (n={n_show})\n'
+                 r'NB: $\lambda_2/\lambda_1$ for a perfect ring at these angles is 0.44, '
+                 'not 1.0 -- read against the dashed reference line, not against 1',
+                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1 - 0.13 / fig_h)
     os.makedirs(figdir, exist_ok=True)
     fp = os.path.join(figdir, f'visual_geometry_ts_metrics_{fr}_{roi}_{voxRes}.png')
     fig.savefig(fp, dpi=150, bbox_inches='tight', facecolor=_BG)
@@ -403,16 +415,16 @@ def figure_ring_snapshots(results, bands, fr, roi, voxRes, figdir, n_snap=6):
                        edgecolors='k', linewidths=0.3)
             ax.set_aspect('equal', adjustable='datalim')
             ax.set_xticks([]); ax.set_yticks([])
-            ax.set_title(f"t={tv[ti]:+.2f}s\nring={entry['real']['ring_r'][ti]:.2f}",
-                         fontsize=7, color=_FG, pad=2)
+            ax.set_title(f"t={tv[ti]:+.2f}s  ring={entry['real']['ring_r'][ti]:.2f}",
+                         fontsize=10, color=_FG, fontweight='bold', pad=3)
             if c == 0:
-                ax.annotate(BAND_LABELS.get(band, band), xy=(-0.18, 0.5),
-                            xycoords='axes fraction', fontsize=9, color=_FG,
+                ax.annotate(BAND_LABELS.get(band, band), xy=(-0.20, 0.5),
+                            xycoords='axes fraction', fontsize=FS_ROW_LABEL, color=_FG,
                             ha='right', va='center', rotation=90, fontweight='bold')
             _style_ax(ax)
     fig.suptitle(f'MDS embeddings over time  |  {FEATURE_LABELS.get(fr, fr)}  |  '
-                 f'{roi.capitalize()}  |  {voxRes}  |  colour = true polar angle',
-                 color=_FG, fontsize=10.5, fontweight='bold', y=1 - 0.10 / fig_h)
+                 f'{roi.capitalize()}',
+                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1 - 0.10 / fig_h)
     os.makedirs(figdir, exist_ok=True)
     fp = os.path.join(figdir, f'visual_geometry_ts_rings_{fr}_{roi}_{voxRes}.png')
     fig.savefig(fp, dpi=150, bbox_inches='tight', facecolor=_BG)
