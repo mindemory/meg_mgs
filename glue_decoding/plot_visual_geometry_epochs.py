@@ -400,11 +400,13 @@ def figure_bin_comparison(results, bands, bins, cond, roi, voxRes, figdir):
             ('top2_var_frac', 'Top-2 var. frac.'), ('radial_cv', 'Radial CV'),
             ('intersubj_r', 'Inter-subject r')]
     n_r, n_c = len(METS), len(EPOCH_ORDER)
-    fig_h = 1.9 * n_r + 1.5
-    fig = plt.figure(figsize=(3.1 * n_c + 1.6, fig_h), facecolor=_BG)
-    gs = gridspec.GridSpec(n_r, n_c, figure=fig, hspace=0.38, wspace=0.30,
-                            left=0.085, right=0.86,
-                            top=1 - 1.15 / fig_h, bottom=0.45 / fig_h)
+    # Taller per row and more header room than the original 1.9/1.15, to fit the
+    # larger fonts below without the suptitle colliding with the column titles.
+    fig_h = 2.3 * n_r + 2.0
+    fig = plt.figure(figsize=(3.6 * n_c + 2.0, fig_h), facecolor=_BG)
+    gs = gridspec.GridSpec(n_r, n_c, figure=fig, hspace=0.42, wspace=0.32,
+                            left=0.10, right=0.855,
+                            top=1 - 1.5 / fig_h, bottom=0.45 / fig_h)
     cmap = plt.cm.viridis(np.linspace(0.15, 0.9, max(1, len(bands))))
     x = np.arange(len(plot_bins))
     for r, (key, lab) in enumerate(METS):
@@ -425,26 +427,33 @@ def figure_bin_comparison(results, bands, bins, cond, roi, voxRes, figdir):
                 ax.axhline(ideal, color='#4EA1F3', lw=0.9, ls='--', zorder=0)
             if key == 'intersubj_r':
                 ax.axhline(0.0, color='#555555', lw=0.8, ls=':', zorder=0)
-            ax.set_xticks(x); ax.set_xticklabels(plot_bins, fontsize=7.5)
+            ax.set_xticks(x); ax.set_xticklabels(plot_bins, fontsize=FS_TICK)
             ax.grid(True, color=_GRID, lw=0.4)
             if r == 0:
-                ax.set_title(EPOCH_LABELS[ep], fontsize=9.5, color=_FG, fontweight='bold')
+                ax.set_title(EPOCH_LABELS[ep], fontsize=FS_PANEL_TTL, color=_FG,
+                             fontweight='bold')
             if c == 0:
-                ax.set_ylabel(lab, fontsize=8.5, color=_FG)
+                ax.set_ylabel(lab, fontsize=FS_AXIS_LABEL, color=_FG, fontweight='bold')
             if r == n_r - 1:
-                ax.set_xlabel('performance bin', fontsize=8)
+                ax.set_xlabel('Performance bin', fontsize=FS_AXIS_LABEL, fontweight='bold')
             _style_ax(ax)
     h, l = fig.axes[0].get_legend_handles_labels()
     if h:
-        leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.87, 0.5),
-                         fontsize=8, framealpha=0.25, edgecolor='#444444', labelcolor=_FG)
+        leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.865, 0.5),
+                         fontsize=11, framealpha=0.25, edgecolor='#444444',
+                         labelcolor=_FG)
         leg.get_frame().set_facecolor('#1a1a1a')
     fig.suptitle(f'Geometry vs memory performance  |  {COND_LABELS.get(cond, cond)}  |  '
-                 f'{roi.capitalize()}  |  {voxRes}\n'
-                 f'bins are tertiles of initial-saccade error WITHIN each target '
-                 f'location (so bins are not confounded by location difficulty); '
-                 f'dashed = perfect-ring reference',
-                 color=_FG, fontsize=10, fontweight='bold', y=1 - 0.14 / fig_h)
+                 f'{roi.capitalize()}',
+                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1 - 0.28 / fig_h)
+    # Kept as a separate smaller line rather than folded into the bold title:
+    # "within each location" is the thing that makes these bins interpretable
+    # (they are not confounded by location difficulty), so it should not be
+    # dropped just to shorten the headline.
+    fig.text(0.5, 1 - 0.85 / fig_h,
+             'bins = tertiles of initial-saccade error within each target location  |  '
+             'dashed = perfect-ring reference',
+             ha='center', va='top', color='#aaaaaa', fontsize=11)
     os.makedirs(figdir, exist_ok=True)
     fp = os.path.join(figdir, f'visual_geometry_epochs_bincompare_{cond}_{roi}_{voxRes}.png')
     fig.savefig(fp, dpi=150, bbox_inches='tight', facecolor=_BG)

@@ -52,7 +52,11 @@
 set -euo pipefail
 
 SUBJ_LIST=(01 02 03 04 05 06 07 09 10 12 13 15 17 18 19 23 24 25 29 31 32)
+# COMPUTE every band -- the cell script's output is data, and lowgamma/highgamma
+# cost little there. PLOT only theta/alpha/beta: the gamma bands carry no saved
+# phase (so they exist for ampOnly only) and are not what these figures are for.
 BANDS=(theta alpha beta lowgamma highgamma)
+PLOT_BANDS=(theta alpha beta)
 CONDITIONS=(ampOnly ampPhase)
 
 # Capture EVERY fixed positional BEFORE shifting. Reading e.g. "${2}" after the
@@ -134,11 +138,19 @@ echo ""
 echo "========================================================"
 echo " Running aggregator / plotter ..."
 echo "========================================================"
+# This runner is the BINNED pipeline: it just computed N_BINS performance bins,
+# so it asks the plotter for them explicitly. The plotter's own default is
+# --bins all (unsplit), which is right when it is run standalone but would
+# silently drop the bins this runner exists to produce.
+BINS_FLAG=(--bins all)
+if [ "${N_BINS}" -gt 1 ]; then BINS_FLAG=(--bins auto); fi
+
 python3 "${PLOT_SCRIPT}" \
     --voxRes "${VOX_RES}" \
-    --bands "${BANDS[@]}" \
+    --bands "${PLOT_BANDS[@]}" \
     --conditions "${CONDITIONS[@]}" \
     --rois "${ROIS[@]}" \
+    "${BINS_FLAG[@]}" \
     --outdir "${DATA_DIR}" \
     --figdir "${FIG_DIR}" \
     --csvdir "${CSV_DIR}" \
