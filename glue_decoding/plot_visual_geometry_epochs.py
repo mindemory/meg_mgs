@@ -462,8 +462,13 @@ def main():
                           'pass lowgamma/highgamma explicitly for an ampOnly-only run.')
     ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
     ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
-    ap.add_argument('--bins', nargs='+', default=None,
-                     help='Performance bins to plot (default: whatever is in the files).')
+    ap.add_argument('--bins', nargs='+', default=['all'],
+                     help="Performance bins to plot. Default ['all'] only -- trials are "
+                          "NOT split by performance bin (every cache file also carries "
+                          "an unsplit 'all' bin alongside its tertiles). Pass "
+                          "--bins auto to discover and plot every bin saved in the "
+                          "files instead (e.g. the performance tertiles), which also "
+                          "turns on figure_bin_comparison.")
     ap.add_argument('--rdm_clim', type=float, default=0.3,
                      help='Fixed RDM colour limit in z-scored dissimilarity units '
                           '(default 0.3, i.e. scale runs -0.3 to +0.3) so every band/ '
@@ -497,9 +502,13 @@ def main():
           f'  figdir (writing figures to)  = {args.figdir}\n'
           f'  csvdir (writing csv to)      = {args.csvdir}')
 
-    bins = args.bins or discover_bins(args.subjects, bids_root, args.voxRes,
-                                       args.bands, args.conditions, args.rois, args.outdir)
-    print(f'performance bins found: {list(bins)}')
+    if args.bins == ['auto']:
+        bins = discover_bins(args.subjects, bids_root, args.voxRes,
+                             args.bands, args.conditions, args.rois, args.outdir)
+        print(f'performance bins found (auto): {list(bins)}')
+    else:
+        bins = args.bins
+        print(f'bins: {list(bins)} (pass --bins auto for the performance tertiles too)')
     results = {}
     for band in args.bands:
         for cond in args.conditions:
