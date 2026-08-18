@@ -110,15 +110,26 @@ from features import build_features
 from io_g04 import load_g04_band
 from visual_geometry_epochs_cell import EPOCHS, EPOCH_ORDER
 
-try:
-    from glue.contrib import glue_analysis_dataframe
-except ImportError as e:
-    raise ImportError(
-        "Could not import glue.contrib.glue_analysis_dataframe -- this script needs "
-        "the manifold-capacity-theory `glue` package (github.com/cnchou/glue), which "
-        "lives in a separate environment, not this repo's normal Python env. "
-        "Activate that environment first (e.g. `conda activate eegmne`)."
-    ) from e
+def _get_glue_analysis_dataframe():
+    """
+    Lazy import: glue_analysis_dataframe is only needed by the functions that
+    actually call it (glue_with_retry, run_benchmark, main's fit loop), not by
+    load_pooled/build_epoch_manifolds/cover_max_points, which are pure numpy and
+    are reused by other scripts (e.g. intrinsic_dim_pooled_epochs.py) that have
+    no need for the `glue` conda env at all. A module-level import here would
+    force that dependency onto every importer regardless of what they use, which
+    is exactly what broke before this was made lazy.
+    """
+    try:
+        from glue.contrib import glue_analysis_dataframe
+    except ImportError as e:
+        raise ImportError(
+            "Could not import glue.contrib.glue_analysis_dataframe -- this needs "
+            "the manifold-capacity-theory `glue` package (github.com/cnchou/glue), "
+            "which lives in a separate environment, not this repo's normal Python "
+            "env. Activate that environment first (e.g. `conda activate eegmne`)."
+        ) from e
+    return glue_analysis_dataframe
 
 LOCK_TYPE = 'stim'
 PHASE_CONDITIONS = ('ampPhase',)
@@ -161,6 +172,7 @@ def glue_with_retry(manifolds, log, retry_seed=42, min_points=20, **kwargs):
     """
     # NB: named retry_seed, not seed -- `seed` is forwarded to glue via **kwargs
     # and having both would be a duplicate-keyword TypeError.
+    glue_analysis_dataframe = _get_glue_analysis_dataframe()
     rng = np.random.default_rng(retry_seed)
     cur = [np.asarray(m) for m in manifolds]
     while True:
@@ -325,6 +337,7 @@ def run_benchmark(args, bids_root, ppc_cap, log):
     assumed. Prints elapsed time and the implied scaling exponent between
     successive sizes (t ~ M^k), plus a projection of the full grid.
     """
+    glue_analysis_dataframe = _get_glue_analysis_dataframe()
     for band in args.bands:
         for roi in args.rois:
             for condition in args.conditions:
