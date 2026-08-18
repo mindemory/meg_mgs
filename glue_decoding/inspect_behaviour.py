@@ -124,11 +124,30 @@ def raw_field_shapes(subjID, bids_root, behav_dir='eyetracking', raw=False):
 # and the median shift separately rather than at overall error alone.
 
 def _is_hdf5(fp):
-    """True if the file really is HDF5 (MATLAB -v7.3), by its magic bytes."""
+    """
+    True if the file really is HDF5 (MATLAB -v7.3).
+
+    Uses h5py.is_hdf5 rather than reading the magic bytes at offset 0: MATLAB
+    -v7.3 writes a 512-byte text USERBLOCK ("MATLAB 7.3 MAT-file ...") ahead of
+    the HDF5 superblock, so the signature is NOT at the start of the file. A
+    naive offset-0 check therefore misclassifies every real MATLAB v7.3 file as
+    non-HDF5 (h5py-written test files have no userblock and hide the bug).
+    h5py.is_hdf5 walks the legal userblock offsets and gets this right.
+    """
     try:
-        with open(fp, 'rb') as fh:
-            return fh.read(8) == b'\x89HDF\r\n\x1a\n'
-    except OSError:
+        import h5py
+        return bool(h5py.is_hdf5(fp))
+    except Exception:
+        # Fall back to checking the signature at the legal userblock offsets
+        # (0 and powers of two from 512 up), which is what is_hdf5 does.
+        try:
+            with open(fp, 'rb') as fh:
+                for off in (0, 512, 1024, 2048, 4096, 8192):
+                    fh.seek(off)
+                    if fh.read(8) == b'\x89HDF\r\n\x1a\n':
+                        return True
+        except OSError:
+            pass
         return False
 
 
