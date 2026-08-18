@@ -134,7 +134,16 @@ def read_isacc_err(subjID, bids_root, behav_dir, raw=False):
         return None, f'unreadable ({e})'
     try:
         key = 'ii_sess' if raw else 'ii_sess_forSource'
-        grp = f[key] if key in f else f[list(f.keys())[0]]
+        if key in f:
+            grp = f[key]
+        else:
+            # MATLAB v7.3 files carry a '#refs#' group at the top level, so
+            # "just take the first key" can land on it rather than on the
+            # struct. Skip the MATLAB bookkeeping groups before falling back.
+            cands = [k for k in f.keys() if not k.startswith('#')]
+            if not cands:
+                return None, f"no '{key}' (top-level keys: {sorted(f.keys())})"
+            grp = f[cands[0]]
         if 'i_sacc_err' not in grp:
             return None, f'no i_sacc_err (fields: {sorted(grp.keys())[:6]}...)'
         return np.asarray(np.array(grp['i_sacc_err']).flatten(), float), None
