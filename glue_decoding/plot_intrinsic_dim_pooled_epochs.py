@@ -137,12 +137,11 @@ def plot_metric_figure(df, metric, condition, bands, rois, voxRes, outdir):
             ax = axes[r][c]
             style_ax(ax)
             shades = epoch_shades(roi)
-            means, sems, ns = [], [], []
+            means, sems = [], []
             for ep in EPOCH_ORDER:
-                m, se, n = aggregate(df, band, roi, condition, ep, spec['col'])
+                m, se, _ = aggregate(df, band, roi, condition, ep, spec['col'])
                 means.append(m if m is not None else np.nan)
                 sems.append(se if se is not None else 0.0)
-                ns.append(n)
 
             x = np.arange(len(EPOCH_ORDER))
             ax.bar(x, means, yerr=sems, color=shades, edgecolor=_FG,
@@ -165,10 +164,6 @@ def plot_metric_figure(df, metric, condition, bands, rois, voxRes, outdir):
                 ax.text(-0.22, 0.5, BAND_LABELS.get(band, band), transform=ax.transAxes,
                         fontsize=FS_ROW_LABEL, color=_FG, ha='right', va='center',
                         rotation=90, fontweight='bold')
-
-            n_str = '/'.join(str(n) for n in ns)
-            ax.text(0.98, 0.98, f'n_loc={n_str}', transform=ax.transAxes,
-                    fontsize=8, color='#888888', ha='right', va='top')
 
     fig.suptitle(f'{spec["label"]}  |  {COND_LABELS.get(condition, condition)}',
                  color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.01)
