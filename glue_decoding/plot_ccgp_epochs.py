@@ -211,7 +211,12 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir):
         # Noiseless geometric bound, NOT an achievable target: finite trials and
         # noise let near-separable dichotomies clear threshold, so real data sits
         # above this even for a perfect ring.
-        ax.set_ylim(0, 1)
+        # Autoscale: real values sit near 0.05-0.15, so a hardcoded 0-1 axis
+        # renders every band as a flat line at the bottom.
+        ax.axhline(GEOMETRIC_RING_SD, color='#4EA1F3', lw=1.4, ls='--', zorder=2)
+        ax.axhline(0.01, color='#888888', lw=1.0, ls=':', zorder=2)
+        lo, hi = ax.get_ylim()
+        ax.set_ylim(min(0.0, lo), max(hi, GEOMETRIC_RING_SD * 1.35))
         ax.set_xticks(x)
         ax.set_xticklabels([EPOCH_LABELS[e] for e in EPOCH_ORDER],
                             rotation=30, ha='right', fontsize=FS_TICK)
@@ -229,9 +234,10 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir):
     fig.suptitle(f'Shattering dimensionality  |  {COND_LABELS.get(condition, condition)}',
                  color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.02)
     fig.text(0.5, 0.945,
-             'mean +/- SEM across subjects, fraction of the 35 dichotomies '
-             'significant against their own shuffled null  |  a planar ring '
-             'supports few, a high-dimensional code most',
+             f'mean +/- SEM across subjects, fraction of the 35 dichotomies '
+             f'significant vs their own shuffled null  |  dashed = planar-ring '
+             f'bound ({GEOMETRIC_RING_SD:.3f} = 4/35)  |  dotted = nominal '
+             f'per-dichotomy threshold (0.01)',
              ha='center', va='top', color='#aaaaaa', fontsize=10.5)
     fig.tight_layout(rect=[0, 0, 1, 0.90])
     os.makedirs(figdir, exist_ok=True)
