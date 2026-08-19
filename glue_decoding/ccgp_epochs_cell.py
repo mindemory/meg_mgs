@@ -193,8 +193,22 @@ def run_epoch(Xe, y, max_pca_dim, n_shuffles, seed, log=print):
 
     out = dict(pca_dim=k, explained_var=explained, n_trials_used=int(keep.sum()))
 
+    # STANDARD (non-cross-condition) decoding of the same dichotomies. This is
+    # CCGP's CEILING: a dichotomy that is not decodable at all cannot have high
+    # CCGP, so raw CCGP alone cannot distinguish "not abstract" from "not
+    # decodable". The informative quantity is the ratio of the two above-chance
+    # parts -- how much of the available information GENERALIZES across the
+    # other variables. Verified on synthetic geometries at matched
+    # decodability: a 2-D ring gives ratio ~0.96-1.02, a high-dimensional code
+    # ~0.03-0.13, while their raw CCGP values can be similar.
+    decres, dec_null = dec.decode(training_fraction=0.75, cross_validations=10,
+                                   nshuffles=n_shuffles, plot=False)
     ccgp, ccgp_null = dec.CCGP(resamplings=5, nshuffles=n_shuffles, plot=False)
     for d in DICHOTOMIES:
+        dv = float(np.mean(decres[d]))
+        dn = np.asarray(dec_null.get(d, []), dtype=float).ravel()
+        out[f'decode_{d}'] = dv
+        out[f'decode_{d}_null_mean'] = float(dn.mean()) if dn.size else np.nan
         nl = np.asarray(ccgp_null.get(d, []), dtype=float).ravel()
         out[f'ccgp_{d}'] = float(np.mean(ccgp[d]))
         out[f'ccgp_{d}_null_mean'] = float(nl.mean()) if nl.size else np.nan
@@ -204,12 +218,29 @@ def run_epoch(Xe, y, max_pca_dim, n_shuffles, seed, log=print):
         # against this null rather than against a nominal 0.5.
         out[f'ccgp_{d}_p'] = (float((np.sum(nl >= out[f'ccgp_{d}']) + 1) / (nl.size + 1))
                               if nl.size else np.nan)
+        # Abstraction index: fraction of the DECODABLE signal that generalizes.
+        # Undefined when the dichotomy is not decodable above its own null --
+        # left NaN rather than reported as a huge or negative ratio, which is
+        # what dividing two near-zero numbers produces.
+        num = out[f'ccgp_{d}'] - out[f'ccgp_{d}_null_mean']
+        den = dv - (float(dn.mean()) if dn.size else np.nan)
+        # 0.05 above chance, not 0.02: at 0.02 the denominator is still small
+        # enough that the ratio is noise-dominated -- a high-dimensional code at
+        # low SNR returned 1.46, indistinguishable from a ring, purely from
+        # dividing two near-zero numbers. At 0.05 the same case correctly
+        # reports undefined.
+        out[f'abstraction_{d}'] = float(num / den) if (den == den and den > 0.05) else np.nan
 
     sd_scalar, sd_acc, sd_null = dec.shattering_dimensionality(
         cross_validations=10, nshuffles=max(2, n_shuffles // 3), visualize=False)
     acc = np.array(list(sd_acc.values()), dtype=float)
-    out['sd_frac_significant'] = float(sd_scalar)
+    # sd_mean_acc is the CONVENTIONAL shattering dimensionality: mean decoding
+    # accuracy over all 35 balanced dichotomies, on the familiar 0.5-1.0 scale.
+    # sd_frac_significant (decodanda's own scalar) is kept alongside but is a
+    # fraction-of-dichotomies, which reads as "only a couple are decodable" and
+    # is not what the term usually denotes.
     out['sd_mean_acc'] = float(acc.mean())
+    out['sd_frac_significant'] = float(sd_scalar)
     out['sd_frac_above_0.7'] = float((acc > 0.7).mean())
     out['sd_n_dichotomies'] = int(acc.size)
     out['sd_acc'] = acc

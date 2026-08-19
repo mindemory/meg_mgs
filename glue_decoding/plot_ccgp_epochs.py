@@ -64,11 +64,11 @@ COND_LABELS = {'ampOnly': 'Amplitude', 'ampPhase': 'Amplitude + Phase'}
 EPOCH_LABELS = {'fixation': 'Fixation', 'stimulus': 'Stimulus',
                  'early_delay': 'Early delay', 'late_delay': 'Late delay'}
 
-# Null-based significant fraction, NOT frac>0.7: the 0.7 cut was calibrated on
-# high-SNR synthetic data and saturates at 0.00 for real MEG, where a genuine
-# effect only lifts individual dichotomies to ~0.55. sd_frac_significant scores
-# each dichotomy against its own shuffled null, so it adapts to the noise level.
-SD_KEY = 'sd_frac_significant'
+# CONVENTIONAL shattering dimensionality: mean decoding accuracy over all 35
+# balanced dichotomies, on the familiar 0.5-1.0 scale. Reporting a
+# fraction-of-dichotomies instead invites the reading "only two conditions are
+# decodable", which is not what the term denotes.
+SD_KEY = 'sd_mean_acc'
 
 
 def load_all(subjects, bids_root, voxRes, bands, conditions, rois, outdir):
@@ -89,7 +89,7 @@ def load_all(subjects, bids_root, voxRes, bands, conditions, rois, outdir):
                                      epoch=ep, pca_dim=int(z[f'{ep}__pca_dim']),
                                      n_trials_used=int(z[f'{ep}__n_trials_used']),
                                      sd=float(z[f'{ep}__{SD_KEY}']),
-                                     sd_mean_acc=float(z[f'{ep}__sd_mean_acc']),
+                                     sd_frac_sig=float(z[f'{ep}__sd_frac_significant']),
                                      sd_frac_above_07=float(z[f'{ep}__sd_frac_above_0.7']))
                             for d in DICHOTOMIES:
                                 cc = float(z[f'{ep}__ccgp_{d}'])
@@ -103,6 +103,17 @@ def load_all(subjects, bids_root, voxRes, bands, conditions, rois, outdir):
                                 # differ per subject/cell, so averaging raw CCGP
                                 # mixes signal with per-subject chance level.
                                 r[f'delta_{d}'] = cc - nu
+                                # CCGP's ceiling: standard (non-cross-condition)
+                                # decoding of the same dichotomy. CCGP cannot
+                                # exceed it, so raw CCGP alone cannot separate
+                                # "not abstract" from "not decodable".
+                                if f'{ep}__decode_{d}' in z.files:
+                                    dv = float(z[f'{ep}__decode_{d}'])
+                                    dn = float(z[f'{ep}__decode_{d}_null_mean'])
+                                    r[f'decode_{d}'] = dv
+                                    r[f'decode_delta_{d}'] = dv - dn
+                                    r[f'abstraction_{d}'] = float(
+                                        z[f'{ep}__abstraction_{d}'])
                             rows.append(r)
     return pd.DataFrame(rows)
 
@@ -156,6 +167,17 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir):
                 ax.errorbar(x, m, yerr=e, color=DICH_COLOURS[d], lw=2.0, marker='o',
                             ms=6, capsize=4, zorder=4,
                             label=DICH_LABELS[d] if (r == 0 and c == 0) else None)
+                # Dashed = the same dichotomy's standard decoding above chance,
+                # i.e. CCGP's ceiling. The GAP between solid and dashed is the
+                # part of the decodable signal that fails to generalize; solid
+                # meeting dashed means the code is abstract.
+                if f'decode_delta_{d}' in sub.columns:
+                    md = [mean_sem(sub[sub.epoch == ep], f'decode_delta_{d}')[0]
+                          for ep in EPOCH_ORDER]
+                    ax.plot(x, md, color=DICH_COLOURS[d], lw=1.3, ls='--',
+                            alpha=0.75, zorder=3,
+                            label=('Decoding ceiling' if (r == 0 and c == 0
+                                   and d == DICHOTOMIES[0]) else None))
             # 0 = that subject's own shuffled null. Everything is expressed
             # relative to it, so this line is chance.
             ax.axhline(0.0, color='#888888', lw=1.2, ls=':', zorder=2)
@@ -212,24 +234,22 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir):
         # above this even for a perfect ring.
         # Autoscale: real values sit near 0.05-0.15, so a hardcoded 0-1 axis
         # renders every band as a flat line at the bottom.
-        ax.axhline(GEOMETRIC_RING_SD, color='#4EA1F3', lw=1.4, ls='--', zorder=2)
-        ax.axhline(0.01, color='#888888', lw=1.0, ls=':', zorder=2)
-        lo, hi = ax.get_ylim()
-        ax.set_ylim(min(0.0, lo), max(hi, GEOMETRIC_RING_SD * 1.35))
+        # 0.5 is chance for a mean-accuracy SD; the planar-ring bound no longer
+        # applies on this scale (it was a fraction-of-dichotomies quantity).
+        ax.axhline(0.5, color='#888888', lw=1.0, ls=':', zorder=2)
         ax.set_xticks(x)
         ax.set_xticklabels([EPOCH_LABELS[e] for e in EPOCH_ORDER],
                             rotation=30, ha='right', fontsize=FS_TICK)
         ax.set_title(BAND_LABELS.get(band, band), fontsize=FS_PANEL_TTL,
                      color=_FG, fontweight='bold', pad=8)
         if c == 0:
-            ax.set_ylabel('Shattering dimensionality',
+            ax.set_ylabel('Shattering dimensionality\n(mean decoding acc.)',
                           fontsize=FS_AXIS_LABEL, fontweight='bold')
     h, l = axes[0][0].get_legend_handles_labels()
     # The two reference lines go in the LEGEND rather than a caption, so the
     # figure explains itself without a block of grey prose above it.
-    h += [plt.Line2D([0], [0], color='#4EA1F3', lw=1.4, ls='--'),
-          plt.Line2D([0], [0], color='#888888', lw=1.0, ls=':')]
-    l += [f'Planar ring (4/35 = {GEOMETRIC_RING_SD:.2f})', 'Chance (p < 0.01)']
+    h += [plt.Line2D([0], [0], color='#888888', lw=1.0, ls=':')]
+    l += ['Chance (0.5)']
     leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.99, 0.5),
                      fontsize=11, framealpha=0.25, edgecolor='#444444',
                      labelcolor=_FG)
