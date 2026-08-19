@@ -126,12 +126,25 @@ def figure_metric(df, metric, label, condition, bands, rois, voxRes, figdir,
                             capsize=4, zorder=4 if not is_shuf else 3,
                             ls='-' if not is_shuf else '--',
                             label=lab if (r == 0 and c == 0) else None)
-            # Pooling-validity check, per cell rather than buried in the CSV.
+            # Pooling-validity check AND points-per-manifold, per cell rather
+            # than buried in the CSV. The point count matters for reading
+            # CAPACITY ACROSS ROIs: the separability ceiling scales with the
+            # feature count, so bigger ROIs get more points per manifold, and
+            # more points make manifolds harder to separate -- i.e. capacity
+            # falls. A cross-ROI capacity difference at unequal point counts is
+            # therefore partly an artefact of ROI size, not of the code. Shown
+            # so that comparison is never made by accident.
             bs = sub['between_subj_share'].dropna()
+            note = []
             if len(bs):
-                ax.text(0.97, 0.04, f'between-subj {bs.mean():.2f}',
-                        transform=ax.transAxes, ha='right', va='bottom',
-                        fontsize=8.5, color='#888888')
+                note.append(f'btwn-subj {bs.mean():.2f}')
+            if 'points_per_manifold' in sub.columns and len(sub):
+                pm = sub['points_per_manifold'].dropna()
+                if len(pm):
+                    note.append(f'{int(pm.median())} pts/man')
+            if note:
+                ax.text(0.97, 0.04, '  '.join(note), transform=ax.transAxes,
+                        ha='right', va='bottom', fontsize=8.5, color='#888888')
             ax.set_xticks(x)
             ax.set_xticklabels([EPOCH_LABELS.get(e, e) for e in EPOCH_ORDER],
                                 rotation=30, ha='right', fontsize=FS_TICK)
