@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -63,7 +64,11 @@ COND_LABELS = {'ampOnly': 'Amplitude', 'ampPhase': 'Amplitude + Phase'}
 EPOCH_LABELS = {'fixation': 'Fixation', 'stimulus': 'Stimulus',
                  'early_delay': 'Early delay', 'late_delay': 'Late delay'}
 
-SD_KEY = 'sd_frac_above_0.7'
+# Null-based significant fraction, NOT frac>0.7: the 0.7 cut was calibrated on
+# high-SNR synthetic data and saturates at 0.00 for real MEG, where a genuine
+# effect only lifts individual dichotomies to ~0.55. sd_frac_significant scores
+# each dichotomy against its own shuffled null, so it adapts to the noise level.
+SD_KEY = 'sd_frac_significant'
 
 
 def load_all(subjects, bids_root, voxRes, bands, conditions, rois, outdir):
@@ -85,11 +90,19 @@ def load_all(subjects, bids_root, voxRes, bands, conditions, rois, outdir):
                                      n_trials_used=int(z[f'{ep}__n_trials_used']),
                                      sd=float(z[f'{ep}__{SD_KEY}']),
                                      sd_mean_acc=float(z[f'{ep}__sd_mean_acc']),
-                                     sd_frac_sig=float(z[f'{ep}__sd_frac_significant']))
+                                     sd_frac_above_07=float(z[f'{ep}__sd_frac_above_0.7']))
                             for d in DICHOTOMIES:
-                                r[f'ccgp_{d}'] = float(z[f'{ep}__ccgp_{d}'])
-                                r[f'null_{d}'] = float(z[f'{ep}__ccgp_{d}_null_mean'])
+                                cc = float(z[f'{ep}__ccgp_{d}'])
+                                nu = float(z[f'{ep}__ccgp_{d}_null_mean'])
+                                r[f'ccgp_{d}'] = cc
+                                r[f'null_{d}'] = nu
                                 r[f'p_{d}'] = float(z[f'{ep}__ccgp_{d}_p'])
+                                # CCGP MINUS THAT SUBJECT'S OWN NULL is the
+                                # quantity to average. Chance is not 0.5 and
+                                # varies with the condition correlations, which
+                                # differ per subject/cell, so averaging raw CCGP
+                                # mixes signal with per-subject chance level.
+                                r[f'delta_{d}'] = cc - nu
                             rows.append(r)
     return pd.DataFrame(rows)
 
@@ -130,21 +143,19 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir):
         for c, roi in enumerate(rois):
             ax = axes[r][c]; style_ax(ax)
             sub = cdf[(cdf.band == band) & (cdf.roi == roi)]
+            nn = []
             for d in DICHOTOMIES:
-                m, e, nl, nn = [], [], [], []
+                m, e = [], []
                 for ep in EPOCH_ORDER:
-                    s = sub[sub.epoch == ep]
-                    mm, ee, n = mean_sem(s, f'ccgp_{d}')
-                    nm, _, _ = mean_sem(s, f'null_{d}')
-                    m.append(mm); e.append(ee); nl.append(nm); nn.append(n)
-                m, e, nl = np.array(m), np.array(e), np.array(nl)
-                col = DICH_COLOURS[d]
-                # Shuffled null as a band: CCGP chance is not 0.5, so this is
-                # the reference every point must be read against.
-                ax.plot(x, nl, color=col, lw=1.0, ls=':', alpha=0.8, zorder=2)
-                ax.errorbar(x, m, yerr=e, color=col, lw=2.0, marker='o', ms=6,
-                            capsize=4, zorder=4,
+                    ss = sub[sub.epoch == ep]
+                    mm, ee, n = mean_sem(ss, f'delta_{d}')
+                    m.append(mm); e.append(ee); nn.append(n)
+                ax.errorbar(x, m, yerr=e, color=DICH_COLOURS[d], lw=2.0, marker='o',
+                            ms=6, capsize=4, zorder=4,
                             label=DICH_LABELS[d] if (r == 0 and c == 0) else None)
+            # 0 = that subject's own shuffled null. Everything is expressed
+            # relative to it, so this line is chance.
+            ax.axhline(0.0, color='#888888', lw=1.2, ls=':', zorder=2)
             ax.set_xticks(x)
             ax.set_xticklabels([EPOCH_LABELS[e] for e in EPOCH_ORDER],
                                 rotation=30, ha='right', fontsize=FS_TICK)
@@ -153,7 +164,7 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir):
                              fontsize=FS_PANEL_TTL,
                              color=ROI_COLOURS.get(roi, _FG), fontweight='bold', pad=8)
             if c == 0:
-                ax.set_ylabel('CCGP', fontsize=FS_AXIS_LABEL, fontweight='bold')
+                ax.set_ylabel('CCGP $-$ null', fontsize=FS_AXIS_LABEL, fontweight='bold')
                 ax.text(-0.30, 0.5, BAND_LABELS.get(band, band), transform=ax.transAxes,
                         fontsize=FS_ROW_LABEL, color=_FG, ha='right', va='center',
                         rotation=90, fontweight='bold')
@@ -166,9 +177,9 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir):
     fig.suptitle(f'CCGP  |  {COND_LABELS.get(condition, condition)}',
                  color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.005)
     fig.text(0.5, 0.972,
-             'mean +/- SEM across subjects  |  dotted = each dichotomy\'s own '
-             'shuffled null (chance is NOT 0.5)  |  ring predicts L/R and T/B '
-             'above null WITH the control at null',
+             'mean +/- SEM across subjects of (CCGP - that subject\'s own shuffled '
+             'null)  |  0 = chance  |  ring predicts L/R and T/B above 0 WITH the '
+             'control at 0',
              ha='center', va='top', color='#aaaaaa', fontsize=10.5)
     fig.tight_layout(rect=[0.02, 0, 1, 0.955])
     os.makedirs(figdir, exist_ok=True)
@@ -200,7 +211,6 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir):
         # Noiseless geometric bound, NOT an achievable target: finite trials and
         # noise let near-separable dichotomies clear threshold, so real data sits
         # above this even for a perfect ring.
-        ax.axhline(GEOMETRIC_RING_SD, color='#4EA1F3', lw=1.2, ls='--', zorder=2)
         ax.set_ylim(0, 1)
         ax.set_xticks(x)
         ax.set_xticklabels([EPOCH_LABELS[e] for e in EPOCH_ORDER],
@@ -208,7 +218,7 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir):
         ax.set_title(BAND_LABELS.get(band, band), fontsize=FS_PANEL_TTL,
                      color=_FG, fontweight='bold', pad=8)
         if c == 0:
-            ax.set_ylabel('Shattering dimensionality\n(frac. dichotomies > 0.7)',
+            ax.set_ylabel('Shattering dimensionality\n(frac. dichotomies sig. vs null)',
                           fontsize=FS_AXIS_LABEL, fontweight='bold')
     h, l = axes[0][0].get_legend_handles_labels()
     if h:
@@ -219,8 +229,9 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir):
     fig.suptitle(f'Shattering dimensionality  |  {COND_LABELS.get(condition, condition)}',
                  color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.02)
     fig.text(0.5, 0.945,
-             f'mean +/- SEM across subjects  |  dashed = noiseless ring bound '
-             f'({GEOMETRIC_RING_SD:.3f}); real data sits above it even for a true ring',
+             'mean +/- SEM across subjects, fraction of the 35 dichotomies '
+             'significant against their own shuffled null  |  a planar ring '
+             'supports few, a high-dimensional code most',
              ha='center', va='top', color='#aaaaaa', fontsize=10.5)
     fig.tight_layout(rect=[0, 0, 1, 0.90])
     os.makedirs(figdir, exist_ok=True)
@@ -234,7 +245,8 @@ def print_summary(df):
         print('No data.'); return
     print('\n' + '=' * 78)
     print('CCGP / SD -- mean +/- SEM ACROSS SUBJECTS')
-    print("  p = fraction of that subject's own shuffles >= observed, averaged;")
+    print('  values are CCGP MINUS that subject\'s own null (0 = chance), with a')
+    print('  one-sample t-test across subjects; p is that t-test, not the shuffle p.')
     print('  the ring signature is L/R and T/B above null WITH the control at null.')
     print('=' * 78)
     hdr = (f"{'band':6s} {'cond':9s} {'roi':9s} {'epoch':12s} {'n':>3s} "
@@ -247,8 +259,11 @@ def print_summary(df):
                 continue
             cells = []
             for d in DICHOTOMIES:
-                m, e, n = mean_sem(s, f'ccgp_{d}')
-                cells.append(f'{m:.2f}+/-{e:.2f}')
+                v = s[f'delta_{d}'].values
+                v = v[np.isfinite(v)]
+                m, e, n = mean_sem(s, f'delta_{d}')
+                pv = stats.ttest_1samp(v, 0).pvalue if v.size > 1 else np.nan
+                cells.append(f'{m:+.3f}p{pv:.3f}')
             sm, se, n = mean_sem(s, 'sd')
             print(f'{band:6s} {cond:9s} {roi:9s} {ep:12s} {n:3d} '
                   + ' '.join(f'{c:>13s}' for c in cells) + f' {sm:.2f}+/-{se:.2f}')

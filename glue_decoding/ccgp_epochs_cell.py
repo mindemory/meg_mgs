@@ -283,10 +283,17 @@ def _cell_worker(cell, subjID, voxRes, bids_root, max_pca_dim, n_shuffles, seed,
                 save[f'{ep}__{key}'] = val
         np.savez_compressed(out_path, **save)
 
+        # Report CCGP MINUS ITS OWN NULL, not raw CCGP: chance here is not 0.5
+        # and drifts with the condition correlations, so a raw number cannot be
+        # judged by eye. SD is reported as the null-based significant fraction,
+        # which adapts to the noise level; sd_frac_above_0.7 saturates at 0.00
+        # at real MEG SNR and says nothing.
         msg = '  '.join(
-            f'{ep}: ' + ' '.join(f'{d[:4]}={per_epoch[ep][f"ccgp_{d}"]:.2f}'
-                                  for d in DICHOTOMIES)
-            + f' SD={per_epoch[ep]["sd_frac_above_0.7"]:.2f}'
+            f'{ep}: ' + ' '.join(
+                f'{d[:4]}={per_epoch[ep][f"ccgp_{d}"] - per_epoch[ep][f"ccgp_{d}_null_mean"]:+.3f}'
+                for d in DICHOTOMIES)
+            + f' SDsig={per_epoch[ep]["sd_frac_significant"]:.2f}'
+            + f' SDacc={per_epoch[ep]["sd_mean_acc"]:.3f}'
             for ep in EPOCH_ORDER if ep in per_epoch)
         print(f'[{tag}] {msg} | {time.time() - t0:.1f}s', flush=True)
         del X
