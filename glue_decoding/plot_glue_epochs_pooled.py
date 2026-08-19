@@ -180,6 +180,72 @@ def figure_metric(df, metric, label, condition, bands, rois, voxRes, figdir,
     print(f'Saved: {fp}')
 
 
+def figure_delta(df, metric, label, condition, bands, rois, voxRes, figdir,
+                 sharey=False):
+    """
+    REAL minus SHUFFLED per epoch -- the quantity that actually bears on "did
+    the code change over the delay".
+
+    Shuffling permutes location labels WITHIN an epoch, so it keeps that
+    epoch's overall variance and SNR and destroys only the location structure.
+    Any drift the shuffled fits show across epochs is therefore drift that has
+    nothing to do with location coding (changing signal amplitude, changing
+    trial counts), and subtracting it removes exactly that. A real effect
+    survives; an epoch-wise amplitude artefact cancels.
+
+    CAVEAT ON THE ERROR BAR, which is the whole reason this figure exists: it
+    is still propagated from the BOOTSTRAP spread, and bootstrap draws are
+    subsamples of the SAME pooled trials from the SAME 21 subjects. It measures
+    how stable the fit is, NOT how much the effect would vary in a new sample
+    of subjects, and with thousands of pooled trials it is tiny by
+    construction. Treat it as numerical precision, not as inferential
+    uncertainty -- a difference many "SEM" wide is not thereby significant.
+    """
+    cdf = df[df.condition == condition]
+    bands = [b for b in bands if b in set(cdf.band.unique())]
+    rois = [r for r in rois if r in set(cdf.roi.unique())]
+    if not bands or not rois:
+        return
+    n_r, n_c = len(bands), len(rois)
+    fig, axes = plt.subplots(n_r, n_c, figsize=(4.4 * n_c + 2.0, 3.2 * n_r + 1.4),
+                              facecolor=_BG, squeeze=False, sharey=sharey)
+    x = np.arange(len(EPOCH_ORDER))
+    for r, band in enumerate(bands):
+        for c, roi in enumerate(rois):
+            ax = axes[r][c]; style_ax(ax)
+            sub = cdf[(cdf.band == band) & (cdf.roi == roi)]
+            m, e = [], []
+            for ep in EPOCH_ORDER:
+                s2 = sub[sub.epoch == ep]
+                rm, re_, _ = mean_sem(s2[s2.shuffle == False][metric].values)
+                sm, se_, _ = mean_sem(s2[s2.shuffle == True][metric].values)
+                m.append(rm - sm)
+                e.append(float(np.hypot(re_, se_)))
+            ax.errorbar(x, m, yerr=e, color=REAL_C, lw=2.0, marker='o', ms=6,
+                        capsize=4, zorder=4)
+            ax.axhline(0.0, color='#888888', lw=1.2, ls=':', zorder=2)
+            ax.set_xticks(x)
+            ax.set_xticklabels([EPOCH_LABELS.get(ep, ep) for ep in EPOCH_ORDER],
+                                rotation=30, ha='right', fontsize=FS_TICK)
+            if r == 0:
+                ax.set_title(roi.capitalize(), fontsize=FS_PANEL_TTL,
+                             color=ROI_COLOURS.get(roi, _FG), fontweight='bold', pad=8)
+            if c == 0:
+                ax.set_ylabel(f'{label}\nreal $-$ shuffled', fontsize=FS_AXIS_LABEL,
+                              fontweight='bold')
+                ax.text(-0.30, 0.5, BAND_LABELS.get(band, band),
+                        transform=ax.transAxes, fontsize=FS_ROW_LABEL, color=_FG,
+                        ha='right', va='center', rotation=90, fontweight='bold')
+    fig.suptitle(f'{label}: real $-$ shuffled  |  {COND_LABELS.get(condition, condition)}',
+                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.005)
+    fig.tight_layout(rect=[0.02, 0, 1, 0.98])
+    os.makedirs(figdir, exist_ok=True)
+    fp = os.path.join(figdir, f'glue_epochs_pooled_{metric}_delta_{condition}_{voxRes}.png')
+    fig.savefig(fp, dpi=150, bbox_inches='tight', facecolor=_BG)
+    plt.close(fig)
+    print(f'Saved: {fp}')
+
+
 def print_summary(df, metrics, has_shuffle):
     print('\n' + '=' * 92)
     print('POOLED GLUE CAPACITY -- mean +/- SEM across BOOTSTRAP DRAWS (not subjects)')
@@ -270,6 +336,9 @@ def main():
             figure_metric(df, m, CANDIDATE_METRICS[m], cond, args.bands,
                           args.rois, args.voxRes, figdir, has_shuffle,
                           sharey=args.sharey)
+            if has_shuffle:
+                figure_delta(df, m, CANDIDATE_METRICS[m], cond, args.bands,
+                             args.rois, args.voxRes, figdir, sharey=args.sharey)
     print_summary(df, metrics, has_shuffle)
 
 
