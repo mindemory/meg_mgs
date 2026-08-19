@@ -101,10 +101,16 @@ left_frontal_points = ismember(sourcemodel_atlas_label, left_frontal_idx);
 right_frontal_points = ismember(sourcemodel_atlas_label, right_frontal_idx);
 
 
-% Create a color map for visualization on surface
-% Assign colors with larger gaps to prevent interpolation blending
-% Use: 0 = gray (other), 10 = orange (visual), 20 = purple (frontal)
-% Create a color map for visualization on surface
+% ── Vertex -> ROI colour code ─────────────────────────────────────────────
+% Categorical codes, spaced out so ft_sourceplot's colour interpolation
+% cannot blend two ROIs into a third ROI's colour:
+%   0  = gyrus  (light gray)      10 = visual
+%   1  = sulcus (dark gray)       20 = parietal
+%                                 30 = frontal
+% Colours below match the ROI palette used throughout glue_decoding's
+% figures (plot_decoding_ts.py, plot_timeseries.py, intrinsic_dim_epochs.py,
+% aggregate_glue_capacity.py, ...), so this anatomy panel reads as the legend
+% for every results figure in the same set. See ROI_COLOUR_HEX below.
 roi_color_map = zeros(size(sourcemodel_atlas_label)); % Initialize with zeros (Gyri/light gray)
 
 % Use curvature to define Sulci (dark gray) which will be value 1
@@ -113,27 +119,23 @@ if isfield(mesh_inflated, 'curv')
     roi_color_map(is_sulcus) = 1; % Sulci = 1
 end
 
-roi_color_map(visual_points & ~frontal_points) = 10; % Visual regions only (not frontal)
-roi_color_map(frontal_points) = 20; % Frontal regions (including any that overlap with visual)
-% roi_color_map(parietal_points) = 30; % Parietal regions = 30 (if needed)
+% Precedence: visual < parietal < frontal, i.e. a vertex claimed by more than
+% one group (possible because the vertex->voxel mapping is nearest-neighbour,
+% not an exact parcellation) is drawn as the LAST group listed here. Overlap
+% counts are printed below so a large number is visible rather than silently
+% painted over.
+roi_color_map(visual_points)   = 10;
+roi_color_map(parietal_points) = 20;
+roi_color_map(frontal_points)  = 30;
 
-% Debug: Check for any overlap and verify assignments
-fprintf('\nColor assignment summary:\n');
-fprintf('  Visual only: %d vertices\n', sum(visual_points & ~frontal_points));
-fprintf('  Frontal (may include visual): %d vertices\n', sum(frontal_points));
-fprintf('  Visual AND Frontal overlap: %d vertices\n', sum(visual_points & frontal_points));
-fprintf('  Other: %d vertices\n', sum(roi_color_map == 0));
-fprintf('  ROI color map values: min=%.1f, max=%.1f\n', min(roi_color_map), max(roi_color_map));
-fprintf('  Vertices with value 10 (visual): %d\n', sum(roi_color_map == 10));
-fprintf('  Vertices with value 20 (frontal): %d\n', sum(roi_color_map == 20));
-
-% Verify that frontal vertices are correctly assigned
-frontal_vertices_check = roi_color_map(frontal_points);
-fprintf('  Frontal vertices color values: %d have value 10 (wrong!), %d have value 20 (correct)\n', ...
-    sum(frontal_vertices_check == 10), sum(frontal_vertices_check == 20));
-if sum(frontal_vertices_check == 10) > 0
-    warning('Some frontal vertices are still assigned to visual! This should not happen.');
-end
+fprintf('\nColor assignment summary (precedence visual < parietal < frontal):\n');
+fprintf('  Visual   : %6d vertices labelled, %6d drawn\n', sum(visual_points),   sum(roi_color_map == 10));
+fprintf('  Parietal : %6d vertices labelled, %6d drawn\n', sum(parietal_points), sum(roi_color_map == 20));
+fprintf('  Frontal  : %6d vertices labelled, %6d drawn\n', sum(frontal_points),  sum(roi_color_map == 30));
+fprintf('  Overlaps : visual&parietal %d, visual&frontal %d, parietal&frontal %d\n', ...
+    sum(visual_points & parietal_points), sum(visual_points & frontal_points), ...
+    sum(parietal_points & frontal_points));
+fprintf('  Unlabelled cortex: %d vertices\n', sum(roi_color_map == 0 | roi_color_map == 1));
 
 % Separate hemispheres using template mesh coordinates
 left_hemisphere_idx = template_mesh.pos(:,1) < 0;
@@ -143,20 +145,27 @@ right_hemisphere_idx = template_mesh.pos(:,1) > 0;
 left_vertex_map = find(left_hemisphere_idx);
 right_vertex_map = find(right_hemisphere_idx);
 
-% Define colors for each ROI group
-group_color = [241 90 41;  % orange  - visual
-               150 90 164];% purple - frontal
-group_color = group_color ./ 255;
+% ROI palette -- these hex values are the single source of truth shared with
+% glue_decoding's Python figures (ROI_COLOURS in plot_decoding_ts.py etc.):
+%   visual   #FFC629  mango / amber
+%   parietal #A78BFA  soft violet
+%   frontal  #34D399  emerald mint
+% Keep the two in sync: changing a colour here without changing it there
+% silently breaks the cross-figure correspondence this panel exists to provide.
+ROI_NAMES      = {'Visual', 'Parietal', 'Frontal'};
+ROI_COLOUR_HEX = {'#FFC629', '#A78BFA', '#34D399'};
+% Hex -> Nx3 [0,1] RGB, so the hex strings above stay the only place a colour
+% is written down (no hand-converted RGB triplet to drift out of sync).
+group_color = cell2mat(cellfun(@(h) sscanf(h(2:end), '%2x%2x%2x')' / 255, ...
+                                ROI_COLOUR_HEX', 'UniformOutput', false));
 
-% Create custom colormap with 21 explicit steps (mapping 0 to 20 exactly)
-% Value 0: Gyri (Light Gray)
-% Value 1: Sulci (Dark Gray)
-% Value 10: Visual (Orange)
-% Value 20: Frontal (Purple)
-custom_colormap = repmat([0.7 0.7 0.7], 21, 1); % Default all to light gray
-custom_colormap(2, :) = [0.4 0.4 0.4];          % Index 2 corresponds to Value 1 (Sulci)
-custom_colormap(11, :) = group_color(1,:);      % Index 11 corresponds to Value 10 (Visual)
-custom_colormap(21, :) = group_color(2,:);      % Index 21 corresponds to Value 20 (Frontal)
+% Custom colormap with 31 explicit steps (mapping values 0..30 exactly).
+% MATLAB indices are value+1, hence the 11/21/31 below.
+custom_colormap = repmat([0.7 0.7 0.7], 31, 1); % Default all to light gray (gyri)
+custom_colormap(2,  :) = [0.4 0.4 0.4];         % Value 1  = sulci (dark gray)
+custom_colormap(11, :) = group_color(1,:);      % Value 10 = visual
+custom_colormap(21, :) = group_color(2,:);      % Value 20 = parietal
+custom_colormap(31, :) = group_color(3,:);      % Value 30 = frontal
 
 % Visualize on surface using ft_sourceplot
 figure('Position', [100, 100, 1200, 600], 'Renderer','painters');
@@ -191,8 +200,9 @@ cfg.method = 'surface';
 cfg.figure = 'gcf';
 cfg.funparameter = 'roi';
 cfg.funcolormap = custom_colormap;
-cfg.colorbar = 'yes';
-cfg.funcolorlim = [0 20]; % Limits for categorical mapping (0=gray, 10=orange, 20=purple)
+cfg.colorbar = 'no';   % categorical codes -- a continuous colorbar is meaningless here;
+                       % roi_legend() below draws a labelled patch legend instead
+cfg.funcolorlim = [0 30]; % Categorical mapping: 0/1=gray, 10=visual, 20=parietal, 30=frontal
 % We do NOT provide cfg.surffile, so fieldtrip plots the mesh directly from sourceVisualize_left
 ft_sourceplot(cfg, sourceVisualize_left);
 
@@ -202,7 +212,7 @@ lighting gouraud;
 material dull;
 cl = camlight('headlight'); % Attaches light perfectly to the camera 
 cl.Color = [0.4, 0.4, 0.4];
-title('Wang Atlas ROIs on Inflated Surface - Left View');
+title('Left hemisphere', 'FontSize', 13);
 
 % Right hemisphere view
 subplot(1, 2, 2);
@@ -226,8 +236,9 @@ cfg.method = 'surface';
 cfg.figure = 'gcf';
 cfg.funparameter = 'roi';
 cfg.funcolormap = custom_colormap;
-cfg.colorbar = 'yes';
-cfg.funcolorlim = [0 20]; % Limits for categorical mapping (0=gray, 10=orange, 20=purple)
+cfg.colorbar = 'no';   % categorical codes -- a continuous colorbar is meaningless here;
+                       % roi_legend() below draws a labelled patch legend instead
+cfg.funcolorlim = [0 30]; % Categorical mapping: 0/1=gray, 10=visual, 20=parietal, 30=frontal
 % We do NOT provide cfg.surffile, so fieldtrip plots the mesh directly from sourceVisualize_right
 ft_sourceplot(cfg, sourceVisualize_right);
 
@@ -238,4 +249,23 @@ material dull;
 cl = camlight('headlight'); % Attaches light perfectly to the camera 
 cl.Color = [0.4, 0.4, 0.4];
 
-title('Wang Atlas ROIs on Inflated Surface - Right View');
+title('Right hemisphere', 'FontSize', 13);
+
+% ── Shared ROI legend ─────────────────────────────────────────────────────
+% ft_sourceplot's colorbar is switched off above (the plotted values are
+% categorical codes, not a continuous scale), so the ROI colours are labelled
+% here instead -- one legend for both hemisphere panels, drawn on an
+% invisible full-figure axes so it belongs to neither subplot and cannot be
+% clipped by either. The patches carry no data (NaN vertices); they exist
+% only as legend proxies.
+sgtitle('Wang atlas ROIs on inflated surface', 'FontSize', 14, 'FontWeight', 'bold');
+
+lgd_ax = axes('Position', [0 0 1 1], 'Visible', 'off');
+hold(lgd_ax, 'on');
+lgd_h = gobjects(1, numel(ROI_NAMES));
+for k = 1:numel(ROI_NAMES)
+    lgd_h(k) = patch(lgd_ax, NaN, NaN, group_color(k,:), 'EdgeColor', 'none');
+end
+lgd = legend(lgd_ax, lgd_h, ROI_NAMES, 'Orientation', 'horizontal', 'FontSize', 12);
+lgd.Box = 'off';
+lgd.Position = [0.5 - lgd.Position(3)/2, 0.02, lgd.Position(3), lgd.Position(4)];
