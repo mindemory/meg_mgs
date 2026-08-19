@@ -167,6 +167,27 @@ custom_colormap(11, :) = group_color(1,:);      % Value 10 = visual
 custom_colormap(21, :) = group_color(2,:);      % Value 20 = parietal
 custom_colormap(31, :) = group_color(3,:);      % Value 30 = frontal
 
+% ── Camera angles ─────────────────────────────────────────────────────────
+% [azimuth elevation] for MATLAB's view(az, el). az is measured from the -y
+% axis, i.e. az=0 is a straight-on POSTERIOR view of the brain (looking at
+% the occipital pole) and az=+/-90 is a lateral view; el is elevation above
+% the axial plane. The previous hard-coded direction vectors [-1 -0.5 1] /
+% [1 -0.5 1] work out to az=+/-63, el=42 -- a near-lateral view from well
+% above, which showed FEF nicely but rotated the occipital pole out of sight
+% and foreshortened the IPS band. The pair below tilts further back and drops
+% the elevation a little: posterior-dorsal oblique, which is the angle that
+% shows the visual ROIs (V1/V2/V3/V3a/V3b/hV4/VO, occipital pole + lateral
+% occipital) and the parietal band (IPS0-5, SPL1) at the same time. FEF sits
+% further forward and is correspondingly more foreshortened -- that is the
+% trade-off being made deliberately.
+% Re-frame both panels by editing these two numbers:
+%   az -> 0    more posterior (more occipital pole, less lateral surface)
+%   az -> +/-90 more lateral  (more FEF, occipital pole rotates away)
+%   el up      more dorsal    (more IPS/SPL1, less ventral hV4/VO)
+%   el down    more lateral/ventral
+VIEW_AZEL_LEFT  = [-42 28];
+VIEW_AZEL_RIGHT = [ 42 28];
+
 % Visualize on surface using ft_sourceplot
 figure('Position', [100, 100, 1200, 600], 'Renderer','painters');
 
@@ -207,7 +228,7 @@ cfg.funcolorlim = [0 30]; % Categorical mapping: 0/1=gray, 10=visual, 20=parieta
 ft_sourceplot(cfg, sourceVisualize_left);
 
 % Set view angle and lighting
-view([-1, -0.5, 1]); % Left hemisphere view
+view(VIEW_AZEL_LEFT(1), VIEW_AZEL_LEFT(2));   % see VIEW_AZEL_* above
 lighting gouraud;
 material dull;
 cl = camlight('headlight'); % Attaches light perfectly to the camera 
@@ -243,7 +264,7 @@ cfg.funcolorlim = [0 30]; % Categorical mapping: 0/1=gray, 10=visual, 20=parieta
 ft_sourceplot(cfg, sourceVisualize_right);
 
 % Set view angle and lighting
-view([1, -0.5, 1]); % Right hemisphere view
+view(VIEW_AZEL_RIGHT(1), VIEW_AZEL_RIGHT(2)); % see VIEW_AZEL_* above
 lighting gouraud;
 material dull;
 cl = camlight('headlight'); % Attaches light perfectly to the camera 
