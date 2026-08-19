@@ -136,8 +136,11 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir):
     if not bands or not rois:
         print(f'  no data for {condition}'); return
     n_r, n_c = len(bands), len(rois)
-    fig, axes = plt.subplots(n_r, n_c, figsize=(4.4 * n_c + 2.0, 3.2 * n_r + 1.6),
-                              facecolor=_BG, squeeze=False)
+    # sharey across EVERY panel: all panels are the same quantity in the same
+    # units, so a per-panel autoscale silently magnifies near-zero cells (frontal
+    # looked as tall as visual while carrying a third of the effect).
+    fig, axes = plt.subplots(n_r, n_c, figsize=(4.4 * n_c + 2.0, 3.2 * n_r + 1.4),
+                              facecolor=_BG, squeeze=False, sharey=True)
     x = np.arange(len(EPOCH_ORDER))
     for r, band in enumerate(bands):
         for c, roi in enumerate(rois):
@@ -164,7 +167,8 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir):
                              fontsize=FS_PANEL_TTL,
                              color=ROI_COLOURS.get(roi, _FG), fontweight='bold', pad=8)
             if c == 0:
-                ax.set_ylabel('CCGP $-$ null', fontsize=FS_AXIS_LABEL, fontweight='bold')
+                ax.set_ylabel('CCGP $-$ chance', fontsize=FS_AXIS_LABEL,
+                               fontweight='bold')
                 ax.text(-0.30, 0.5, BAND_LABELS.get(band, band), transform=ax.transAxes,
                         fontsize=FS_ROW_LABEL, color=_FG, ha='right', va='center',
                         rotation=90, fontweight='bold')
@@ -176,12 +180,7 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir):
         leg.get_frame().set_facecolor('#1a1a1a')
     fig.suptitle(f'CCGP  |  {COND_LABELS.get(condition, condition)}',
                  color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.005)
-    fig.text(0.5, 0.972,
-             'mean +/- SEM across subjects of (CCGP - that subject\'s own shuffled '
-             'null)  |  0 = chance  |  ring predicts L/R and T/B above 0 WITH the '
-             'control at 0',
-             ha='center', va='top', color='#aaaaaa', fontsize=10.5)
-    fig.tight_layout(rect=[0.02, 0, 1, 0.955])
+    fig.tight_layout(rect=[0.02, 0, 1, 0.98])
     os.makedirs(figdir, exist_ok=True)
     fp = os.path.join(figdir, f'ccgp_epochs_ccgp_{condition}_{voxRes}.png')
     fig.savefig(fp, dpi=150, bbox_inches='tight', facecolor=_BG); plt.close(fig)
@@ -194,8 +193,8 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir):
     rois = [r for r in rois if r in set(cdf.roi.unique())]
     if not bands or not rois:
         return
-    fig, axes = plt.subplots(1, len(bands), figsize=(4.6 * len(bands) + 2.0, 4.2),
-                              facecolor=_BG, squeeze=False)
+    fig, axes = plt.subplots(1, len(bands), figsize=(4.6 * len(bands) + 2.2, 4.4),
+                              facecolor=_BG, squeeze=False, sharey=True)
     x = np.arange(len(EPOCH_ORDER))
     for c, band in enumerate(bands):
         ax = axes[0][c]; style_ax(ax)
@@ -223,23 +222,21 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir):
         ax.set_title(BAND_LABELS.get(band, band), fontsize=FS_PANEL_TTL,
                      color=_FG, fontweight='bold', pad=8)
         if c == 0:
-            ax.set_ylabel('Shattering dimensionality\n(frac. dichotomies sig. vs null)',
+            ax.set_ylabel('Shattering dimensionality',
                           fontsize=FS_AXIS_LABEL, fontweight='bold')
     h, l = axes[0][0].get_legend_handles_labels()
-    if h:
-        leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.99, 0.5),
-                         fontsize=11, framealpha=0.25, edgecolor='#444444',
-                         labelcolor=_FG)
-        leg.get_frame().set_facecolor('#1a1a1a')
+    # The two reference lines go in the LEGEND rather than a caption, so the
+    # figure explains itself without a block of grey prose above it.
+    h += [plt.Line2D([0], [0], color='#4EA1F3', lw=1.4, ls='--'),
+          plt.Line2D([0], [0], color='#888888', lw=1.0, ls=':')]
+    l += [f'Planar ring (4/35 = {GEOMETRIC_RING_SD:.2f})', 'Chance (p < 0.01)']
+    leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.99, 0.5),
+                     fontsize=11, framealpha=0.25, edgecolor='#444444',
+                     labelcolor=_FG)
+    leg.get_frame().set_facecolor('#1a1a1a')
     fig.suptitle(f'Shattering dimensionality  |  {COND_LABELS.get(condition, condition)}',
-                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.02)
-    fig.text(0.5, 0.945,
-             f'mean +/- SEM across subjects, fraction of the 35 dichotomies '
-             f'significant vs their own shuffled null  |  dashed = planar-ring '
-             f'bound ({GEOMETRIC_RING_SD:.3f} = 4/35)  |  dotted = nominal '
-             f'per-dichotomy threshold (0.01)',
-             ha='center', va='top', color='#aaaaaa', fontsize=10.5)
-    fig.tight_layout(rect=[0, 0, 1, 0.90])
+                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.01)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
     os.makedirs(figdir, exist_ok=True)
     fp = os.path.join(figdir, f'ccgp_epochs_sd_{condition}_{voxRes}.png')
     fig.savefig(fp, dpi=150, bbox_inches='tight', facecolor=_BG); plt.close(fig)
