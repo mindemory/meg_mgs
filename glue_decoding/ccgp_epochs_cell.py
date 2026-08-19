@@ -101,6 +101,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
+from joblib import Parallel, delayed
 import matplotlib
 matplotlib.use('Agg')          # decodanda imports pyplot; keep it headless
 
@@ -216,79 +217,95 @@ def run_epoch(Xe, y, max_pca_dim, n_shuffles, seed, log=print):
     return out
 
 
-def run_cell(subjID, bands, conditions, rois, voxRes, bids_root,
-             max_pca_dim=MAX_PCA_DIM, n_shuffles=25, seed=0,
-             outdir=None, force=False):
+def build_cell_list(bands, conditions, rois):
+    """(band, condition, roi) triples to run. ampPhase is dropped for bands with
+    no saved phase (constants.AMP_PHASE_BANDS)."""
+    cells = []
     for band in bands:
         for condition in conditions:
-            want_phase = (condition == 'ampPhase')
-            if want_phase and band not in AMP_PHASE_BANDS:
-                print(f'SKIP {condition}/{band}: no saved phase', flush=True)
+            if condition == 'ampPhase' and band not in AMP_PHASE_BANDS:
                 continue
             for roi in rois:
-                out_path = output_path(bids_root, subjID, band, condition, roi,
-                                        voxRes, outdir)
-                if not force and os.path.exists(out_path):
-                    print(f'SKIP (exists): {out_path}', flush=True)
-                    continue
-                t0 = time.time()
-                try:
-                    g04 = load_g04_band(subjID, LOCK_TYPE, band, voxRes, bids_root,
-                                         want_phase=want_phase, roi=roi)
-                    X = build_features(condition, g04['amp'],
-                                        g04['phase'] if want_phase else None)
-                    tv = g04['time_vector']
-                    y = g04['target_labels'].astype(int)
-                    del g04
-                    X = zscore_per_timepoint(X)
+                cells.append((band, condition, roi))
+    return cells
 
-                    per_epoch, ok = {}, False
-                    for ep in EPOCH_ORDER:
-                        lo, hi = EPOCHS[ep]
-                        Xe, _ = epoch_average(X, tv, lo, hi, hi_inclusive=False)
-                        r = run_epoch(Xe, y, max_pca_dim, n_shuffles, seed)
-                        if r is not None:
-                            per_epoch[ep] = r
-                            ok = True
-                    if not ok:
-                        print(f'  SKIP sub-{subjID:02d} {band}/{condition}/{roi}: '
-                              f'no runnable epoch', flush=True)
-                        del X
-                        continue
 
-                    save = dict(
-                        epochs=np.array(EPOCH_ORDER),
-                        epoch_bounds=np.array([EPOCHS[e] for e in EPOCH_ORDER]),
-                        dichotomies=np.array(DICHOTOMIES),
-                        geometric_ring_sd=np.array([GEOMETRIC_RING_SD]),
-                        n_trials=np.array([X.shape[0]]),
-                        n_features=np.array([X.shape[2]]),
-                        subjID=np.array([subjID]), band=np.array([band]),
-                        condition=np.array([condition]), roi=np.array([roi]),
-                        voxRes=np.array([voxRes]), seed=np.array([seed]),
-                        n_shuffles=np.array([n_shuffles]),
-                    )
-                    for ep, r in per_epoch.items():
-                        for key, val in r.items():
-                            save[f'{ep}__{key}'] = val
-                    np.savez_compressed(out_path, **save)
+def _cell_worker(cell, subjID, voxRes, bids_root, max_pca_dim, n_shuffles, seed,
+                 outdir, force):
+    """
+    One (band, condition, roi) cell, all four epochs. Cells load their own G04
+    and share nothing, so they are embarrassingly parallel; the four epochs stay
+    INSIDE a cell because they reuse that cell's single loaded/z-scored array
+    (splitting them across processes would reload it four times).
+    """
+    band, condition, roi = cell
+    tag = f'{band}/{condition}/{roi}'
+    out_path = output_path(bids_root, subjID, band, condition, roi, voxRes, outdir)
+    if not force and os.path.exists(out_path):
+        print(f'[{tag}] SKIP (exists)', flush=True)
+        return
+    want_phase = (condition == 'ampPhase')
+    t0 = time.time()
+    try:
+        g04 = load_g04_band(subjID, LOCK_TYPE, band, voxRes, bids_root,
+                             want_phase=want_phase, roi=roi)
+        X = build_features(condition, g04['amp'], g04['phase'] if want_phase else None)
+        tv = g04['time_vector']
+        y = g04['target_labels'].astype(int)
+        del g04
+        X = zscore_per_timepoint(X)
 
-                    msg = '  '.join(
-                        f'{ep}: ' + ' '.join(
-                            f'{d[:4]}={per_epoch[ep][f"ccgp_{d}"]:.2f}'
-                            for d in DICHOTOMIES)
-                        + f' SD={per_epoch[ep]["sd_frac_above_0.7"]:.2f}'
-                        for ep in EPOCH_ORDER if ep in per_epoch)
-                    print(f'sub-{subjID:02d} | {band} | {condition} | {roi}: '
-                          f'{msg} | {time.time() - t0:.1f}s', flush=True)
-                    del X
-                except (FileNotFoundError, ValueError) as e:
-                    print(f'  SKIP sub-{subjID:02d} {band}/{condition}/{roi}: {e}',
-                          flush=True)
-                except Exception:
-                    print(f'  FAILED sub-{subjID:02d} {band}/{condition}/{roi}:',
-                          flush=True)
-                    traceback.print_exc()
+        per_epoch = {}
+        for ep in EPOCH_ORDER:
+            lo, hi = EPOCHS[ep]
+            Xe, _ = epoch_average(X, tv, lo, hi, hi_inclusive=False)
+            r = run_epoch(Xe, y, max_pca_dim, n_shuffles, seed,
+                          log=lambda m: print(f'[{tag}] {m}', flush=True))
+            if r is not None:
+                per_epoch[ep] = r
+        if not per_epoch:
+            print(f'[{tag}] SKIP: no runnable epoch', flush=True)
+            return
+
+        save = dict(
+            epochs=np.array(EPOCH_ORDER),
+            epoch_bounds=np.array([EPOCHS[e] for e in EPOCH_ORDER]),
+            dichotomies=np.array(DICHOTOMIES),
+            geometric_ring_sd=np.array([GEOMETRIC_RING_SD]),
+            n_trials=np.array([X.shape[0]]), n_features=np.array([X.shape[2]]),
+            subjID=np.array([subjID]), band=np.array([band]),
+            condition=np.array([condition]), roi=np.array([roi]),
+            voxRes=np.array([voxRes]), seed=np.array([seed]),
+            n_shuffles=np.array([n_shuffles]),
+        )
+        for ep, r in per_epoch.items():
+            for key, val in r.items():
+                save[f'{ep}__{key}'] = val
+        np.savez_compressed(out_path, **save)
+
+        msg = '  '.join(
+            f'{ep}: ' + ' '.join(f'{d[:4]}={per_epoch[ep][f"ccgp_{d}"]:.2f}'
+                                  for d in DICHOTOMIES)
+            + f' SD={per_epoch[ep]["sd_frac_above_0.7"]:.2f}'
+            for ep in EPOCH_ORDER if ep in per_epoch)
+        print(f'[{tag}] {msg} | {time.time() - t0:.1f}s', flush=True)
+        del X
+    except (FileNotFoundError, ValueError) as e:
+        print(f'[{tag}] SKIP: {e}', flush=True)
+    except Exception:
+        print(f'[{tag}] FAILED:', flush=True)
+        traceback.print_exc()
+
+
+def run_cell(subjID, bands, conditions, rois, voxRes, bids_root,
+             max_pca_dim=MAX_PCA_DIM, n_shuffles=25, seed=0,
+             outdir=None, force=False, n_jobs=None):
+    cells = build_cell_list(bands, conditions, rois)
+    n_jobs = n_jobs if n_jobs else max(1, len(cells))
+    print(f'{len(cells)} cells | n_jobs={n_jobs}', flush=True)
+    Parallel(n_jobs=n_jobs, prefer='processes', verbose=5)(
+        delayed(_cell_worker)(c, subjID, voxRes, bids_root, max_pca_dim,
+                              n_shuffles, seed, outdir, force) for c in cells)
 
 
 def main():
@@ -308,6 +325,10 @@ def main():
                      help='Geometric-null shuffles for CCGP. CCGP chance is NOT 0.5, '
                           'so this null is what significance is read against.')
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--n_jobs', type=int, default=None,
+                     help='Parallel workers, one per (band, condition, roi) cell. '
+                          'Default: one per cell. Set to 1 when a runner is already '
+                          'parallelising over SUBJECTS, or the two multiply.')
     ap.add_argument('--outdir', default=None)
     ap.add_argument('--force', action='store_true')
     args = ap.parse_args()
@@ -320,7 +341,7 @@ def main():
     run_cell(args.subjID, list(args.bands), list(args.conditions), list(args.rois),
              args.voxRes, bids_root, max_pca_dim=args.max_pca_dim,
              n_shuffles=args.n_shuffles, seed=args.seed,
-             outdir=args.outdir, force=args.force)
+             outdir=args.outdir, force=args.force, n_jobs=args.n_jobs)
     print(f'Done | sub-{args.subjID:02d} | total {time.time() - t0:.1f}s')
 
 
