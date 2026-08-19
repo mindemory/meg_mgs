@@ -140,18 +140,20 @@ def style_ax(ax):
     ax.set_axisbelow(True)
 
 
-def figure_ccgp(df, condition, bands, rois, voxRes, figdir):
+def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False):
     cdf = df[df.condition == condition]
     bands = [b for b in bands if b in set(cdf.band.unique())]
     rois = [r for r in rois if r in set(cdf.roi.unique())]
     if not bands or not rois:
         print(f'  no data for {condition}'); return
     n_r, n_c = len(bands), len(rois)
-    # sharey across EVERY panel: all panels are the same quantity in the same
-    # units, so a per-panel autoscale silently magnifies near-zero cells (frontal
-    # looked as tall as visual while carrying a third of the effect).
+    # Per-panel autoscale by default so within-panel structure is visible at its
+    # own scale. --sharey forces a common axis, which is the fairer view when
+    # comparing effect SIZES across panels (on a shared axis frontal correctly
+    # reads as flat next to visual) but compresses everything when one panel's
+    # range dominates.
     fig, axes = plt.subplots(n_r, n_c, figsize=(4.4 * n_c + 2.0, 3.2 * n_r + 1.4),
-                              facecolor=_BG, squeeze=False, sharey=True)
+                              facecolor=_BG, squeeze=False, sharey=sharey)
     x = np.arange(len(EPOCH_ORDER))
     for r, band in enumerate(bands):
         for c, roi in enumerate(rois):
@@ -209,14 +211,14 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir):
     print(f'Saved: {fp}')
 
 
-def figure_sd(df, condition, bands, rois, voxRes, figdir):
+def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False):
     cdf = df[df.condition == condition]
     bands = [b for b in bands if b in set(cdf.band.unique())]
     rois = [r for r in rois if r in set(cdf.roi.unique())]
     if not bands or not rois:
         return
     fig, axes = plt.subplots(1, len(bands), figsize=(4.6 * len(bands) + 2.2, 4.4),
-                              facecolor=_BG, squeeze=False, sharey=True)
+                              facecolor=_BG, squeeze=False, sharey=sharey)
     x = np.arange(len(EPOCH_ORDER))
     for c, band in enumerate(bands):
         ax = axes[0][c]; style_ax(ax)
@@ -299,6 +301,9 @@ def main():
     ap.add_argument('--bands', nargs='+', default=['theta', 'alpha', 'beta'])
     ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
     ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
+    ap.add_argument('--sharey', action='store_true',
+                     help='Force one y-scale across all panels (off by default, so '
+                          'each panel autoscales to its own range).')
     ap.add_argument('--outdir', default=None)
     ap.add_argument('--figdir', default=None)
     ap.add_argument('--csvdir', default=None)
@@ -327,8 +332,10 @@ def main():
     for cond in args.conditions:
         if cond not in set(df.condition.unique()):
             continue
-        figure_ccgp(df, cond, args.bands, args.rois, args.voxRes, figdir)
-        figure_sd(df, cond, args.bands, args.rois, args.voxRes, figdir)
+        figure_ccgp(df, cond, args.bands, args.rois, args.voxRes, figdir,
+                    sharey=args.sharey)
+        figure_sd(df, cond, args.bands, args.rois, args.voxRes, figdir,
+                  sharey=args.sharey)
     print_summary(df)
 
 

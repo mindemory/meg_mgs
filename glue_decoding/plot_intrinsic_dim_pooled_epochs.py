@@ -193,7 +193,8 @@ def plot_metric_figure(df, metric, condition, bands, rois, voxRes, outdir,
                    linewidth=0.6, capsize=4,
                    error_kw=dict(ecolor=_FG, elinewidth=1.2, capthick=1.2))
             if metric == 'bshare' and ref_epoch is None:
-                ax.set_ylim(0, 1)
+                # Reference line kept, hard 0-1 limit dropped: real values sit
+                # far below 0.5 and the fixed range flattened them.
                 ax.axhline(0.5, color='#888888', linewidth=0.8, linestyle=':', zorder=1)
             if ref_epoch is not None:
                 # Baseline is 1.0 by construction; the line is the read-off.
@@ -291,6 +292,10 @@ def plot_mechanism_scatter(df, condition, bands, rois, voxRes, outdir,
                 ax.scatter(x, y, s=170, color=ROI_COLOURS.get(roi, '#ffffff'),
                            marker=BAND_MARKERS.get(band, 'o'), edgecolors='k',
                            linewidths=0.8, zorder=4)
+        # NOT a scale restriction to remove: x and y must share one symmetric
+        # range or the 45-degree iso-NTV diagonal below stops being 45 degrees,
+        # and "distance below the diagonal = NTV improvement" -- the whole point
+        # of this panel -- silently breaks. The limit still tracks the data.
         lim = max(0.25, *(abs(v) for v in ax.get_xlim() + ax.get_ylim()))
         ax.set_xlim(-lim, lim); ax.set_ylim(-lim, lim)
         ax.axhline(0, color='#666666', lw=1.0, zorder=1)

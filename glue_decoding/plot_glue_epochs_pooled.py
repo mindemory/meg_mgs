@@ -99,15 +99,21 @@ def mean_sem(v):
 
 
 def figure_metric(df, metric, label, condition, bands, rois, voxRes, figdir,
-                  has_shuffle):
+                  has_shuffle, sharey=False):
     cdf = df[df.condition == condition]
     bands = [b for b in bands if b in set(cdf.band.unique())]
     rois = [r for r in rois if r in set(cdf.roi.unique())]
     if not bands or not rois:
         print(f'  no {condition} data for {metric}'); return
     n_r, n_c = len(bands), len(rois)
+    # Per-panel autoscale by DEFAULT. A shared axis is the honest choice only
+    # when panels are comparable, and for capacity they are not: the points per
+    # manifold differ across ROIs (the separability ceiling scales with feature
+    # count), so a shared axis both invites a comparison that is confounded AND
+    # flattens the epoch-to-epoch structure inside each panel behind the
+    # between-ROI offset. --sharey restores it when that is what is wanted.
     fig, axes = plt.subplots(n_r, n_c, figsize=(4.4 * n_c + 2.0, 3.2 * n_r + 1.4),
-                              facecolor=_BG, squeeze=False, sharey=True)
+                              facecolor=_BG, squeeze=False, sharey=sharey)
     x = np.arange(len(EPOCH_ORDER))
     for r, band in enumerate(bands):
         for c, roi in enumerate(rois):
@@ -143,8 +149,10 @@ def figure_metric(df, metric, label, condition, bands, rois, voxRes, figdir,
                 if len(pm):
                     note.append(f'{int(pm.median())} pts/man')
             if note:
-                ax.text(0.97, 0.04, '  '.join(note), transform=ax.transAxes,
-                        ha='right', va='bottom', fontsize=8.5, color='#888888')
+                # Top-left: the shuffled line sits low and flat, so a
+                # bottom-right annotation lands on top of it.
+                ax.text(0.03, 0.97, '  '.join(note), transform=ax.transAxes,
+                        ha='left', va='top', fontsize=8.5, color='#888888')
             ax.set_xticks(x)
             ax.set_xticklabels([EPOCH_LABELS.get(e, e) for e in EPOCH_ORDER],
                                 rotation=30, ha='right', fontsize=FS_TICK)
@@ -209,6 +217,11 @@ def main():
     ap.add_argument('--bands', nargs='+', default=['theta', 'alpha', 'beta'])
     ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
     ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
+    ap.add_argument('--sharey', action='store_true',
+                     help='Force one y-scale across all panels. Off by default: '
+                          'capacity is not comparable across ROIs at unequal '
+                          'points-per-manifold, and sharing the axis hides the '
+                          'within-panel epoch structure behind that offset.')
     ap.add_argument('--scheme', type=int, default=None,
                      help='Category scheme to plot if the CSV has more than one '
                           '(default: all present).')
@@ -255,7 +268,8 @@ def main():
             continue
         for m in metrics:
             figure_metric(df, m, CANDIDATE_METRICS[m], cond, args.bands,
-                          args.rois, args.voxRes, figdir, has_shuffle)
+                          args.rois, args.voxRes, figdir, has_shuffle,
+                          sharey=args.sharey)
     print_summary(df, metrics, has_shuffle)
 
 
