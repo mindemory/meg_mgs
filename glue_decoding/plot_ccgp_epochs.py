@@ -46,13 +46,15 @@ from scipy import stats
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 
 from constants import SUBJECT_LIST, get_bids_root
 from visual_geometry_epochs_cell import EPOCH_ORDER
 from ccgp_epochs_cell import output_path, DICHOTOMIES, GEOMETRIC_RING_SD
 
 _BG, _FG, _GRID = '#000000', '#e0e0e0', '#1c1c1c'
-FS_SUPTITLE, FS_PANEL_TTL, FS_AXIS_LABEL, FS_ROW_LABEL, FS_TICK = 18, 14, 13, 14, 10
+FS_SUPTITLE, FS_PANEL_TTL, FS_AXIS_LABEL, FS_ROW_LABEL, FS_TICK = 22, 17, 16, 17, 13
+FS_LEGEND = 13
 
 ROI_COLOURS = {'visual': '#FFC629', 'parietal': '#A78BFA', 'frontal': '#34D399'}
 DICH_COLOURS = {'horizontal': '#FFC629', 'vertical': '#4EA1F3', 'axis': '#FF6B6B'}
@@ -129,6 +131,49 @@ def mean_sem(df, col):
             int(v.size))
 
 
+def bh_fdr(pvals, q=0.05):
+    """
+    Benjamini-Hochberg. Returns a bool mask of which tests survive at FDR q.
+
+    Correction is applied because these figures run one test per
+    (band, roi, epoch, dichotomy) -- 108 for the CCGP figure -- and a reviewer
+    has already flagged uncorrected multiple comparisons on this dataset's
+    connectivity claim. FDR rather than Bonferroni: the tests are positively
+    correlated (neighbouring epochs, overlapping ROIs) so Bonferroni would be
+    needlessly conservative, and FDR is the standard choice for a family this
+    size where some true effects are expected.
+    """
+    pv = np.asarray(pvals, float)
+    out = np.zeros(pv.shape, bool)
+    ok = np.isfinite(pv)
+    v = pv[ok]
+    if v.size == 0:
+        return out
+    order = np.argsort(v)
+    ranked = v[order]
+    passed = ranked <= q * (np.arange(1, v.size + 1) / v.size)
+    if not passed.any():
+        return out
+    sig = np.zeros(v.size, bool)
+    sig[order[:np.max(np.flatnonzero(passed)) + 1]] = True
+    out[ok] = sig
+    return out
+
+
+def ttest_vs(df, col, mu=0.0):
+    """One-sample t-test ACROSS SUBJECTS against mu. Returns (mean, p)."""
+    v = df[col].values
+    v = v[np.isfinite(v)]
+    if v.size < 2:
+        return (float(v.mean()) if v.size else np.nan), np.nan
+    return float(v.mean()), float(stats.ttest_1samp(v, mu).pvalue)
+
+
+def _thin_yticks(ax, n=5):
+    """Fewer y ticks: the default put 9 labels on a 0.08-wide axis."""
+    ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=n, prune=None))
+
+
 def style_ax(ax):
     ax.set_facecolor(_BG)
     ax.tick_params(colors=_FG, which='both', labelsize=FS_TICK)
@@ -140,19 +185,30 @@ def style_ax(ax):
     ax.set_axisbelow(True)
 
 
-def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False):
+def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05):
     cdf = df[df.condition == condition]
     bands = [b for b in bands if b in set(cdf.band.unique())]
     rois = [r for r in rois if r in set(cdf.roi.unique())]
     if not bands or not rois:
         print(f'  no data for {condition}'); return
+
+    # PASS 1 -- every test in this figure, so FDR can be applied over the whole
+    # family at once rather than per panel (per-panel correction would still
+    # leave the figure-wide error rate uncontrolled).
+    keys, pv = [], []
+    for band in bands:
+        for roi in rois:
+            for d in DICHOTOMIES:
+                for ep in EPOCH_ORDER:
+                    ss = cdf[(cdf.band == band) & (cdf.roi == roi) & (cdf.epoch == ep)]
+                    _, p = ttest_vs(ss, f'delta_{d}', 0.0)
+                    keys.append((band, roi, d, ep)); pv.append(p)
+    sig = dict(zip(keys, bh_fdr(pv, q)))
+    n_tested = int(np.isfinite(np.asarray(pv, float)).sum())
+    print(f'  CCGP: {sum(sig.values())}/{n_tested} tests significant at FDR q<{q}')
+
     n_r, n_c = len(bands), len(rois)
-    # Per-panel autoscale by default so within-panel structure is visible at its
-    # own scale. --sharey forces a common axis, which is the fairer view when
-    # comparing effect SIZES across panels (on a shared axis frontal correctly
-    # reads as flat next to visual) but compresses everything when one panel's
-    # range dominates.
-    fig, axes = plt.subplots(n_r, n_c, figsize=(4.4 * n_c + 2.0, 3.2 * n_r + 1.4),
+    fig, axes = plt.subplots(n_r, n_c, figsize=(5.0 * n_c + 2.4, 3.8 * n_r + 1.6),
                               facecolor=_BG, squeeze=False, sharey=sharey)
     x = np.arange(len(EPOCH_ORDER))
     for r, band in enumerate(bands):
@@ -166,42 +222,53 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False):
                     ss = sub[sub.epoch == ep]
                     mm, ee, n = mean_sem(ss, f'delta_{d}')
                     m.append(mm); e.append(ee); nn.append(n)
-                ax.errorbar(x, m, yerr=e, color=DICH_COLOURS[d], lw=2.0, marker='o',
-                            ms=6, capsize=4, zorder=4,
+                m, e = np.array(m, float), np.array(e, float)
+                col = DICH_COLOURS[d]
+                # Hollow markers everywhere, FILLED where the test survives FDR:
+                # the significance lives on the marker rather than on a separate
+                # row of stars, which would collide with three overlapping lines.
+                ax.errorbar(x, m, yerr=e, color=col, lw=2.4, marker='o', ms=7,
+                            markerfacecolor=_BG, markeredgewidth=1.8, capsize=4,
+                            zorder=4,
                             label=DICH_LABELS[d] if (r == 0 and c == 0) else None)
+                msk = np.array([bool(sig.get((band, roi, d, ep), False))
+                                for ep in EPOCH_ORDER])
+                if msk.any():
+                    ax.plot(x[msk], m[msk], 'o', color=col, ms=10, zorder=5,
+                            markeredgecolor=col)
                 # Dashed = the same dichotomy's standard decoding above chance,
                 # i.e. CCGP's ceiling. The GAP between solid and dashed is the
-                # part of the decodable signal that fails to generalize; solid
-                # meeting dashed means the code is abstract.
+                # part of the decodable signal that fails to generalize.
                 if f'decode_delta_{d}' in sub.columns:
                     md = [mean_sem(sub[sub.epoch == ep], f'decode_delta_{d}')[0]
                           for ep in EPOCH_ORDER]
-                    ax.plot(x, md, color=DICH_COLOURS[d], lw=1.3, ls='--',
-                            alpha=0.75, zorder=3,
+                    ax.plot(x, md, color=col, lw=1.5, ls='--', alpha=0.75, zorder=3,
                             label=('Decoding ceiling' if (r == 0 and c == 0
                                    and d == DICHOTOMIES[0]) else None))
-            # 0 = that subject's own shuffled null. Everything is expressed
-            # relative to it, so this line is chance.
-            ax.axhline(0.0, color='#888888', lw=1.2, ls=':', zorder=2)
+            ax.axhline(0.0, color='#888888', lw=1.3, ls=':', zorder=2)
             ax.set_xticks(x)
             ax.set_xticklabels([EPOCH_LABELS[e] for e in EPOCH_ORDER],
                                 rotation=30, ha='right', fontsize=FS_TICK)
+            _thin_yticks(ax)
             if r == 0:
                 ax.set_title(f'{roi.capitalize()} (n={max(nn) if nn else 0})',
                              fontsize=FS_PANEL_TTL,
-                             color=ROI_COLOURS.get(roi, _FG), fontweight='bold', pad=8)
+                             color=ROI_COLOURS.get(roi, _FG), fontweight='bold', pad=10)
             if c == 0:
                 ax.set_ylabel('CCGP $-$ chance', fontsize=FS_AXIS_LABEL,
                                fontweight='bold')
-                ax.text(-0.30, 0.5, BAND_LABELS.get(band, band), transform=ax.transAxes,
+                ax.text(-0.32, 0.5, BAND_LABELS.get(band, band), transform=ax.transAxes,
                         fontsize=FS_ROW_LABEL, color=_FG, ha='right', va='center',
                         rotation=90, fontweight='bold')
     h, l = axes[0][0].get_legend_handles_labels()
-    if h:
-        leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.99, 0.5),
-                         fontsize=11, framealpha=0.25, edgecolor='#444444',
-                         labelcolor=_FG)
-        leg.get_frame().set_facecolor('#1a1a1a')
+    h += [plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=10),
+          plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=7,
+                     markerfacecolor=_BG, markeredgewidth=1.8)]
+    l += [f'p < {q} (FDR)', 'n.s.']
+    leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.99, 0.5),
+                     fontsize=FS_LEGEND, framealpha=0.25, edgecolor='#444444',
+                     labelcolor=_FG)
+    leg.get_frame().set_facecolor('#1a1a1a')
     fig.suptitle(f'CCGP  |  {COND_LABELS.get(condition, condition)}',
                  color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.005)
     fig.tight_layout(rect=[0.02, 0, 1, 0.98])
@@ -211,13 +278,26 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False):
     print(f'Saved: {fp}')
 
 
-def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False):
+def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05):
     cdf = df[df.condition == condition]
     bands = [b for b in bands if b in set(cdf.band.unique())]
     rois = [r for r in rois if r in set(cdf.roi.unique())]
     if not bands or not rois:
         return
-    fig, axes = plt.subplots(1, len(bands), figsize=(4.6 * len(bands) + 2.2, 4.4),
+
+    # SD is a mean decoding ACCURACY, so the null is 0.5, not 0.
+    keys, pv = [], []
+    for band in bands:
+        for roi in rois:
+            for ep in EPOCH_ORDER:
+                ss = cdf[(cdf.band == band) & (cdf.roi == roi) & (cdf.epoch == ep)]
+                _, p = ttest_vs(ss, 'sd', 0.5)
+                keys.append((band, roi, ep)); pv.append(p)
+    sig = dict(zip(keys, bh_fdr(pv, q)))
+    n_tested = int(np.isfinite(np.asarray(pv, float)).sum())
+    print(f'  SD:   {sum(sig.values())}/{n_tested} tests significant at FDR q<{q}')
+
+    fig, axes = plt.subplots(1, len(bands), figsize=(5.2 * len(bands) + 2.6, 5.2),
                               facecolor=_BG, squeeze=False, sharey=sharey)
     x = np.arange(len(EPOCH_ORDER))
     for c, band in enumerate(bands):
@@ -228,37 +308,41 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False):
             for ep in EPOCH_ORDER:
                 mm, ee, _ = mean_sem(sub[sub.epoch == ep], 'sd')
                 m.append(mm); e.append(ee)
-            ax.errorbar(x, m, yerr=e, color=ROI_COLOURS.get(roi, '#fff'), lw=2.0,
-                        marker='o', ms=6, capsize=4, zorder=4,
-                        label=roi.capitalize() if c == 0 else None)
-        # Noiseless geometric bound, NOT an achievable target: finite trials and
-        # noise let near-separable dichotomies clear threshold, so real data sits
-        # above this even for a perfect ring.
-        # Autoscale: real values sit near 0.05-0.15, so a hardcoded 0-1 axis
-        # renders every band as a flat line at the bottom.
-        # 0.5 is chance for a mean-accuracy SD; the planar-ring bound no longer
-        # applies on this scale (it was a fraction-of-dichotomies quantity).
-        ax.axhline(0.5, color='#888888', lw=1.0, ls=':', zorder=2)
+            m, e = np.array(m, float), np.array(e, float)
+            col = ROI_COLOURS.get(roi, '#fff')
+            ax.errorbar(x, m, yerr=e, color=col, lw=2.4, marker='o', ms=7,
+                        markerfacecolor=_BG, markeredgewidth=1.8, capsize=4,
+                        zorder=4, label=roi.capitalize() if c == 0 else None)
+            msk = np.array([bool(sig.get((band, roi, ep), False)) for ep in EPOCH_ORDER])
+            if msk.any():
+                ax.plot(x[msk], m[msk], 'o', color=col, ms=10, zorder=5,
+                        markeredgecolor=col)
+        # 0.5 is chance for a mean-accuracy SD; the planar-ring bound (4/35) no
+        # longer applies on this scale -- it was a fraction-of-dichotomies
+        # quantity, not an accuracy.
+        ax.axhline(0.5, color='#888888', lw=1.3, ls=':', zorder=2)
         ax.set_xticks(x)
         ax.set_xticklabels([EPOCH_LABELS[e] for e in EPOCH_ORDER],
                             rotation=30, ha='right', fontsize=FS_TICK)
+        _thin_yticks(ax)
         ax.set_title(BAND_LABELS.get(band, band), fontsize=FS_PANEL_TTL,
-                     color=_FG, fontweight='bold', pad=8)
+                     color=_FG, fontweight='bold', pad=10)
         if c == 0:
             ax.set_ylabel('Shattering dimensionality\n(mean decoding acc.)',
                           fontsize=FS_AXIS_LABEL, fontweight='bold')
     h, l = axes[0][0].get_legend_handles_labels()
-    # The two reference lines go in the LEGEND rather than a caption, so the
-    # figure explains itself without a block of grey prose above it.
-    h += [plt.Line2D([0], [0], color='#888888', lw=1.0, ls=':')]
-    l += ['Chance (0.5)']
+    h += [plt.Line2D([0], [0], color='#888888', lw=1.3, ls=':'),
+          plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=10),
+          plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=7,
+                     markerfacecolor=_BG, markeredgewidth=1.8)]
+    l += ['Chance (0.5)', f'p < {q} (FDR)', 'n.s.']
     leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.99, 0.5),
-                     fontsize=11, framealpha=0.25, edgecolor='#444444',
+                     fontsize=FS_LEGEND, framealpha=0.25, edgecolor='#444444',
                      labelcolor=_FG)
     leg.get_frame().set_facecolor('#1a1a1a')
     fig.suptitle(f'Shattering dimensionality  |  {COND_LABELS.get(condition, condition)}',
                  color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.01)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
     os.makedirs(figdir, exist_ok=True)
     fp = os.path.join(figdir, f'ccgp_epochs_sd_{condition}_{voxRes}.png')
     fig.savefig(fp, dpi=150, bbox_inches='tight', facecolor=_BG); plt.close(fig)
@@ -301,6 +385,10 @@ def main():
     ap.add_argument('--bands', nargs='+', default=['theta', 'alpha', 'beta'])
     ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
     ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
+    ap.add_argument('--fdr_q', type=float, default=0.05,
+                     help='FDR level for the across-subject t-tests marked on the '
+                          'figures (Benjamini-Hochberg, corrected over every '
+                          'band x roi x epoch x dichotomy test in that figure).')
     ap.add_argument('--sharey', action='store_true',
                      help='Force one y-scale across all panels (off by default, so '
                           'each panel autoscales to its own range).')
@@ -333,9 +421,9 @@ def main():
         if cond not in set(df.condition.unique()):
             continue
         figure_ccgp(df, cond, args.bands, args.rois, args.voxRes, figdir,
-                    sharey=args.sharey)
+                    sharey=args.sharey, q=args.fdr_q)
         figure_sd(df, cond, args.bands, args.rois, args.voxRes, figdir,
-                  sharey=args.sharey)
+                  sharey=args.sharey, q=args.fdr_q)
     print_summary(df)
 
 
