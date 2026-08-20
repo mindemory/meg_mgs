@@ -119,13 +119,16 @@ _FLAG_TXT  = '#cccccc'
 
 # Font sizes -- same scale as plot_circular_tgm.py / plot_visual_geometry_*.py /
 # plot_ccgp_epochs.py, so every figure in this project reads consistently.
-FS_SUPTITLE   = 18
-FS_PANEL_TTL  = 14
-FS_AXIS_LABEL = 13
-FS_ROW_LABEL  = 14
-FS_TICK       = 10
-FS_FLAG       = 11
-LW_MEAN       = 2.6   # the curve itself, was 1.6
+# Sized for a projected slide, where this figure is read from the back of a
+# room rather than at arm's length on a monitor.
+FS_SUPTITLE   = 26
+FS_PANEL_TTL  = 21
+FS_AXIS_LABEL = 20
+FS_ROW_LABEL  = 21
+FS_TICK       = 17
+LW_MEAN       = 3.4   # the curve itself
+LW_FLAG       = 2.6   # event lines, was 1.3 and nearly invisible on black
+BAND_ALPHA    = 0.22  # SEM band, was 0.30 -- it was competing with the mean
 
 # ROI colours: mango/bumble for visual, soft violet for parietal,
 # emerald mint for frontal -- all vivid on true black.
@@ -363,16 +366,18 @@ def _apply_black_style(fig, axes_flat):
 
 
 def _draw_event_flags(ax, flags, y_lim):
-    """Draw vertical flag lines and rotated text labels."""
-    for t_flag, label, y_frac in flags:
-        ax.axvline(t_flag, color=_FLAG_LINE, linewidth=1.3,
-                   linestyle=':', alpha=0.85, zorder=3)
-        y_pos = y_lim[0] + y_frac * (y_lim[1] - y_lim[0])
-        ax.text(t_flag, y_pos, label,
-                color=_FLAG_TXT, fontsize=FS_FLAG, ha='left', va='top',
-                rotation=90, rotation_mode='anchor',
-                fontweight='bold', zorder=4,
-                transform=ax.get_xaxis_transform() if False else ax.transData)
+    """
+    Vertical event lines only -- no text.
+
+    The labels are gone deliberately. Rotated inside the panel they sat on top
+    of the data (the theta peak ran straight through 'Delay Onset'); moved
+    above the panel they fought the column titles for the same strip of header.
+    The event times are on the x-axis and stated in the caption, so the lines
+    alone carry it. Drawn thick enough to actually read on black.
+    """
+    for t_flag, _lab, _y_frac in flags:
+        ax.axvline(t_flag, color=_FLAG_LINE, linewidth=LW_FLAG,
+                   linestyle=':', alpha=0.95, zorder=3)
 
 
 def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir,
@@ -390,9 +395,7 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir,
     flags        = EVENT_FLAGS.get(lockType, [])
 
     fig_w = max(4.8 * n_cols, 14)
-    # 3.4 per row, not 2.8, and no 12-inch floor: with three bands instead of
-    # five a fixed floor stretched each panel vertically and thinned the curve.
-    fig_h = 3.4 * n_rows + 1.2
+    fig_h = 3.6 * n_rows + 1.4
 
     fig, axes = plt.subplots(n_rows, n_cols,
                               figsize=(fig_w, fig_h),
@@ -437,7 +440,7 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir,
             ax.fill_between(tv,
                              mean_curve - sem_curve,
                              mean_curve + sem_curve,
-                             color=colour, alpha=0.30)
+                             color=colour, alpha=BAND_ALPHA)
             ax.plot(tv, mean_curve, color=colour, linewidth=LW_MEAN)
 
             # Reference line at z(or amplitude)=0
@@ -455,7 +458,7 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir,
             if r_idx == 0:
                 roi_lbl = roi.capitalize() if roi != 'whole' else 'Whole brain'
                 ax.set_title(f'{roi_lbl}  (n={n_subj})',
-                             fontsize=FS_PANEL_TTL, fontweight='bold', pad=8)
+                             fontsize=FS_PANEL_TTL, fontweight='bold', pad=10)
 
             if r_idx == n_rows - 1:
                 ax.set_xlabel('Time (s)', fontsize=FS_AXIS_LABEL,
@@ -467,27 +470,24 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir,
 
             if c_idx == 0:
                 ax.annotate(BAND_LABELS.get(band, band),
-                             xy=(-0.36, 0.5), xycoords='axes fraction',
+                             xy=(-0.30, 0.5), xycoords='axes fraction',
                              fontsize=FS_ROW_LABEL, color=_FG,
                              ha='right', va='center',
                              rotation=90, fontweight='bold')
 
-            # Tick spacing: 1 unit on the base grid (1 s on x, 1 z-score/
-            # amplitude unit on y), PLUS an explicit x-tick at every epoch
-            # transition (event flag time) so its exact time is readable
-            # directly off the axis, not just from the floating flag label.
-            base_xticks = np.arange(np.ceil(t_min), np.floor(t_max) + 1.0, 1.0)
-            flag_times  = [f[0] for f in flags]
-            xticks = sorted(set(np.round(np.concatenate([base_xticks, flag_times]), 3))) \
-                if flag_times else base_xticks
-            ax.xaxis.set_major_locator(ticker.FixedLocator(xticks))
+            # Ticks on the 0.5 s grid only. The event times used to be forced
+            # in as extra ticks, which put 0.0 and 0.2 close enough together
+            # that their labels ran into each other and read as "0.00.2". The
+            # dotted lines mark the events, and the top row names them.
+            ax.xaxis.set_major_locator(ticker.MultipleLocator(0.5))
+            ax.xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
             ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=5, symmetric=True))
             ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2g'))
 
     title = 'Stim-locked Activity' if lockType == 'stim' else 'Response-locked Activity'
     fig.suptitle(f'{title}  |  {voxRes}',
-                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.01)
-    fig.tight_layout(rect=[0.07, 0, 1, 1])
+                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.0)
+    fig.tight_layout(rect=[0.04, 0, 1, 0.96])
 
     os.makedirs(outdir, exist_ok=True)
     fpath = os.path.join(outdir, f'timeseries_{lockType}_{voxRes}.png')
