@@ -314,29 +314,14 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
             ax = axes[r][c]; style_ax(ax)
             sub = cdf[(cdf.band == band) & (cdf.roi == roi)]
 
-            # SHUFFLE-NULL BAND. delta is CCGP minus that subject's own shuffle
-            # null, so zero is chance by construction -- but a flat line at
-            # zero says nothing about how far from zero a chance result
-            # WANDERS. This band is that scale: the shuffles give each subject
-            # a null spread, and averaging n subjects shrinks it by sqrt(n), so
-            # the group-level 95% chance interval is ~+/-1.96*sd/sqrt(n).
-            #
-            # It is descriptive, not the inference. It captures shuffle-to-
-            # shuffle variability only; the error bars and the t-test use
-            # BETWEEN-SUBJECT variance, which also carries real differences in
-            # effect size across people and is usually the larger of the two.
-            # Read the band as "chance fluctuates about this much", and read
-            # the filled markers for significance.
-            nsd = np.concatenate([
-                sub[f'null_sd_{d}'].values for d in DICHOTOMIES
-                if f'null_sd_{d}' in sub.columns]) if len(DICHOTOMIES) else np.array([])
-            nsd = nsd[np.isfinite(nsd)]
-            n_subj = max(int(sub.subjID.nunique()), 1)
-            if nsd.size:
-                half = 1.96 * float(nsd.mean()) / np.sqrt(n_subj)
-                ax.axhspan(-half, half, color='#888888', alpha=0.16, zorder=1,
-                           lw=0)
-
+            # No shuffle-null band. It was drawn from WITHIN-subject shuffle
+            # spread (1.96 * mean null SD / sqrt(n)), while the error bars and
+            # every t-test on this figure use BETWEEN-subject variance. Two
+            # different quantities on one panel, and the band was the one with
+            # no test attached to it -- which invited reading it as the
+            # significance criterion when the filled markers are. delta is
+            # already CCGP minus each subject's own null, so zero is chance;
+            # the markers say which points clear it.
             nn = []
             for d in DICHOTOMIES:
                 m, e = [], []
@@ -386,9 +371,7 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
     h += [plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=10),
           plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=7,
                      markerfacecolor=_BG, markeredgewidth=1.8)]
-    h += [plt.matplotlib.patches.Patch(facecolor='#888888', alpha=0.16,
-                                       edgecolor='none')]
-    l += [f'p < {q} ({SCOPE_LABEL[scope]})', 'n.s.', 'Shuffle null (95%)']
+    l += [f'p < {q} ({SCOPE_LABEL[scope]})', 'n.s.']
     leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.99, 0.5),
                      fontsize=FS_LEGEND, framealpha=0.25, edgecolor='#444444',
                      labelcolor=_FG)
@@ -426,7 +409,8 @@ def ttest_paired_epoch_vs_baseline(sub, col, epoch, baseline_epoch):
 
 
 def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
-              scope='panel', family='hypothesis', metric='count'):
+              scope='panel', family='hypothesis', metric='count',
+              ref_lines=True):
     spec = SD_METRICS[metric]
     mcol, base = spec['col'], spec['baseline']
     cdf = df[df.condition == condition]
@@ -484,17 +468,20 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
             if msk.any():
                 ax.plot(x[msk], m[msk], 'o', color=col, ms=10, zorder=5,
                         markeredgecolor=col)
-        if isinstance(base, str):
-            # measured chance: the across-subject mean count at fixation, for
-            # this band x roi cell. Drawn per band as the ROI-averaged level.
-            bl = cdf[(cdf.band == band) & (cdf.epoch == base)][mcol]
-            bl = bl[np.isfinite(bl)]
-            if bl.size:
-                ax.axhline(float(bl.mean()), color='#888888', lw=1.3, ls=':',
-                           zorder=2)
+        # No chance line. What "chance" means here depends entirely on the
+        # metric -- 0.5 for a mean decoding accuracy, but for the count it is
+        # whatever decodanda's internal significance threshold happens to admit
+        # by luck, which is why it had to be measured off the pre-stimulus
+        # epoch rather than stated. A reference line whose meaning changes with
+        # the y-axis is not a useful landmark. The TESTS are unchanged: the
+        # count is still tested paired against each subject's own fixation
+        # count, mean accuracy still against 0.5, and the filled markers still
+        # mark what survives FDR.
+        #
+        # The planar-ring line stays -- it is a geometric landmark (a ring
+        # separates 4 of the 35 dichotomies), not a chance level.
+        if isinstance(base, str) and ref_lines:
             ax.axhline(RING_COUNT, color='#B39DDB', lw=1.3, ls='--', zorder=2)
-        else:
-            ax.axhline(base, color='#888888', lw=1.3, ls=':', zorder=2)
         ax.set_xticks(x)
         ax.set_xticklabels([EPOCH_LABELS[e] for e in EPOCH_ORDER],
                             rotation=30, ha='right', fontsize=FS_TICK)
@@ -505,17 +492,13 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
             ax.set_ylabel(spec['label'], fontsize=FS_AXIS_LABEL,
                           fontweight='bold')
     h, l = axes[0][0].get_legend_handles_labels()
-    h += [plt.Line2D([0], [0], color='#888888', lw=1.3, ls=':'),
-          plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=10),
+    if isinstance(base, str) and ref_lines:
+        h += [plt.Line2D([0], [0], color='#B39DDB', lw=1.3, ls='--')]
+        l += [f'Planar ring ({RING_COUNT:.0f} of 35)']
+    h += [plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=10),
           plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=7,
                      markerfacecolor=_BG, markeredgewidth=1.8)]
-    if isinstance(base, str):
-        h.insert(len(h) - 2, plt.Line2D([0], [0], color='#B39DDB', lw=1.3, ls='--'))
-        l += [f'Chance (measured at {EPOCH_LABELS.get(base, base).lower()})']
-        l += [f'Planar ring ({RING_COUNT:.0f} of 35)']
-        l += [f'p < {q} ({SCOPE_LABEL[scope]})', 'n.s.']
-    else:
-        l += [f'Chance ({base})', f'p < {q} ({SCOPE_LABEL[scope]})', 'n.s.']
+    l += [f'p < {q} ({SCOPE_LABEL[scope]})', 'n.s.']
     leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.99, 0.5),
                      fontsize=FS_LEGEND, framealpha=0.25, edgecolor='#444444',
                      labelcolor=_FG)
@@ -611,6 +594,12 @@ def main():
                      help='FDR level for the across-subject t-tests marked on the '
                           'figures (default 0.05; raise to 0.1 for a more lenient '
                           'threshold).')
+    ap.add_argument('--no_ring_ref', action='store_true',
+                     help='Also drop the planar-ring reference line from the '
+                          'SD count figure. The chance lines are gone for '
+                          'good; this one is kept by default because it is a '
+                          'geometric landmark (a ring separates 4 of the 35 '
+                          'dichotomies), not a chance level.')
     ap.add_argument('--sd_metric', default='count',
                      choices=sorted(SD_METRICS),
                      help="How to report shattering dimensionality. 'count' "
@@ -675,7 +664,8 @@ def main():
                     family=args.family)
         figure_sd(df, cond, args.bands, args.rois, args.voxRes, figdir,
                   sharey=args.sharey, q=args.fdr_q, scope=args.fdr_scope,
-                  family=args.family, metric=args.sd_metric)
+                  family=args.family, metric=args.sd_metric,
+                  ref_lines=not args.no_ring_ref)
     print_summary(df)
     print_dichotomy_contrast(df, q=args.fdr_q)
 
