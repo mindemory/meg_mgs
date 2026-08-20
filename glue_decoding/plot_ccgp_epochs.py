@@ -100,9 +100,12 @@ SD_METRICS = {
         label='Shattering dimensionality\n(mean decoding acc.)',
         baseline=0.5),
 }
-# A planar ring of locations separates 4 of the 35 balanced dichotomies; the
-# reference is meaningful again on the count scale (it was not on an accuracy
-# scale, where it is not a fraction of dichotomies at all).
+# NOT drawn on the SD figure any more -- see figure_sd. A planar ring is
+# strictly linearly separable for 4 of the 35 balanced dichotomies, but the SD
+# axis counts dichotomies that DECODE above chance, and 32 of the 35 have a
+# non-zero group-mean gap on that same ring. The two quantities are different,
+# so 4 was never this axis's ring prediction. Kept only as a named constant in
+# case a strict-separability readout is added later.
 RING_COUNT = GEOMETRIC_RING_SD * 35
 
 
@@ -416,8 +419,7 @@ def ttest_paired_epoch_vs_baseline(sub, col, epoch, baseline_epoch):
 
 def figure_sd(df, condition, bands, rois, voxRes, figdir, epochs=EPOCHS_DEFAULT,
               sharey=False, q=0.05,
-              scope='panel', family='hypothesis', metric='count',
-              ref_lines=True):
+              scope='panel', family='hypothesis', metric='count'):
     spec = SD_METRICS[metric]
     mcol, base = spec['col'], spec['baseline']
     cdf = df[df.condition == condition]
@@ -475,20 +477,28 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, epochs=EPOCHS_DEFAULT,
             if msk.any():
                 ax.plot(x[msk], m[msk], 'o', color=col, ms=10, zorder=5,
                         markeredgecolor=col)
-        # No chance line. What "chance" means here depends entirely on the
-        # metric -- 0.5 for a mean decoding accuracy, but for the count it is
-        # whatever decodanda's internal significance threshold happens to admit
-        # by luck, which is why it had to be measured off the pre-stimulus
-        # epoch rather than stated. A reference line whose meaning changes with
-        # the y-axis is not a useful landmark. The TESTS are unchanged: the
-        # count is still tested paired against each subject's own fixation
-        # count, mean accuracy still against 0.5, and the filled markers still
-        # mark what survives FDR.
+        # NO REFERENCE LINES AT ALL.
         #
-        # The planar-ring line stays -- it is a geometric landmark (a ring
-        # separates 4 of the 35 dichotomies), not a chance level.
-        if isinstance(base, str) and ref_lines:
-            ax.axhline(RING_COUNT, color='#B39DDB', lw=1.3, ls='--', zorder=2)
+        # The chance lines went first: "chance" had no single meaning here (0.5
+        # for a mean accuracy, but for the count whatever decodanda's internal
+        # threshold admits by luck, which is why it had to be measured off the
+        # pre-stimulus epoch rather than stated).
+        #
+        # The planar-ring line went too, and for a stronger reason: it was
+        # simply WRONG to draw against this y-axis. It is true that 8 points on
+        # a ring are strictly linearly separable for exactly 4 of the 35
+        # balanced dichotomies (verified by LP; they are the four
+        # consecutive-arc splits). But this axis counts dichotomies that DECODE
+        # ABOVE CHANCE, and a linear decoder needs only a difference in the two
+        # group means, not strict separability of the noiseless points. On the
+        # same ring, 32 of the 35 dichotomies have a non-zero group-mean gap,
+        # so 32 are decodable given enough trials. Strict separability and
+        # above-chance decodability are different quantities; 4 was never the
+        # ring's prediction for THIS measure.
+        #
+        # The TESTS are untouched: the count is still tested paired against
+        # each subject's own fixation count, mean accuracy still against 0.5,
+        # and the filled markers still mark what survives FDR.
         ax.set_xticks(x)
         ax.set_xticklabels([EPOCH_LABELS[e] for e in epochs],
                             rotation=30, ha='right', fontsize=FS_TICK)
@@ -499,9 +509,6 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, epochs=EPOCHS_DEFAULT,
             ax.set_ylabel(spec['label'], fontsize=FS_AXIS_LABEL,
                           fontweight='bold')
     h, l = axes[0][0].get_legend_handles_labels()
-    if isinstance(base, str) and ref_lines:
-        h += [plt.Line2D([0], [0], color='#B39DDB', lw=1.3, ls='--')]
-        l += [f'Planar ring ({RING_COUNT:.0f} of 35)']
     h += [plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=10),
           plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=7,
                      markerfacecolor=_BG, markeredgewidth=1.8)]
@@ -610,12 +617,6 @@ def main():
                           'not taxed for a panel nobody reads. All epochs are '
                           'still loaded -- the SD count baseline needs the '
                           'fixation rows.')
-    ap.add_argument('--no_ring_ref', action='store_true',
-                     help='Also drop the planar-ring reference line from the '
-                          'SD count figure. The chance lines are gone for '
-                          'good; this one is kept by default because it is a '
-                          'geometric landmark (a ring separates 4 of the 35 '
-                          'dichotomies), not a chance level.')
     ap.add_argument('--sd_metric', default='count',
                      choices=sorted(SD_METRICS),
                      help="How to report shattering dimensionality. 'count' "
@@ -681,7 +682,7 @@ def main():
         figure_sd(df, cond, args.bands, args.rois, args.voxRes, figdir,
                   epochs=args.epochs, sharey=args.sharey, q=args.fdr_q,
                   scope=args.fdr_scope, family=args.family,
-                  metric=args.sd_metric, ref_lines=not args.no_ring_ref)
+                  metric=args.sd_metric)
     print_summary(df)
     print_dichotomy_contrast(df, q=args.fdr_q, epochs=args.epochs)
 

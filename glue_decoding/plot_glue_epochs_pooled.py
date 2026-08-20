@@ -49,6 +49,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 
 from constants import get_bids_root
 from visual_geometry_epochs_cell import EPOCH_ORDER
@@ -57,7 +58,14 @@ _BG, _FG, _GRID = '#000000', '#e0e0e0', '#1c1c1c'
 # Slide scale, matching plot_timeseries.py / the intrinsic-dim figures.
 FS_SUPTITLE, FS_PANEL_TTL, FS_AXIS_LABEL, FS_ROW_LABEL, FS_TICK = 26, 21, 20, 21, 17
 FS_LEGEND = 15
-FS_NOTE   = 14   # the per-panel btwn-subj / pts-per-manifold footnote
+
+def _thin_yticks(ax, n=4):
+    """At most n y ticks. These metrics live in a narrow range (capacity spans
+    ~0.0400-0.0416), so the default locator packs the axis with near-identical
+    long decimals that are unreadable at slide size and say nothing the two
+    endpoints do not."""
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=n))
+
 
 def _epoch_ticklabels(ax, epochs):
     """Horizontal and wrapped at the space rather than rotated: at slide font
@@ -156,29 +164,15 @@ def figure_metric(df, metric, label, condition, bands, rois, voxRes, figdir,
                             capsize=4, zorder=4 if not is_shuf else 3,
                             ls='-' if not is_shuf else '--',
                             label=lab if (r == 0 and c == 0) else None)
-            # Pooling-validity check AND points-per-manifold, per cell rather
-            # than buried in the CSV. The point count matters for reading
-            # CAPACITY ACROSS ROIs: the separability ceiling scales with the
-            # feature count, so bigger ROIs get more points per manifold, and
-            # more points make manifolds harder to separate -- i.e. capacity
-            # falls. A cross-ROI capacity difference at unequal point counts is
-            # therefore partly an artefact of ROI size, not of the code. Shown
-            # so that comparison is never made by accident.
-            bs = sub['between_subj_share'].dropna()
-            note = []
-            if len(bs):
-                note.append(f'btwn-subj {bs.mean():.2f}')
-            if 'points_per_manifold' in sub.columns and len(sub):
-                pm = sub['points_per_manifold'].dropna()
-                if len(pm):
-                    note.append(f'{int(pm.median())} pts/man')
-            if note:
-                # Top-left: the shuffled line sits low and flat, so a
-                # bottom-right annotation lands on top of it.
-                ax.text(0.03, 0.97, '  '.join(note), transform=ax.transAxes,
-                        ha='left', va='top', fontsize=FS_NOTE, color='#8a8f94')
+            # The per-panel 'btwn-subj / pts per manifold' annotation used to
+            # sit here. Both are still computed and still in the CSV, and
+            # print_summary reports them -- they were only ever a diagnostic,
+            # and on a slide they read as part of the result. See print_summary
+            # for what they mean and why points-per-manifold still forbids
+            # comparing capacity ACROSS ROI columns.
             ax.set_xticks(x)
             _epoch_ticklabels(ax, epochs)
+            _thin_yticks(ax)
             if r == 0:
                 ax.set_title(roi.capitalize(), fontsize=FS_PANEL_TTL,
                              color=ROI_COLOURS.get(roi, _FG), fontweight='bold', pad=8)
@@ -251,6 +245,7 @@ def figure_delta(df, metric, label, condition, bands, rois, voxRes, figdir,
             ax.axhline(0.0, color='#888888', lw=1.2, ls=':', zorder=2)
             ax.set_xticks(x)
             _epoch_ticklabels(ax, epochs)
+            _thin_yticks(ax)
             if r == 0:
                 ax.set_title(roi.capitalize(), fontsize=FS_PANEL_TTL,
                              color=ROI_COLOURS.get(roi, _FG), fontweight='bold', pad=8)
