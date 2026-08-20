@@ -163,6 +163,17 @@ def bh_fdr(pvals, q=0.05):
 SCOPE_LABEL = {'panel': 'FDR per panel', 'figure': 'FDR figure-wide',
                'none': 'uncorrected'}
 
+# Which tests form the PRIMARY (hypothesis) family. The control dichotomy is
+# predicted to sit AT chance -- it is a negative control, not a hypothesis --
+# and fixation is pre-stimulus, so there is no location information to find
+# there yet. Including either in the correction family means the baselines tax
+# the actual hypotheses: it doubles the CCGP family from 6 to 12 tests per
+# panel while adding nothing that is being claimed. They are still tested and
+# still marked, but corrected as their OWN family, so a control that
+# unexpectedly lights up stays visible instead of being buried.
+CONTROL_DICH = 'axis'
+BASELINE_EPOCH = 'fixation'
+
 
 def apply_correction(fam, scope, q):
     """
@@ -222,7 +233,7 @@ def style_ax(ax):
 
 
 def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
-                scope='panel'):
+                scope='panel', family='hypothesis'):
     cdf = df[df.condition == condition]
     bands = [b for b in bands if b in set(cdf.band.unique())]
     rois = [r for r in rois if r in set(cdf.roi.unique())]
@@ -231,21 +242,32 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
 
     # PASS 1 -- collect every test, grouped by panel so the correction family
     # can be chosen (see apply_correction).
-    fam = {}
+    fam_p, fam_s = {}, {}
     for band in bands:
         for roi in rois:
-            ks, ps = [], []
+            kp, pp_, ks_, ps_ = [], [], [], []
             for d in DICHOTOMIES:
                 for ep in EPOCH_ORDER:
                     ss = cdf[(cdf.band == band) & (cdf.roi == roi) & (cdf.epoch == ep)]
-                    _, pp = ttest_vs(ss, f'delta_{d}', 0.0)
-                    ks.append((band, roi, d, ep)); ps.append(pp)
-            fam[(band, roi)] = (ks, ps)
-    sig = apply_correction(fam, scope, q)
-    n_tested = sum(int(np.isfinite(np.asarray(v[1], float)).sum()) for v in fam.values())
-    per_fam = len(next(iter(fam.values()))[1]) if fam else 0
-    print(f'  CCGP: {sum(sig.values())}/{n_tested} significant | {SCOPE_LABEL[scope]} '
-          f'q<{q} ({per_fam} tests per family)')
+                    _, pval = ttest_vs(ss, f'delta_{d}', 0.0)
+                    primary = (family == 'all' or
+                               (d != CONTROL_DICH and ep != BASELINE_EPOCH))
+                    (kp if primary else ks_).append((band, roi, d, ep))
+                    (pp_ if primary else ps_).append(pval)
+            fam_p[(band, roi)] = (kp, pp_)
+            if ks_:
+                fam_s[(band, roi)] = (ks_, ps_)
+    sig = apply_correction(fam_p, scope, q)
+    sig.update(apply_correction(fam_s, scope, q))
+    n_p = sum(int(np.isfinite(np.asarray(v[1], float)).sum()) for v in fam_p.values())
+    per_fam = len(next(iter(fam_p.values()))[1]) if fam_p else 0
+    n_sig_p = sum(sig[k] for v in fam_p.values() for k in v[0])
+    print(f'  CCGP: {n_sig_p}/{n_p} significant in the hypothesis family | '
+          f'{SCOPE_LABEL[scope]} q<{q} ({per_fam} tests per family)')
+    if fam_s:
+        n_sig_s = sum(sig[k] for v in fam_s.values() for k in v[0])
+        print(f'        + control/{BASELINE_EPOCH} family corrected separately: '
+              f'{n_sig_s} significant (expected near 0)')
 
     n_r, n_c = len(bands), len(rois)
     fig, axes = plt.subplots(n_r, n_c, figsize=(5.0 * n_c + 2.4, 3.8 * n_r + 1.6),
@@ -319,7 +341,7 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
 
 
 def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
-              scope='panel'):
+              scope='panel', family='hypothesis'):
     cdf = df[df.condition == condition]
     bands = [b for b in bands if b in set(cdf.band.unique())]
     rois = [r for r in rois if r in set(cdf.roi.unique())]
@@ -328,20 +350,26 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
 
     # SD is a mean decoding ACCURACY, so the null is 0.5, not 0. A panel here
     # is one BAND (its three ROI lines), matching the figure's layout.
-    fam = {}
+    fam_p, fam_s = {}, {}
     for band in bands:
-        ks, ps = [], []
+        kp, pp_, ks_, ps_ = [], [], [], []
         for roi in rois:
             for ep in EPOCH_ORDER:
                 ss = cdf[(cdf.band == band) & (cdf.roi == roi) & (cdf.epoch == ep)]
-                _, pp = ttest_vs(ss, 'sd', 0.5)
-                ks.append((band, roi, ep)); ps.append(pp)
-        fam[band] = (ks, ps)
-    sig = apply_correction(fam, scope, q)
-    n_tested = sum(int(np.isfinite(np.asarray(v[1], float)).sum()) for v in fam.values())
-    per_fam = len(next(iter(fam.values()))[1]) if fam else 0
-    print(f'  SD:   {sum(sig.values())}/{n_tested} significant | {SCOPE_LABEL[scope]} '
-          f'q<{q} ({per_fam} tests per family)')
+                _, pval = ttest_vs(ss, 'sd', 0.5)
+                primary = (family == 'all' or ep != BASELINE_EPOCH)
+                (kp if primary else ks_).append((band, roi, ep))
+                (pp_ if primary else ps_).append(pval)
+        fam_p[band] = (kp, pp_)
+        if ks_:
+            fam_s[band] = (ks_, ps_)
+    sig = apply_correction(fam_p, scope, q)
+    sig.update(apply_correction(fam_s, scope, q))
+    n_p = sum(int(np.isfinite(np.asarray(v[1], float)).sum()) for v in fam_p.values())
+    per_fam = len(next(iter(fam_p.values()))[1]) if fam_p else 0
+    n_sig_p = sum(sig[k] for v in fam_p.values() for k in v[0])
+    print(f'  SD:   {n_sig_p}/{n_p} significant in the hypothesis family | '
+          f'{SCOPE_LABEL[scope]} q<{q} ({per_fam} tests per family)')
 
     fig, axes = plt.subplots(1, len(bands), figsize=(5.2 * len(bands) + 2.6, 5.2),
                               facecolor=_BG, squeeze=False, sharey=sharey)
@@ -435,6 +463,15 @@ def main():
                      help='FDR level for the across-subject t-tests marked on the '
                           'figures (default 0.05; raise to 0.1 for a more lenient '
                           'threshold).')
+    ap.add_argument('--family', default='hypothesis',
+                     choices=['hypothesis', 'all'],
+                     help="Which tests form the corrected family. 'hypothesis' "
+                          "(default) excludes the control dichotomy and the "
+                          "fixation epoch -- neither is a claim being made, and "
+                          "including them doubles the CCGP family (6 -> 12 per "
+                          "panel) purely to tax the real tests. They are still "
+                          "tested and marked, corrected as a separate family. "
+                          "'all' puts everything in one family.")
     ap.add_argument('--fdr_scope', default='panel',
                      choices=['panel', 'figure', 'none'],
                      help="Family the correction is applied over. 'panel' (default) "
@@ -475,9 +512,11 @@ def main():
         if cond not in set(df.condition.unique()):
             continue
         figure_ccgp(df, cond, args.bands, args.rois, args.voxRes, figdir,
-                    sharey=args.sharey, q=args.fdr_q, scope=args.fdr_scope)
+                    sharey=args.sharey, q=args.fdr_q, scope=args.fdr_scope,
+                    family=args.family)
         figure_sd(df, cond, args.bands, args.rois, args.voxRes, figdir,
-                  sharey=args.sharey, q=args.fdr_q, scope=args.fdr_scope)
+                  sharey=args.sharey, q=args.fdr_q, scope=args.fdr_scope,
+                  family=args.family)
     print_summary(df)
 
 
