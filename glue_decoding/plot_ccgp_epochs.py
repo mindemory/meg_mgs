@@ -64,7 +64,12 @@ BAND_LABELS = {'theta': 'Theta (4-8 Hz)', 'alpha': 'Alpha (8-12 Hz)',
                'beta': 'Beta (13-30 Hz)'}
 COND_LABELS = {'ampOnly': 'Amplitude', 'ampPhase': 'Amplitude + Phase'}
 EPOCH_LABELS = {'fixation': 'Fixation', 'stimulus': 'Stimulus',
-                 'early_delay': 'Early delay', 'late_delay': 'Late delay'}
+                 'early_delay': 'Memory delay', 'late_delay': 'Late delay'}
+# Shown and TESTED epochs. Late delay is off by default -- dropping it also
+# shrinks every correction family, so the remaining tests are not taxed for a
+# panel nobody is reading. The full set is still LOADED: the SD count metric
+# takes its baseline from the fixation rows, and print_summary dumps all four.
+EPOCHS_DEFAULT = ('fixation', 'stimulus', 'early_delay')
 
 # Shattering dimensionality has two live conventions and they are on different
 # scales, so the plotter carries both explicitly rather than silently picking:
@@ -268,7 +273,8 @@ def style_ax(ax):
     ax.set_axisbelow(True)
 
 
-def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
+def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False,
+                 epochs=EPOCHS_DEFAULT, q=0.05,
                 scope='panel', family='hypothesis'):
     cdf = df[df.condition == condition]
     bands = [b for b in bands if b in set(cdf.band.unique())]
@@ -283,7 +289,7 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
         for roi in rois:
             kp, pp_, ks_, ps_ = [], [], [], []
             for d in DICHOTOMIES:
-                for ep in EPOCH_ORDER:
+                for ep in epochs:
                     ss = cdf[(cdf.band == band) & (cdf.roi == roi) & (cdf.epoch == ep)]
                     _, pval = ttest_vs(ss, f'delta_{d}', 0.0)
                     primary = (family == 'all' or
@@ -308,7 +314,7 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
     n_r, n_c = len(bands), len(rois)
     fig, axes = plt.subplots(n_r, n_c, figsize=(5.0 * n_c + 2.4, 3.8 * n_r + 1.6),
                               facecolor=_BG, squeeze=False, sharey=sharey)
-    x = np.arange(len(EPOCH_ORDER))
+    x = np.arange(len(epochs))
     for r, band in enumerate(bands):
         for c, roi in enumerate(rois):
             ax = axes[r][c]; style_ax(ax)
@@ -325,7 +331,7 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
             nn = []
             for d in DICHOTOMIES:
                 m, e = [], []
-                for ep in EPOCH_ORDER:
+                for ep in epochs:
                     ss = sub[sub.epoch == ep]
                     mm, ee, n = mean_sem(ss, f'delta_{d}')
                     m.append(mm); e.append(ee); nn.append(n)
@@ -339,7 +345,7 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
                             zorder=4,
                             label=DICH_LABELS[d] if (r == 0 and c == 0) else None)
                 msk = np.array([bool(sig.get((band, roi, d, ep), False))
-                                for ep in EPOCH_ORDER])
+                                for ep in epochs])
                 if msk.any():
                     ax.plot(x[msk], m[msk], 'o', color=col, ms=10, zorder=5,
                             markeredgecolor=col)
@@ -348,13 +354,13 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
                 # part of the decodable signal that fails to generalize.
                 if f'decode_delta_{d}' in sub.columns:
                     md = [mean_sem(sub[sub.epoch == ep], f'decode_delta_{d}')[0]
-                          for ep in EPOCH_ORDER]
+                          for ep in epochs]
                     ax.plot(x, md, color=col, lw=1.5, ls='--', alpha=0.75, zorder=3,
                             label=('Decoding ceiling' if (r == 0 and c == 0
                                    and d == DICHOTOMIES[0]) else None))
             ax.axhline(0.0, color='#888888', lw=1.3, ls=':', zorder=2)
             ax.set_xticks(x)
-            ax.set_xticklabels([EPOCH_LABELS[e] for e in EPOCH_ORDER],
+            ax.set_xticklabels([EPOCH_LABELS[e] for e in epochs],
                                 rotation=30, ha='right', fontsize=FS_TICK)
             _thin_yticks(ax)
             if r == 0:
@@ -408,7 +414,8 @@ def ttest_paired_epoch_vs_baseline(sub, col, epoch, baseline_epoch):
                                                   both.iloc[:, 1].values).pvalue)
 
 
-def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
+def figure_sd(df, condition, bands, rois, voxRes, figdir, epochs=EPOCHS_DEFAULT,
+              sharey=False, q=0.05,
               scope='panel', family='hypothesis', metric='count',
               ref_lines=True):
     spec = SD_METRICS[metric]
@@ -427,7 +434,7 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
         kp, pp_, ks_, ps_ = [], [], [], []
         for roi in rois:
             sub_br = cdf[(cdf.band == band) & (cdf.roi == roi)]
-            for ep in EPOCH_ORDER:
+            for ep in epochs:
                 if isinstance(base, str):
                     # the baseline epoch cannot be tested against itself
                     pval = (np.nan if ep == base else
@@ -450,13 +457,13 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
 
     fig, axes = plt.subplots(1, len(bands), figsize=(5.2 * len(bands) + 2.6, 5.2),
                               facecolor=_BG, squeeze=False, sharey=sharey)
-    x = np.arange(len(EPOCH_ORDER))
+    x = np.arange(len(epochs))
     for c, band in enumerate(bands):
         ax = axes[0][c]; style_ax(ax)
         for roi in rois:
             sub = cdf[(cdf.band == band) & (cdf.roi == roi)]
             m, e = [], []
-            for ep in EPOCH_ORDER:
+            for ep in epochs:
                 mm, ee, _ = mean_sem(sub[sub.epoch == ep], mcol)
                 m.append(mm); e.append(ee)
             m, e = np.array(m, float), np.array(e, float)
@@ -464,7 +471,7 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
             ax.errorbar(x, m, yerr=e, color=col, lw=2.4, marker='o', ms=7,
                         markerfacecolor=_BG, markeredgewidth=1.8, capsize=4,
                         zorder=4, label=roi.capitalize() if c == 0 else None)
-            msk = np.array([bool(sig.get((band, roi, ep), False)) for ep in EPOCH_ORDER])
+            msk = np.array([bool(sig.get((band, roi, ep), False)) for ep in epochs])
             if msk.any():
                 ax.plot(x[msk], m[msk], 'o', color=col, ms=10, zorder=5,
                         markeredgecolor=col)
@@ -483,7 +490,7 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
         if isinstance(base, str) and ref_lines:
             ax.axhline(RING_COUNT, color='#B39DDB', lw=1.3, ls='--', zorder=2)
         ax.set_xticks(x)
-        ax.set_xticklabels([EPOCH_LABELS[e] for e in EPOCH_ORDER],
+        ax.set_xticklabels([EPOCH_LABELS[e] for e in epochs],
                             rotation=30, ha='right', fontsize=FS_TICK)
         _thin_yticks(ax)
         ax.set_title(BAND_LABELS.get(band, band), fontsize=FS_PANEL_TTL,
@@ -542,7 +549,7 @@ def print_summary(df):
                   + ' '.join(f'{c:>13s}' for c in cells) + f' {sm:.2f}+/-{se:.2f}')
 
 
-def print_dichotomy_contrast(df, q=0.05):
+def print_dichotomy_contrast(df, q=0.05, epochs=EPOCHS_DEFAULT):
     """
     PAIRED test between the two hypothesis dichotomies, across subjects.
 
@@ -567,7 +574,7 @@ def print_dichotomy_contrast(df, q=0.05):
     hdr = f"{'band':6s} {'cond':9s} {'roi':9s} {'epoch':12s} {'n':>3s} {'diff':>9s} {'p':>8s}"
     print(hdr); print('-' * len(hdr))
     for (band, cond, roi), g in df.groupby(['band', 'condition', 'roi']):
-        for ep in EPOCH_ORDER:
+        for ep in epochs:
             if ep == BASELINE_EPOCH:
                 continue
             s2 = g[g.epoch == ep]
@@ -594,6 +601,15 @@ def main():
                      help='FDR level for the across-subject t-tests marked on the '
                           'figures (default 0.05; raise to 0.1 for a more lenient '
                           'threshold).')
+    ap.add_argument('--epochs', nargs='+', default=list(EPOCHS_DEFAULT),
+                     choices=list(EPOCH_ORDER),
+                     help='Epochs to show AND test, in order (default fixation '
+                          'stimulus early_delay, with early_delay labelled '
+                          '"Memory delay"). Dropping late delay also shrinks '
+                          'every correction family, so the remaining tests are '
+                          'not taxed for a panel nobody reads. All epochs are '
+                          'still loaded -- the SD count baseline needs the '
+                          'fixation rows.')
     ap.add_argument('--no_ring_ref', action='store_true',
                      help='Also drop the planar-ring reference line from the '
                           'SD count figure. The chance lines are gone for '
@@ -660,14 +676,14 @@ def main():
         if cond not in set(df.condition.unique()):
             continue
         figure_ccgp(df, cond, args.bands, args.rois, args.voxRes, figdir,
-                    sharey=args.sharey, q=args.fdr_q, scope=args.fdr_scope,
-                    family=args.family)
+                    epochs=args.epochs, sharey=args.sharey, q=args.fdr_q,
+                    scope=args.fdr_scope, family=args.family)
         figure_sd(df, cond, args.bands, args.rois, args.voxRes, figdir,
-                  sharey=args.sharey, q=args.fdr_q, scope=args.fdr_scope,
-                  family=args.family, metric=args.sd_metric,
-                  ref_lines=not args.no_ring_ref)
+                  epochs=args.epochs, sharey=args.sharey, q=args.fdr_q,
+                  scope=args.fdr_scope, family=args.family,
+                  metric=args.sd_metric, ref_lines=not args.no_ring_ref)
     print_summary(df)
-    print_dichotomy_contrast(df, q=args.fdr_q)
+    print_dichotomy_contrast(df, q=args.fdr_q, epochs=args.epochs)
 
 
 if __name__ == '__main__':
