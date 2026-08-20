@@ -142,6 +142,33 @@ def participation_ratio(lam):
     return float(s1 ** 2 / (lam ** 2).sum()) if s1 > 1e-30 else np.nan
 
 
+def combined_geometry(Xc):
+    """
+    PR of the WHOLE pooled cloud -- every location's trials together, location
+    labels ignored.
+
+    This is a different quantity from the mean of the per-location PRs, not a
+    summary of it. Per-location PR measures the dimensionality of variation
+    WITHIN one manifold, i.e. how many directions the trial-to-trial noise
+    occupies once the location's mean is removed. Combining all locations puts
+    the between-location variance back in, so this PR counts the dimensionality
+    of the whole representation, signal included.
+
+    The two answer different questions and can move in opposite directions: if
+    the location means spread out along a few axes while within-manifold noise
+    stays put, combined PR falls (a few directions now dominate the total
+    variance) while per-location PR does not move at all.
+
+    Xc is already centered on the pooled grand mean, so this covariance is
+    taken about the same origin as the per-location displacements.
+    """
+    Sigma, shrink = _ledoit_wolf_cov(Xc)
+    lam = np.maximum(np.linalg.eigvalsh(Sigma), 0.0)
+    return dict(pr_all=participation_ratio(lam),
+                trace_sigma_all=float(lam.sum()),
+                shrinkage_all=shrink)
+
+
 def per_location_geometry(Xc, y, min_trials):
     """
     Xc: (n_trials, F) pooled trials for one (band, roi, epoch), already
@@ -237,6 +264,7 @@ def run_cell(subjects, band, roi, condition, voxRes, bids_root, min_trials, log=
 
         geo = per_location_geometry(Xc, y_pooled, min_trials)
         vpart = location_variance_partition(Xc, y_pooled, subj_pooled, min_trials)
+        comb = combined_geometry(Xc)
 
         for li, loc in enumerate(LOCATIONS):
             rows.append(dict(
@@ -248,6 +276,12 @@ def run_cell(subjects, band, roi, condition, voxRes, bids_root, min_trials, log=
                 mu_norm=geo['mu_norm'][li], ntv=geo['ntv'][li],
                 between_subj_share=vpart['between_subj_share'][li],
                 n_subj_contrib=int(vpart['n_subj_contrib'][li]),
+                # One value per (band, roi, epoch) cell, repeated on each of
+                # its location rows so that averaging over locations in the
+                # plotter returns it unchanged.
+                pr_all=comb['pr_all'],
+                trace_sigma_all=comb['trace_sigma_all'],
+                shrinkage_all=comb['shrinkage_all'],
             ))
         pr_vals = geo['pr'][~np.isnan(geo['pr'])]
         ntv_vals = geo['ntv'][~np.isnan(geo['ntv'])]
@@ -255,6 +289,7 @@ def run_cell(subjects, band, roi, condition, voxRes, bids_root, min_trials, log=
         log(f'    {ep}: F={Xe.shape[1]} N/loc={np.median(geo["n"]):.0f}-'
             f'[{geo["n"].min()}-{geo["n"].max()}] | '
             f'PR mean={np.nanmean(pr_vals) if pr_vals.size else np.nan:.2f} | '
+            f'PR all-loc={comb["pr_all"]:.2f} | '
             f'NTV mean={np.nanmean(ntv_vals) if ntv_vals.size else np.nan:.3f} | '
             f'between_subj_share mean={np.nanmean(bshare_vals) if bshare_vals.size else np.nan:.3f}')
     return rows

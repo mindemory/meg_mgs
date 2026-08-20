@@ -61,11 +61,13 @@ _GRID      = '#1c1c1c'
 
 # Font sizes -- same scale as plot_circular_tgm.py / plot_visual_geometry_*.py,
 # so every figure in this project reads consistently: big, bold, legible.
-FS_SUPTITLE   = 18
-FS_PANEL_TTL  = 14
-FS_AXIS_LABEL = 13
-FS_ROW_LABEL  = 14
-FS_TICK       = 10
+# Sized for a projected slide, matching plot_timeseries.py.
+FS_SUPTITLE   = 26
+FS_PANEL_TTL  = 21
+FS_AXIS_LABEL = 20
+FS_ROW_LABEL  = 21
+FS_TICK       = 17
+FS_LEGEND     = 16
 
 ROI_COLOURS = {
     'visual':   '#FFC629',
@@ -77,7 +79,10 @@ BAND_LABELS = {'theta': 'Theta (4-8 Hz)', 'alpha': 'Alpha (8-12 Hz)',
                'beta': 'Beta (13-30 Hz)', 'lowgamma': 'Low gamma (30-80 Hz)',
                'highgamma': 'High gamma (80-150 Hz)'}
 EPOCH_LABELS = {'fixation': 'Fixation', 'stimulus': 'Stimulus',
-                 'early_delay': 'Early delay', 'late_delay': 'Late delay'}
+                 'early_delay': 'Memory delay', 'late_delay': 'Late delay'}
+# Late delay is off by default: with three bars the epoch axis stays readable
+# without rotated tick labels. Pass --epochs to bring it back.
+EPOCHS_DEFAULT = ('fixation', 'stimulus', 'early_delay')
 
 # NTV = sqrt(Tr(Sigma)) / ||mu|| is a RATIO of two things that answer different
 # questions, so it is plotted alongside its own numerator and denominator. A
@@ -85,7 +90,14 @@ EPOCH_LABELS = {'fixation': 'Fixation', 'stimulus': 'Stimulus',
 # apart" -- both lower it -- and which of the two an area/band uses to support
 # decoding is exactly the question NTV was suggested for.
 METRICS = {
-    'pr':     dict(col='pr', label='Participation ratio'),
+    'pr':     dict(col='pr', label='Participation ratio  (per location)'),
+    # PR of every location's trials together, labels ignored. NOT a summary of
+    # the per-location PRs: that one measures within-manifold noise
+    # dimensionality, this one puts the between-location (signal) variance back
+    # in and measures the dimensionality of the whole representation. They can
+    # move in opposite directions.
+    'pr_all': dict(col='pr_all', label='Participation ratio  (all locations)',
+                   no_err=True),
     'ntv':    dict(col='ntv', label='Normalized total variation'),
     'size':   dict(col='sqrt_trace', label='Manifold size  $\\sqrt{Tr(\\Sigma)}$'),
     'center': dict(col='mu_norm', label='Center displacement  $\\|\\mu\\|$'),
@@ -169,6 +181,7 @@ def style_ax(ax):
 
 
 def plot_metric_figure(df, metric, condition, bands, rois, voxRes, outdir,
+                        epochs=EPOCHS_DEFAULT,
                         ref_epoch=None):
     spec = METRICS[metric]
     n_r, n_c = len(bands), len(rois)
@@ -181,16 +194,21 @@ def plot_metric_figure(df, metric, condition, bands, rois, voxRes, outdir,
         for c, roi in enumerate(rois):
             ax = axes[r][c]
             style_ax(ax)
-            shades = epoch_shades(roi)
+            shades = epoch_shades(roi, n=len(epochs))
             means, sems = [], []
-            for ep in EPOCH_ORDER:
+            for ep in epochs:
                 m, se, _ = aggregate(df, band, roi, condition, ep, spec['col'])
                 means.append(m if m is not None else np.nan)
                 sems.append(se if se is not None else 0.0)
 
-            x = np.arange(len(EPOCH_ORDER))
-            ax.bar(x, means, yerr=sems, color=shades, edgecolor=_FG,
-                   linewidth=0.6, capsize=4,
+            x = np.arange(len(epochs))
+            # The error bar is the spread across the 10 LOCATIONS. A
+            # whole-cloud quantity has one value per cell, repeated on each
+            # location row, so that spread is exactly zero -- drawing a
+            # zero-height bar would read as a precise estimate rather than as
+            # an inapplicable one, so it is omitted instead.
+            ax.bar(x, means, yerr=(None if spec.get('no_err') else sems),
+                   color=shades, edgecolor=_FG, linewidth=0.6, capsize=4,
                    error_kw=dict(ecolor=_FG, elinewidth=1.2, capthick=1.2))
             if metric == 'bshare' and ref_epoch is None:
                 # Reference line kept, hard 0-1 limit dropped: real values sit
@@ -200,8 +218,17 @@ def plot_metric_figure(df, metric, condition, bands, rois, voxRes, outdir,
                 # Baseline is 1.0 by construction; the line is the read-off.
                 ax.axhline(1.0, color='#888888', linewidth=1.0, linestyle=':', zorder=1)
             ax.set_xticks(x)
-            ax.set_xticklabels([EPOCH_LABELS[e] for e in EPOCH_ORDER],
-                                rotation=30, ha='right', fontsize=FS_TICK)
+            # Horizontal, wrapped at the space rather than rotated: at slide
+            # font size 'Stimulus' and 'Memory delay' run into each other on
+            # one line, and rotating costs more legibility than the wrap does.
+            # Rotation is kept only for the 4-epoch case, where wrapping alone
+            # is not enough.
+            wrap = len(epochs) <= 3
+            ax.set_xticklabels(
+                [EPOCH_LABELS[e].replace(' ', '\n') if wrap else EPOCH_LABELS[e]
+                 for e in epochs],
+                rotation=(0 if wrap else 30),
+                ha=('center' if wrap else 'right'), fontsize=FS_TICK)
 
             if r == 0:
                 ax.set_title(roi.capitalize(), fontsize=FS_PANEL_TTL,
@@ -260,6 +287,7 @@ def mechanism_points(df, condition, band, roi, epoch, ref_epoch):
 
 
 def plot_mechanism_scatter(df, condition, bands, rois, voxRes, outdir,
+                            epochs=EPOCHS_DEFAULT,
                             ref_epoch=REF_EPOCH_DEFAULT):
     """
     HOW each area/band changes its geometry, not just how much.
@@ -274,7 +302,7 @@ def plot_mechanism_scatter(df, condition, bands, rois, voxRes, outdir,
       below centre     -> manifolds shrank
       lower-right      -> both
     """
-    eps = [e for e in EPOCH_ORDER if e != ref_epoch]
+    eps = [e for e in epochs if e != ref_epoch]
     fig, axes = plt.subplots(1, len(eps), figsize=(5.0 * len(eps) + 1.5, 5.4),
                               facecolor=_BG, squeeze=False)
     any_pt = False
@@ -321,7 +349,7 @@ def plot_mechanism_scatter(df, condition, bands, rois, voxRes, outdir,
                            markeredgecolor='k', label=BAND_LABELS.get(b, b))
                 for b in bands]
     leg = fig.legend(handles=handles, loc='center left', bbox_to_anchor=(0.99, 0.5),
-                     fontsize=11, framealpha=0.25, edgecolor='#444444', labelcolor=_FG)
+                     fontsize=FS_LEGEND, framealpha=0.25, edgecolor='#444444', labelcolor=_FG)
     leg.get_frame().set_facecolor('#1a1a1a')
 
     fig.suptitle(f'How geometry changes vs {EPOCH_LABELS.get(ref_epoch, ref_epoch).lower()}'
@@ -356,6 +384,11 @@ def main():
                           "comparable ACROSS AREAS: sqrt(Tr(Sigma)) scales as "
                           "sqrt(n_features) and the ROIs differ 3x in feature count, "
                           "which the ratio cancels.")
+    ap.add_argument('--epochs', nargs='+', default=list(EPOCHS_DEFAULT),
+                     choices=list(EPOCH_ORDER),
+                     help='Which epochs to show, in order (default fixation '
+                          'stimulus early_delay -- early_delay is labelled '
+                          '"Memory delay"). Pass late_delay to include it.')
     ap.add_argument('--no_mechanism', action='store_true',
                      help='Skip the size-vs-center mechanism scatter.')
     ap.add_argument('--outdir', default=None)
@@ -385,21 +418,29 @@ def main():
         if not bands or not rois:
             print(f'Skipping {condition}: no matching bands/rois in {in_csv}')
             continue
-        for metric in METRICS:
-            plot_metric_figure(cdf, metric, condition, bands, rois, args.voxRes, outdir)
+        metrics = [m for m in METRICS if METRICS[m]['col'] in cdf.columns]
+        for m in METRICS:
+            if m not in metrics:
+                print(f"Skipping metric '{m}': column "
+                      f"'{METRICS[m]['col']}' not in {os.path.basename(in_csv)} "
+                      f'-- rerun intrinsic_dim_pooled_epochs.py to add it.')
+        for metric in metrics:
+            plot_metric_figure(cdf, metric, condition, bands, rois, args.voxRes,
+                                outdir, epochs=args.epochs)
 
         if ref_epoch is not None:
-            cols = sorted({m['col'] for m in METRICS.values()})
+            cols = sorted({METRICS[m]['col'] for m in metrics})
             rdf = relativize(cdf, ref_epoch, cols)
-            for metric in METRICS:
+            for metric in metrics:
                 plot_metric_figure(rdf, metric, condition, bands, rois, args.voxRes,
-                                    outdir, ref_epoch=ref_epoch)
+                                    outdir, epochs=args.epochs, ref_epoch=ref_epoch)
             if not args.no_mechanism:
                 # Built from the RAW frame: mechanism_points does its own
                 # per-location ratio in log space, so handing it already-
                 # relativized values would divide by the baseline twice.
                 plot_mechanism_scatter(cdf, condition, bands, rois, args.voxRes,
-                                        outdir, ref_epoch=ref_epoch)
+                                        outdir, epochs=args.epochs,
+                                        ref_epoch=ref_epoch)
 
 
 if __name__ == '__main__':
