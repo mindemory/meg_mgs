@@ -69,17 +69,28 @@ from plot_visual_geometry_ts import (
     FS_CBAR_LABEL, FS_CBAR_TICK,
 )
 
-# The MDS panel titles pack 3 metrics into 2 lines inside a small (~2.5in)
-# panel -- FS_PANEL_TTL is too big to fit there without overlapping the plot
-# above it, so this gets its own, still-legible-but-denser size.
-FS_MDS_METRICS = 10.5
+# Slide scale, matching plot_timeseries.py and the intrinsic-dim figures. The
+# imported FS_* are kept for the RDM figure's colourbar.
+FS_SUPTITLE   = 26
+FS_PANEL_TTL  = 21
+FS_AXIS_LABEL = 20
+FS_ROW_LABEL  = 21
+FS_LEGEND     = 15
 
-BAND_LABELS = {'theta': 'Theta (4-8 Hz)', 'alpha': 'Alpha (8-12 Hz)',
-               'beta': 'Beta (13-30 Hz)', 'lowgamma': 'Low gamma (30-80 Hz)',
-               'highgamma': 'High gamma (80-150 Hz)'}
+# The MDS panel titles pack 3 metrics into 2 lines inside one panel, so they
+# stay smaller than the column headers -- but the panels are wider now, which
+# buys enough room to lift this off the old 10.5.
+FS_MDS_METRICS = 15
+
+# Band names WITHOUT the frequency ranges: on a slide the numbers are noise
+# next to the name, and they are stated once in the methods.
+BAND_LABELS = {'theta': 'Theta', 'alpha': 'Alpha', 'beta': 'Beta',
+               'lowgamma': 'Low gamma', 'highgamma': 'High gamma'}
 COND_LABELS = {'ampOnly': 'Amplitude', 'ampPhase': 'Amplitude + Phase'}
 EPOCH_LABELS = {'fixation': 'Fixation', 'stimulus': 'Stimulus',
-                'early_delay': 'Early delay', 'late_delay': 'Late delay'}
+                'early_delay': 'Memory delay', 'late_delay': 'Late delay'}
+# Late delay is off by default; pass --epochs to bring it back.
+EPOCHS_DEFAULT = ('fixation', 'stimulus', 'early_delay')
 
 # Colour = true polar angle. hsv is cyclic, which is what an angular variable
 # needs -- a sequential map would put 0 and 335 deg at opposite ends of the
@@ -188,46 +199,61 @@ def _draw_ring(ax, coords, title):
                edgecolors='k', linewidths=0.6)
     ax.set_aspect('equal', adjustable='datalim')
     ax.set_xticks([]); ax.set_yticks([])
-    ax.set_title(title, fontsize=FS_MDS_METRICS, color=_FG, fontweight='bold', pad=4)
+    if title:
+        ax.set_title(title, fontsize=FS_MDS_METRICS, color=_FG,
+                     fontweight='bold', pad=4)
     ax.margins(0.16)
     _style_ax(ax)
 
 
-def figure_mds(results, bands, cond, roi, voxRes, figdir, bin_name='all'):
+def figure_mds(results, bands, cond, roi, voxRes, figdir, bin_name='all',
+                epochs=EPOCHS_DEFAULT, panel_metrics=False):
     bands = [b for b in bands if results.get((b, cond, roi, bin_name), {}).get('n', 0) > 0]
     if not bands:
         return None
-    n_r, n_c = len(bands), len(EPOCH_ORDER)
-    # Extra header room (2.6in vs the old 1.7in) for the bigger fonts below --
-    # a brief bold suptitle, a smaller reference-values line, and the epoch
-    # column headers all have to fit without colliding.
-    fig_h = 2.55 * n_r + 2.6
-    fig = plt.figure(figsize=(2.55 * n_c + 2.4, fig_h), facecolor=_BG)
-    gs = gridspec.GridSpec(n_r, n_c, figure=fig, hspace=0.34, wspace=0.16,
-                            left=0.075, right=0.845,
-                            top=1 - 2.0 / fig_h, bottom=0.35 / fig_h)
+    n_r, n_c = len(bands), len(epochs)
+    # Bigger panels (3.2in vs 2.55in) so the rings still read once the metric
+    # line above each one is at slide size.
+    fig_h = 3.2 * n_r + (3.2 if panel_metrics else 1.9)
+    fig = plt.figure(figsize=(3.2 * n_c + 2.8, fig_h), facecolor=_BG)
+    # The wide row gap only exists to fit the two-line metric titles.
+    gs = gridspec.GridSpec(n_r, n_c, figure=fig,
+                            hspace=(0.46 if panel_metrics else 0.14), wspace=0.16,
+                            left=0.085, right=0.835,
+                            top=1 - (2.6 if panel_metrics else 1.3) / fig_h,
+                            bottom=0.35 / fig_h)
     for r, band in enumerate(bands):
         e = results[(band, cond, roi, bin_name)]
-        for c, ep in enumerate(EPOCH_ORDER):
+        for c, ep in enumerate(epochs):
             ax = fig.add_subplot(gs[r, c])
-            grp, m = e['cells'][c]
+            # cells is indexed by position in the FULL epoch order, so it has
+            # to be looked up by name -- indexing it with the column number
+            # would silently plot the wrong epoch whenever a subset is shown.
+            grp, m = e['cells'][EPOCH_ORDER.index(ep)]
             _, coords = mds_spectrum(grp) if grp is not None else (None, None)
+            # Off by default: the rings themselves are the point of this
+            # figure, and three numbers per panel plus a reference line at the
+            # top was more text than plot. The values are all in the summary
+            # table and the CSV -- --panel_metrics puts them back.
             ttl = (f"ring={m.get('ring_r', np.nan):.2f}  "
                    f"$\\lambda_2/\\lambda_1$={m.get('lam2_over_lam1', np.nan):.2f}\n"
-                   f"top2={m.get('top2_var_frac', np.nan):.2f}")
+                   f"top2={m.get('top2_var_frac', np.nan):.2f}") if panel_metrics else ''
             _draw_ring(ax, coords, ttl)
             if r == 0:
-                ax.text(0.5, 1.16, EPOCH_LABELS[ep], transform=ax.transAxes,
+                # Clears the two-line metric title when --panel_metrics is on;
+                # sits just above the panel when it is off.
+                ax.text(0.5, (1.30 if panel_metrics else 1.04),
+                        EPOCH_LABELS[ep], transform=ax.transAxes,
                         ha='center', va='bottom', fontsize=FS_PANEL_TTL, color=_FG,
                         fontweight='bold')
             if c == 0:
-                ax.annotate(f"{BAND_LABELS.get(band, band)}\n(n={e['n']})",
-                            xy=(-0.16, 0.5), xycoords='axes fraction',
+                ax.annotate(BAND_LABELS.get(band, band),
+                            xy=(-0.14, 0.5), xycoords='axes fraction',
                             fontsize=FS_ROW_LABEL, color=_FG, ha='right', va='center',
                             rotation=90, fontweight='bold')
 
     leg = fig.legend(handles=_legend_handles(), loc='center left',
-                     bbox_to_anchor=(0.855, 0.5), fontsize=10, framealpha=0.25,
+                     bbox_to_anchor=(0.845, 0.5), fontsize=FS_LEGEND, framealpha=0.25,
                      edgecolor='#444444', labelcolor=_FG, title='Target angle')
     leg.get_frame().set_facecolor('#1a1a1a')
     leg.get_title().set_color(_FG)
@@ -236,17 +262,20 @@ def figure_mds(results, bands, cond, roi, voxRes, figdir, bin_name='all'):
     # Brief bold headline, then the ring/lambda2/lambda1/top2 reference values
     # as a smaller, separate line -- keeping both (per feedback: brief titles,
     # but keep the metric reference numbers), just not sharing one font size.
+    # Just the ROI. 'MDS geometry by epoch' and 'Amplitude' were constant
+    # across every figure in the set, so they carried no information per
+    # figure; the bin tag is kept because it does vary.
     fig.suptitle(
-        f'MDS geometry by epoch  |  {COND_LABELS.get(cond, cond)}  |  '
         f'{"" if bin_name=="all" else "bin=" + bin_name + "  |  "}'
         f'{roi.capitalize()}',
-        color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1 - 0.16 / fig_h)
-    fig.text(0.5, 1 - 0.60 / fig_h,
-             f"perfect ring: ring=1.00, "
-             f"$\\lambda_2/\\lambda_1$={IDEAL_RING['lam2_over_lam1']:.2f}, "
-             f"top2={IDEAL_RING['top2_var_frac']:.2f}   |   "
-             f"null: ring~0.38, $\\lambda_2/\\lambda_1$~0.64, top2~0.67",
-             ha='center', va='top', color='#aaaaaa', fontsize=11)
+        color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1 - 0.20 / fig_h)
+    if panel_metrics:
+        fig.text(0.5, 1 - 0.72 / fig_h,
+                 f"perfect ring: ring=1.00, "
+                 f"$\\lambda_2/\\lambda_1$={IDEAL_RING['lam2_over_lam1']:.2f}, "
+                 f"top2={IDEAL_RING['top2_var_frac']:.2f}   |   "
+                 f"null: ring~0.38, $\\lambda_2/\\lambda_1$~0.64, top2~0.67",
+                 ha='center', va='top', color='#aaaaaa', fontsize=FS_LEGEND)
     os.makedirs(figdir, exist_ok=True)
     tag = '' if bin_name == 'all' else f'_{bin_name}'
     fp = os.path.join(figdir, f'visual_geometry_epochs_mds_{cond}_{roi}{tag}_{voxRes}.png')
@@ -256,22 +285,25 @@ def figure_mds(results, bands, cond, roi, voxRes, figdir, bin_name='all'):
     return fp
 
 
-def figure_rdm(results, bands, cond, roi, voxRes, figdir, bin_name='all', clim=0.3):
+def figure_rdm(results, bands, cond, roi, voxRes, figdir, bin_name='all', clim=0.3,
+                epochs=EPOCHS_DEFAULT):
     bands = [b for b in bands if results.get((b, cond, roi, bin_name), {}).get('n', 0) > 0]
     if not bands:
         return None
-    n_r, n_c = len(bands), len(EPOCH_ORDER)
-    fig_h = 2.5 * n_r + 2.1
-    fig = plt.figure(figsize=(2.5 * n_c + 2.0, fig_h), facecolor=_BG)
-    gs = gridspec.GridSpec(n_r, n_c, figure=fig, hspace=0.30, wspace=0.22,
-                            left=0.085, right=0.86,
-                            top=1 - 1.5 / fig_h, bottom=0.40 / fig_h)
+    n_r, n_c = len(bands), len(epochs)
+    fig_h = 3.0 * n_r + 2.4
+    fig = plt.figure(figsize=(3.0 * n_c + 2.4, fig_h), facecolor=_BG)
+    gs = gridspec.GridSpec(n_r, n_c, figure=fig, hspace=0.38, wspace=0.24,
+                            left=0.095, right=0.86,
+                            top=1 - 1.7 / fig_h, bottom=0.40 / fig_h)
     im = None
     for r, band in enumerate(bands):
         e = results[(band, cond, roi, bin_name)]
-        for c, ep in enumerate(EPOCH_ORDER):
+        for c, ep in enumerate(epochs):
             ax = fig.add_subplot(gs[r, c])
-            grp, m = e['cells'][c]
+            # Looked up by name, not by column: cells is indexed by position in
+            # the full epoch order, so a subset would otherwise be misaligned.
+            grp, m = e['cells'][EPOCH_ORDER.index(ep)]
             if grp is None:
                 ax.text(0.5, 0.5, 'No data', ha='center', va='center',
                         transform=ax.transAxes, color=_FG, fontsize=10)
@@ -294,8 +326,8 @@ def figure_rdm(results, bands, cond, roi, voxRes, figdir, bin_name='all', clim=0
                         ha='center', va='bottom', fontsize=FS_PANEL_TTL, color=_FG,
                         fontweight='bold')
             if c == 0:
-                ax.annotate(f"{BAND_LABELS.get(band, band)}\n(n={e['n']})",
-                            xy=(-0.32, 0.5), xycoords='axes fraction',
+                ax.annotate(BAND_LABELS.get(band, band),
+                            xy=(-0.30, 0.5), xycoords='axes fraction',
                             fontsize=FS_ROW_LABEL, color=_FG, ha='right', va='center',
                             rotation=90, fontweight='bold')
             _style_ax(ax)
@@ -306,10 +338,13 @@ def figure_rdm(results, bands, cond, roi, voxRes, figdir, bin_name='all', clim=0
                      fontweight='bold')
         cb.ax.tick_params(colors=_FG, labelsize=FS_CBAR_TICK)
         cb.outline.set_edgecolor('#333333')
-    fig.suptitle(f'Group RDM by epoch  |  {COND_LABELS.get(cond, cond)}  |  '
+    # 'Group RDM' stays -- unlike the MDS figure this one shares a directory
+    # with a same-named MDS figure per ROI, so the ROI alone would not say
+    # which of the two you are looking at.
+    fig.suptitle(f'Group RDM  |  '
                  f'{"" if bin_name=="all" else "bin=" + bin_name + "  |  "}'
                  f'{roi.capitalize()}',
-                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1 - 0.28 / fig_h)
+                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1 - 0.30 / fig_h)
     os.makedirs(figdir, exist_ok=True)
     tag = '' if bin_name == 'all' else f'_{bin_name}'
     fp = os.path.join(figdir, f'visual_geometry_epochs_rdm_{cond}_{roi}{tag}_{voxRes}.png')
@@ -483,7 +518,19 @@ def main():
     ap.add_argument('--bands', nargs='+', default=['theta', 'alpha', 'beta'],
                      help='Default theta/alpha/beta for both ampOnly and ampPhase; '
                           'pass lowgamma/highgamma explicitly for an ampOnly-only run.')
-    ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
+    ap.add_argument('--conditions', nargs='+', default=['ampOnly'],
+                     help='Default ampOnly. Pass ampPhase to also emit the '
+                          'amplitude+phase figures.')
+    ap.add_argument('--panel_metrics', action='store_true',
+                     help='Print ring / lambda2-lambda1 / top2 above each MDS '
+                          'panel, plus the perfect-ring and null reference '
+                          'line. Off by default -- the values are in the '
+                          'printed summary and the CSV either way.')
+    ap.add_argument('--epochs', nargs='+', default=list(EPOCHS_DEFAULT),
+                     choices=list(EPOCH_ORDER),
+                     help='Which epochs to show, in order (default fixation '
+                          'stimulus early_delay, with early_delay labelled '
+                          '"Memory delay"). Pass late_delay to include it.')
     ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
     ap.add_argument('--bins', nargs='+', default=['all'],
                      help="Performance bins to plot. Default ['all'] only -- trials are "
@@ -556,8 +603,11 @@ def main():
         for roi in args.rois:
             for bn in bins:
                 figure_rdm(results, args.bands, cond, roi, args.voxRes, args.figdir,
+                            epochs=args.epochs,
                            bin_name=bn, clim=args.rdm_clim)
-                figure_mds(results, args.bands, cond, roi, args.voxRes, args.figdir, bin_name=bn)
+                figure_mds(results, args.bands, cond, roi, args.voxRes, args.figdir,
+                            bin_name=bn, epochs=args.epochs,
+                            panel_metrics=args.panel_metrics)
             figure_bin_comparison(results, args.bands, bins, cond, roi,
                                    args.voxRes, args.figdir)
     write_csv(results, args.csvdir, args.rois, args.voxRes, bins)
