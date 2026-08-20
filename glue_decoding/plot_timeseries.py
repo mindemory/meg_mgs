@@ -117,6 +117,16 @@ _GRID      = '#1c1c1c'
 _FLAG_LINE = '#777777'
 _FLAG_TXT  = '#cccccc'
 
+# Font sizes -- same scale as plot_circular_tgm.py / plot_visual_geometry_*.py /
+# plot_ccgp_epochs.py, so every figure in this project reads consistently.
+FS_SUPTITLE   = 18
+FS_PANEL_TTL  = 14
+FS_AXIS_LABEL = 13
+FS_ROW_LABEL  = 14
+FS_TICK       = 10
+FS_FLAG       = 11
+LW_MEAN       = 2.6   # the curve itself, was 1.6
+
 # ROI colours: mango/bumble for visual, soft violet for parietal,
 # emerald mint for frontal -- all vivid on true black.
 ROI_COLOURS = {
@@ -197,7 +207,7 @@ def _baseline_zscore(curve, tv_crop, baseline_window):
 
 def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
                              atlas_masks, rois_all, t_min, t_max,
-                             baseline_window=None):
+                             baseline_window=None, bands=None):
     """
     Load and reduce one subject's data to per-ROI mean timeseries curves,
     cropped to [t_min, t_max].
@@ -251,7 +261,10 @@ def load_subject_timeseries(subjID, lockType, voxRes, bids_root,
             del g03_data, g03
 
     # ── G04 band amplitudes ───────────────────────────────────────────────────
-    for band in AMP_ONLY_BANDS:
+    # Only the requested bands: this loop is the expensive part (one G04 load
+    # per band), so restricting it here rather than at plot time is what makes
+    # a theta/alpha/beta run ~40% cheaper than an all-five run.
+    for band in (AMP_ONLY_BANDS if bands is None else bands):
         result[band] = {}
 
         if need_whole:
@@ -341,7 +354,7 @@ def _apply_black_style(fig, axes_flat):
     fig.patch.set_facecolor(_BG)
     for ax in axes_flat:
         ax.set_facecolor(_BG)
-        ax.tick_params(colors=_FG, which='both', labelsize=11)
+        ax.tick_params(colors=_FG, which='both', labelsize=FS_TICK)
         ax.xaxis.label.set_color(_FG)
         ax.yaxis.label.set_color(_FG)
         ax.title.set_color(_FG)
@@ -352,30 +365,34 @@ def _apply_black_style(fig, axes_flat):
 def _draw_event_flags(ax, flags, y_lim):
     """Draw vertical flag lines and rotated text labels."""
     for t_flag, label, y_frac in flags:
-        ax.axvline(t_flag, color=_FLAG_LINE, linewidth=0.9,
+        ax.axvline(t_flag, color=_FLAG_LINE, linewidth=1.3,
                    linestyle=':', alpha=0.85, zorder=3)
         y_pos = y_lim[0] + y_frac * (y_lim[1] - y_lim[0])
         ax.text(t_flag, y_pos, label,
-                color=_FLAG_TXT, fontsize=9, ha='left', va='top',
+                color=_FLAG_TXT, fontsize=FS_FLAG, ha='left', va='top',
                 rotation=90, rotation_mode='anchor',
                 fontweight='bold', zorder=4,
                 transform=ax.get_xaxis_transform() if False else ax.transData)
 
 
-def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir, baselined=True):
+def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir,
+                            baselined=True, bands=None):
     """
     One figure per lockType:
         rows = bands (6)
         cols = ROIs  (4)
     """
-    bands  = BAND_ORDER
+    bands  = [b for b in (bands if bands is not None else BAND_ORDER)
+              if b in BAND_ORDER]
     n_rows = len(bands)
     n_cols = len(rois_all)
     t_min, t_max = TIME_WINDOWS.get(lockType, (-1.0, 2.0))
     flags        = EVENT_FLAGS.get(lockType, [])
 
-    fig_w = max(4.5 * n_cols, 14)
-    fig_h = max(2.8 * n_rows, 12)
+    fig_w = max(4.8 * n_cols, 14)
+    # 3.4 per row, not 2.8, and no 12-inch floor: with three bands instead of
+    # five a fixed floor stretched each panel vertically and thinned the curve.
+    fig_h = 3.4 * n_rows + 1.2
 
     fig, axes = plt.subplots(n_rows, n_cols,
                               figsize=(fig_w, fig_h),
@@ -414,17 +431,17 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir, base
 
             if tv is None:
                 ax.text(0.5, 0.5, 'no data', transform=ax.transAxes,
-                        ha='center', va='center', color='#555555', fontsize=9)
+                        ha='center', va='center', color='#555555', fontsize=11)
                 continue
 
             ax.fill_between(tv,
                              mean_curve - sem_curve,
                              mean_curve + sem_curve,
-                             color=colour, alpha=0.25)
-            ax.plot(tv, mean_curve, color=colour, linewidth=1.6)
+                             color=colour, alpha=0.30)
+            ax.plot(tv, mean_curve, color=colour, linewidth=LW_MEAN)
 
             # Reference line at z(or amplitude)=0
-            ax.axhline(0, color=_FLAG_LINE, linewidth=0.8, alpha=0.6, zorder=2)
+            ax.axhline(0, color=_FLAG_LINE, linewidth=1.1, alpha=0.6, zorder=2)
 
             # Draw event flags
             _draw_event_flags(ax, flags, ax.get_ylim())
@@ -438,19 +455,20 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir, base
             if r_idx == 0:
                 roi_lbl = roi.capitalize() if roi != 'whole' else 'Whole brain'
                 ax.set_title(f'{roi_lbl}  (n={n_subj})',
-                             fontsize=14, fontweight='bold', pad=6)
+                             fontsize=FS_PANEL_TTL, fontweight='bold', pad=8)
 
             if r_idx == n_rows - 1:
-                ax.set_xlabel('Time (s)', fontsize=12)
+                ax.set_xlabel('Time (s)', fontsize=FS_AXIS_LABEL,
+                              fontweight='bold')
 
             if c_idx == 0:
                 ylabel = 'Normalized activity'
-                ax.set_ylabel(ylabel, fontsize=11)
+                ax.set_ylabel(ylabel, fontsize=FS_AXIS_LABEL, fontweight='bold')
 
             if c_idx == 0:
                 ax.annotate(BAND_LABELS.get(band, band),
                              xy=(-0.36, 0.5), xycoords='axes fraction',
-                             fontsize=12, color=_FG,
+                             fontsize=FS_ROW_LABEL, color=_FG,
                              ha='right', va='center',
                              rotation=90, fontweight='bold')
 
@@ -468,7 +486,7 @@ def plot_timeseries_figure(all_results, rois_all, lockType, voxRes, outdir, base
 
     title = 'Stim-locked Activity' if lockType == 'stim' else 'Response-locked Activity'
     fig.suptitle(f'{title}  |  {voxRes}',
-                 color=_FG, fontsize=17, fontweight='bold', y=1.01)
+                 color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.01)
     fig.tight_layout(rect=[0.07, 0, 1, 1])
 
     os.makedirs(outdir, exist_ok=True)
@@ -488,6 +506,11 @@ def main():
     parser.add_argument('--voxRes',    default='8mm')
     parser.add_argument('--lockTypes', nargs='+', default=['stim', 'resp'])
     parser.add_argument('--rois',      nargs='+', default=list(ROI_NAMES))
+    parser.add_argument('--bands',     nargs='+', default=['theta', 'alpha', 'beta'],
+                        help='Bands to load AND plot (default theta alpha beta). '
+                             'Restricting here skips their G04 loads entirely, so it '
+                             'is a real speedup, not just a plotting filter. Pass '
+                             'lowgamma/highgamma explicitly to include them.')
     parser.add_argument('--subjects',  nargs='+', type=int,
                         default=SUBJECT_LIST)
     parser.add_argument('--outdir',    default=None)
@@ -516,8 +539,8 @@ def main():
     rois_all = list(args.rois)
 
     n_jobs = max(1, args.n_jobs)
-    print(f'plot_timeseries | voxRes={args.voxRes} | '
-          f'subjects={args.subjects} | rois={rois_all} | n_jobs={n_jobs}')
+    print(f'plot_timeseries | voxRes={args.voxRes} | subjects={args.subjects} | '
+          f'rois={rois_all} | bands={args.bands} | n_jobs={n_jobs}')
 
     atlas_masks = load_atlas_masks(args.voxRes, bids_root)
 
@@ -530,13 +553,16 @@ def main():
         all_results = Parallel(n_jobs=n_jobs, prefer='processes', verbose=5)(
             delayed(load_subject_timeseries)(
                 subjID, lockType, args.voxRes, bids_root,
-                atlas_masks, rois_all, t_min, t_max, baseline_window
+                atlas_masks, rois_all, t_min, t_max, baseline_window,
+                list(args.bands)
             )
             for subjID in args.subjects
         )
 
         plot_timeseries_figure(all_results, rois_all, lockType,
-                                args.voxRes, outdir, baselined=baseline_window is not None)
+                                args.voxRes, outdir,
+                                baselined=baseline_window is not None,
+                                bands=list(args.bands))
 
     print('\nDone.')
 
