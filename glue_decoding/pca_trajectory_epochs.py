@@ -121,6 +121,39 @@ def pca2(M):
     return Vt[:2].T                                   # (n_features, 2)
 
 
+def subspace_alignment(A, B):
+    """Mean cos^2 of the principal angles between two 2D subspaces. 1=identical."""
+    Qa, _ = np.linalg.qr(A); Qb, _ = np.linalg.qr(B)
+    return float((np.linalg.svd(Qa.T @ Qb, compute_uv=False) ** 2).mean())
+
+
+def basis_stability(Xd, y, seed=0):
+    """
+    Split-half reliability of this subject's plane, measured on the REAL data.
+
+    The basis is a PCA of just 10 condition means, so the obvious worry is that
+    10 points cannot define a stable plane. Ambient dimension turns out not to
+    be the issue -- 10 centered points span at most 9 dimensions however many
+    features there are, so it cancels, and pre-reducing to 50 trial-PCs the way
+    the RDM pipeline does changed subspace recovery by nothing at all (0.965 vs
+    0.965 on matched simulations). What does set the quality is SNR per
+    condition mean, i.e. trials per location against effect size, and that is
+    data-dependent and worth measuring rather than assuming.
+
+    So: fit the plane on one half of the trials, fit it again on the other
+    half, and report how much the two agree. 1.0 means the plane is fully
+    determined; 0.5 means one of its two directions is reproducible and the
+    other is noise; 0.003 is what two random planes give at this feature count.
+    """
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(Xd.shape[0])
+    h = np.zeros(Xd.shape[0], bool); h[perm[:len(perm) // 2]] = True
+    Ma, Mb = condition_means(Xd, y, h), condition_means(Xd, y, ~h)
+    if not (np.isfinite(Ma).all() and np.isfinite(Mb).all()):
+        return np.nan
+    return subspace_alignment(pca2(Ma), pca2(Mb))
+
+
 def condition_means(X, y, mask=None):
     """(n_loc, F) means. Locations with no trials come back as NaN."""
     if mask is not None:
@@ -502,30 +535,31 @@ def subject_worker(subjID, band, condition, roi, voxRes, bids_root,
     try:
         X, y, tv = load_subject(subjID, band, condition, roi, voxRes, bids_root)
     except Exception as e:
-        return (subjID, None, None, None, f'{type(e).__name__}: {e}')
+        return (subjID, None, None, None, f'{type(e).__name__}: {e}', np.nan)
     try:
         lo, hi = EPOCHS[REF_EPOCH]
         tmask = (tv >= lo) & (tv < hi)
         if not tmask.any():
-            return (subjID, tv, None, None, f'no samples in {REF_EPOCH}')
+            return (subjID, tv, None, None, f'no samples in {REF_EPOCH}', np.nan)
         Xd = X[:, tmask, :].mean(axis=1)              # (n_trials, F), once
         real = trajectory_from(X, Xd, y, cv=cv, seed=subjID)
         if real is None:
             return (subjID, tv, None, None, 'no usable basis')
+        stab = basis_stability(Xd, y, seed=subjID)
         nulls = [trajectory_from(X, Xd, y, cv=cv, seed=1000 * k + subjID,
                                   shuffle=True)
                  for k in range(n_shuffles)]
     finally:
         del X
-    return (subjID, tv, real, nulls, None)
+    return (subjID, tv, real, nulls, None, stab)
 
 
 def run_cell(res, band, condition, roi, voxRes, bids_root, figdir,
              epochs, n_shuffles=20, smooth_ms=50, elev=22, azim=-62):
     """Assemble one (band, roi) cell from already-computed worker results."""
-    per_subj, tv = [], None
+    per_subj, tv, stabs = [], None, []
     null_subj = [[] for _ in range(n_shuffles)]
-    for subjID, t, real, nulls, err in sorted(res, key=lambda r: r[0]):
+    for subjID, t, real, nulls, err, stab in sorted(res, key=lambda r: r[0]):
         if err is not None:
             print(f'  sub-{subjID:02d}: {err}')
             continue
@@ -536,7 +570,7 @@ def run_cell(res, band, condition, roi, voxRes, bids_root, figdir,
         elif t.size != tv.size:
             print(f'  sub-{subjID:02d}: time axis mismatch, skipping.')
             continue
-        per_subj.append(real)
+        per_subj.append(real); stabs.append(stab)
         for k, cs in enumerate(nulls):
             if cs is not None:
                 null_subj[k].append(cs)
@@ -560,6 +594,11 @@ def run_cell(res, band, condition, roi, voxRes, bids_root, figdir,
     msg = f'  {band}/{condition}/{roi}: n={len(per_subj)} ring(delay)={np.nanmean(r[dm]):.3f}'
     if r_null is not None:
         msg += f' null={np.nanmean(r_null[:, dm]):.3f}'
+    # Split-half reliability of the per-subject plane, on the real data. If
+    # this is near 0.5 the second PC is not reproducible and the 2D geometry
+    # should be read as one reliable axis plus noise, not as a plane.
+    if stabs:
+        msg += f' | basis split-half={np.nanmean(stabs):.3f}'
     print(msg, flush=True)
 
     figure_trajectory_3d(G, tv, band, condition, roi, voxRes, figdir,
