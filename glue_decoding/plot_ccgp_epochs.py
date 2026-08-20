@@ -160,8 +160,9 @@ def bh_fdr(pvals, q=0.05):
     return out
 
 
-SCOPE_LABEL = {'panel': 'FDR per panel', 'figure': 'FDR figure-wide',
-               'none': 'uncorrected'}
+SCOPE_LABEL = {'panel': 'FDR', 'figure': 'FDR', 'none': 'uncorrected'}
+SCOPE_LOG = {'panel': 'FDR per panel', 'figure': 'FDR figure-wide',
+             'none': 'uncorrected'}
 
 # Which tests form the PRIMARY (hypothesis) family. The control dichotomy is
 # predicted to sit AT chance -- it is a negative control, not a hypothesis --
@@ -263,7 +264,7 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
     per_fam = len(next(iter(fam_p.values()))[1]) if fam_p else 0
     n_sig_p = sum(sig[k] for v in fam_p.values() for k in v[0])
     print(f'  CCGP: {n_sig_p}/{n_p} significant in the hypothesis family | '
-          f'{SCOPE_LABEL[scope]} q<{q} ({per_fam} tests per family)')
+          f'{SCOPE_LOG[scope]} q<{q} ({per_fam} tests per family)')
     if fam_s:
         n_sig_s = sum(sig[k] for v in fam_s.values() for k in v[0])
         print(f'        + control/{BASELINE_EPOCH} family corrected separately: '
@@ -369,7 +370,7 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
     per_fam = len(next(iter(fam_p.values()))[1]) if fam_p else 0
     n_sig_p = sum(sig[k] for v in fam_p.values() for k in v[0])
     print(f'  SD:   {n_sig_p}/{n_p} significant in the hypothesis family | '
-          f'{SCOPE_LABEL[scope]} q<{q} ({per_fam} tests per family)')
+          f'{SCOPE_LOG[scope]} q<{q} ({per_fam} tests per family)')
 
     fig, axes = plt.subplots(1, len(bands), figsize=(5.2 * len(bands) + 2.6, 5.2),
                               facecolor=_BG, squeeze=False, sharey=sharey)
@@ -452,6 +453,47 @@ def print_summary(df):
                   + ' '.join(f'{c:>13s}' for c in cells) + f' {sm:.2f}+/-{se:.2f}')
 
 
+def print_dichotomy_contrast(df, q=0.05):
+    """
+    PAIRED test between the two hypothesis dichotomies, across subjects.
+
+    Needed because "top/bottom is significant and left/right is not" is NOT
+    evidence that they differ -- the difference between significant and
+    non-significant is not itself significant (Gelman & Stern 2006). Two
+    effects of nearly identical size routinely land on opposite sides of a
+    threshold. To claim an axis asymmetry you have to test the DIFFERENCE,
+    which is what this does: a paired t-test of
+    (CCGP_horizontal - CCGP_vertical) against 0, using each subject as its own
+    control.
+    """
+    hyp = [d for d in DICHOTOMIES if d != CONTROL_DICH]
+    if len(hyp) != 2:
+        return
+    a, b = hyp
+    print('\n' + '=' * 72)
+    print(f'AXIS ASYMMETRY -- paired {a} vs {b}, across subjects')
+    print('  A dichotomy being significant while the other is not does NOT mean')
+    print('  they differ; this is the test that does. Positive = ' + a + ' larger.')
+    print('=' * 72)
+    hdr = f"{'band':6s} {'cond':9s} {'roi':9s} {'epoch':12s} {'n':>3s} {'diff':>9s} {'p':>8s}"
+    print(hdr); print('-' * len(hdr))
+    for (band, cond, roi), g in df.groupby(['band', 'condition', 'roi']):
+        for ep in EPOCH_ORDER:
+            if ep == BASELINE_EPOCH:
+                continue
+            s2 = g[g.epoch == ep]
+            va = s2[f'delta_{a}'].values
+            vb = s2[f'delta_{b}'].values
+            ok = np.isfinite(va) & np.isfinite(vb)
+            if ok.sum() < 2:
+                continue
+            d = va[ok] - vb[ok]
+            pv = float(stats.ttest_rel(va[ok], vb[ok]).pvalue)
+            star = ' *' if pv < q else ''
+            print(f'{band:6s} {cond:9s} {roi:9s} {ep:12s} {int(ok.sum()):3d} '
+                  f'{d.mean():+9.4f} {pv:8.3f}{star}')
+
+
 def main():
     ap = argparse.ArgumentParser(description='Aggregate + plot CCGP / SD across subjects.')
     ap.add_argument('--voxRes', default='8mm')
@@ -518,6 +560,7 @@ def main():
                   sharey=args.sharey, q=args.fdr_q, scope=args.fdr_scope,
                   family=args.family)
     print_summary(df)
+    print_dichotomy_contrast(df, q=args.fdr_q)
 
 
 if __name__ == '__main__':
