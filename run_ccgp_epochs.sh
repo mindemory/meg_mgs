@@ -107,15 +107,20 @@ echo ""
 echo "========================================================"
 echo " Aggregating across subjects ..."
 echo "========================================================"
+# Both SD conventions, on different scales -- the count (0-35) is the raw
+# quantity, mean accuracy is the sensitive one. Filenames differ, so both land.
+for SD_METRIC in count mean_acc; do
 python3 "${PLOT_SCRIPT}" \
     --voxRes "${VOX_RES}" \
     --bands "${BANDS[@]}" \
     --conditions "${CONDITIONS[@]}" \
     --rois "${ROIS[@]}" \
+    --sd_metric "${SD_METRIC}" \
     --outdir "${DATA_DIR}" \
     --figdir "${FIG_DIR}" \
     --csvdir "${CSV_DIR}" \
-    2>&1 | tee "${LOG_DIR}/aggregate.log"
+    2>&1 | tee "${LOG_DIR}/aggregate_${SD_METRIC}.log"
+done
 
 echo ""
 echo "========================================================"
