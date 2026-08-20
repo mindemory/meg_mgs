@@ -66,11 +66,39 @@ COND_LABELS = {'ampOnly': 'Amplitude', 'ampPhase': 'Amplitude + Phase'}
 EPOCH_LABELS = {'fixation': 'Fixation', 'stimulus': 'Stimulus',
                  'early_delay': 'Early delay', 'late_delay': 'Late delay'}
 
-# CONVENTIONAL shattering dimensionality: mean decoding accuracy over all 35
-# balanced dichotomies, on the familiar 0.5-1.0 scale. Reporting a
-# fraction-of-dichotomies instead invites the reading "only two conditions are
-# decodable", which is not what the term denotes.
+# Shattering dimensionality has two live conventions and they are on different
+# scales, so the plotter carries both explicitly rather than silently picking:
+#
+#   count     -- HOW MANY of the 35 balanced dichotomies are separable. This is
+#                the raw quantity, 0-35, and it is what "dimensionality" names:
+#                a geometry that shatters more dichotomies is higher dimensional.
+#                A planar ring supports 4 of 35, full shattering is 35.
+#   mean_acc  -- mean decoding accuracy over all 35 dichotomies, 0.5-1.0. A
+#                sensitive continuous summary, but 0.51 does not tell you how
+#                many dichotomies are actually separable, and its ceiling
+#                depends on SNR rather than on geometry.
+#
+# CHANCE FOR THE COUNT IS MEASURED, NOT ASSUMED. It depends on decodanda's
+# internal significance threshold, which we do not hard-code. The fixation
+# epoch precedes stimulus onset, so no location information can exist in it by
+# construction -- it is an empirical null recorded under this data's own SNR,
+# trial count and PCA dimensionality. Each epoch is therefore tested PAIRED
+# against that same subject's fixation count.
 SD_KEY = 'sd_mean_acc'
+SD_METRICS = {
+    'count': dict(
+        col='sd_count',
+        label='Shattering dimensionality\n(# dichotomies separable, of 35)',
+        baseline='fixation'),
+    'mean_acc': dict(
+        col='sd',
+        label='Shattering dimensionality\n(mean decoding acc.)',
+        baseline=0.5),
+}
+# A planar ring of locations separates 4 of the 35 balanced dichotomies; the
+# reference is meaningful again on the count scale (it was not on an accuracy
+# scale, where it is not a fraction of dichotomies at all).
+RING_COUNT = GEOMETRIC_RING_SD * 35
 
 
 def load_all(subjects, bids_root, voxRes, bands, conditions, rois, outdir):
@@ -93,12 +121,19 @@ def load_all(subjects, bids_root, voxRes, bands, conditions, rois, outdir):
                                      sd=float(z[f'{ep}__{SD_KEY}']),
                                      sd_frac_sig=float(z[f'{ep}__sd_frac_significant']),
                                      sd_frac_above_07=float(z[f'{ep}__sd_frac_above_0.7']))
+                            n_dich = int(z[f'{ep}__sd_n_dichotomies'])
+                            r['sd_n_dich'] = n_dich
+                            # the raw 0-35 count, recovered from the fraction
+                            r['sd_count'] = r['sd_frac_sig'] * n_dich
                             for d in DICHOTOMIES:
                                 cc = float(z[f'{ep}__ccgp_{d}'])
                                 nu = float(z[f'{ep}__ccgp_{d}_null_mean'])
                                 r[f'ccgp_{d}'] = cc
                                 r[f'null_{d}'] = nu
                                 r[f'p_{d}'] = float(z[f'{ep}__ccgp_{d}_p'])
+                                k = f'{ep}__ccgp_{d}_null_sd'
+                                r[f'null_sd_{d}'] = (float(z[k])
+                                                     if k in z.files else np.nan)
                                 # CCGP MINUS THAT SUBJECT'S OWN NULL is the
                                 # quantity to average. Chance is not 0.5 and
                                 # varies with the condition correlations, which
@@ -278,6 +313,30 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
         for c, roi in enumerate(rois):
             ax = axes[r][c]; style_ax(ax)
             sub = cdf[(cdf.band == band) & (cdf.roi == roi)]
+
+            # SHUFFLE-NULL BAND. delta is CCGP minus that subject's own shuffle
+            # null, so zero is chance by construction -- but a flat line at
+            # zero says nothing about how far from zero a chance result
+            # WANDERS. This band is that scale: the shuffles give each subject
+            # a null spread, and averaging n subjects shrinks it by sqrt(n), so
+            # the group-level 95% chance interval is ~+/-1.96*sd/sqrt(n).
+            #
+            # It is descriptive, not the inference. It captures shuffle-to-
+            # shuffle variability only; the error bars and the t-test use
+            # BETWEEN-SUBJECT variance, which also carries real differences in
+            # effect size across people and is usually the larger of the two.
+            # Read the band as "chance fluctuates about this much", and read
+            # the filled markers for significance.
+            nsd = np.concatenate([
+                sub[f'null_sd_{d}'].values for d in DICHOTOMIES
+                if f'null_sd_{d}' in sub.columns]) if len(DICHOTOMIES) else np.array([])
+            nsd = nsd[np.isfinite(nsd)]
+            n_subj = max(int(sub.subjID.nunique()), 1)
+            if nsd.size:
+                half = 1.96 * float(nsd.mean()) / np.sqrt(n_subj)
+                ax.axhspan(-half, half, color='#888888', alpha=0.16, zorder=1,
+                           lw=0)
+
             nn = []
             for d in DICHOTOMIES:
                 m, e = [], []
@@ -327,7 +386,9 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
     h += [plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=10),
           plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=7,
                      markerfacecolor=_BG, markeredgewidth=1.8)]
-    l += [f'p < {q} ({SCOPE_LABEL[scope]})', 'n.s.']
+    h += [plt.matplotlib.patches.Patch(facecolor='#888888', alpha=0.16,
+                                       edgecolor='none')]
+    l += [f'p < {q} ({SCOPE_LABEL[scope]})', 'n.s.', 'Shuffle null (95%)']
     leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.99, 0.5),
                      fontsize=FS_LEGEND, framealpha=0.25, edgecolor='#444444',
                      labelcolor=_FG)
@@ -341,23 +402,54 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
     print(f'Saved: {fp}')
 
 
+def ttest_paired_epoch_vs_baseline(sub, col, epoch, baseline_epoch):
+    """
+    Paired across subjects: this epoch's value vs the SAME subject's baseline.
+
+    Used for the count metric, whose chance level is measured from the
+    pre-stimulus epoch rather than assumed from decodanda's internal threshold.
+    Pairing matters: the count a subject reaches at chance depends on their
+    trial count, SNR and PCA dimensionality, all of which vary a lot between
+    subjects, so an unpaired test against a pooled mean throws away exactly the
+    nuisance variance the baseline was there to absorb.
+    """
+    a = sub[sub.epoch == epoch].set_index('subjID')[col]
+    b = sub[sub.epoch == baseline_epoch].set_index('subjID')[col]
+    both = pd.concat([a, b], axis=1, join='inner').dropna()
+    if both.shape[0] < 2:
+        return np.nan, np.nan
+    d = both.iloc[:, 0].values - both.iloc[:, 1].values
+    if not np.any(d != 0):
+        return float(d.mean()), np.nan
+    return float(d.mean()), float(stats.ttest_rel(both.iloc[:, 0].values,
+                                                  both.iloc[:, 1].values).pvalue)
+
+
 def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
-              scope='panel', family='hypothesis'):
+              scope='panel', family='hypothesis', metric='count'):
+    spec = SD_METRICS[metric]
+    mcol, base = spec['col'], spec['baseline']
     cdf = df[df.condition == condition]
     bands = [b for b in bands if b in set(cdf.band.unique())]
     rois = [r for r in rois if r in set(cdf.roi.unique())]
     if not bands or not rois:
         return
 
-    # SD is a mean decoding ACCURACY, so the null is 0.5, not 0. A panel here
-    # is one BAND (its three ROI lines), matching the figure's layout.
+    # A panel here is one BAND (its three ROI lines), matching the layout.
+    # The null depends on the metric: a fixed 0.5 for mean accuracy, the
+    # subject's own pre-stimulus count for the count metric.
     fam_p, fam_s = {}, {}
     for band in bands:
         kp, pp_, ks_, ps_ = [], [], [], []
         for roi in rois:
+            sub_br = cdf[(cdf.band == band) & (cdf.roi == roi)]
             for ep in EPOCH_ORDER:
-                ss = cdf[(cdf.band == band) & (cdf.roi == roi) & (cdf.epoch == ep)]
-                _, pval = ttest_vs(ss, 'sd', 0.5)
+                if isinstance(base, str):
+                    # the baseline epoch cannot be tested against itself
+                    pval = (np.nan if ep == base else
+                            ttest_paired_epoch_vs_baseline(sub_br, mcol, ep, base)[1])
+                else:
+                    pval = ttest_vs(sub_br[sub_br.epoch == ep], mcol, base)[1]
                 primary = (family == 'all' or ep != BASELINE_EPOCH)
                 (kp if primary else ks_).append((band, roi, ep))
                 (pp_ if primary else ps_).append(pval)
@@ -381,7 +473,7 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
             sub = cdf[(cdf.band == band) & (cdf.roi == roi)]
             m, e = [], []
             for ep in EPOCH_ORDER:
-                mm, ee, _ = mean_sem(sub[sub.epoch == ep], 'sd')
+                mm, ee, _ = mean_sem(sub[sub.epoch == ep], mcol)
                 m.append(mm); e.append(ee)
             m, e = np.array(m, float), np.array(e, float)
             col = ROI_COLOURS.get(roi, '#fff')
@@ -392,10 +484,17 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
             if msk.any():
                 ax.plot(x[msk], m[msk], 'o', color=col, ms=10, zorder=5,
                         markeredgecolor=col)
-        # 0.5 is chance for a mean-accuracy SD; the planar-ring bound (4/35) no
-        # longer applies on this scale -- it was a fraction-of-dichotomies
-        # quantity, not an accuracy.
-        ax.axhline(0.5, color='#888888', lw=1.3, ls=':', zorder=2)
+        if isinstance(base, str):
+            # measured chance: the across-subject mean count at fixation, for
+            # this band x roi cell. Drawn per band as the ROI-averaged level.
+            bl = cdf[(cdf.band == band) & (cdf.epoch == base)][mcol]
+            bl = bl[np.isfinite(bl)]
+            if bl.size:
+                ax.axhline(float(bl.mean()), color='#888888', lw=1.3, ls=':',
+                           zorder=2)
+            ax.axhline(RING_COUNT, color='#B39DDB', lw=1.3, ls='--', zorder=2)
+        else:
+            ax.axhline(base, color='#888888', lw=1.3, ls=':', zorder=2)
         ax.set_xticks(x)
         ax.set_xticklabels([EPOCH_LABELS[e] for e in EPOCH_ORDER],
                             rotation=30, ha='right', fontsize=FS_TICK)
@@ -403,14 +502,20 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
         ax.set_title(BAND_LABELS.get(band, band), fontsize=FS_PANEL_TTL,
                      color=_FG, fontweight='bold', pad=10)
         if c == 0:
-            ax.set_ylabel('Shattering dimensionality\n(mean decoding acc.)',
-                          fontsize=FS_AXIS_LABEL, fontweight='bold')
+            ax.set_ylabel(spec['label'], fontsize=FS_AXIS_LABEL,
+                          fontweight='bold')
     h, l = axes[0][0].get_legend_handles_labels()
     h += [plt.Line2D([0], [0], color='#888888', lw=1.3, ls=':'),
           plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=10),
           plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=7,
                      markerfacecolor=_BG, markeredgewidth=1.8)]
-    l += ['Chance (0.5)', f'p < {q} ({SCOPE_LABEL[scope]})', 'n.s.']
+    if isinstance(base, str):
+        h.insert(len(h) - 2, plt.Line2D([0], [0], color='#B39DDB', lw=1.3, ls='--'))
+        l += [f'Chance (measured at {EPOCH_LABELS.get(base, base).lower()})']
+        l += [f'Planar ring ({RING_COUNT:.0f} of 35)']
+        l += [f'p < {q} ({SCOPE_LABEL[scope]})', 'n.s.']
+    else:
+        l += [f'Chance ({base})', f'p < {q} ({SCOPE_LABEL[scope]})', 'n.s.']
     leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.99, 0.5),
                      fontsize=FS_LEGEND, framealpha=0.25, edgecolor='#444444',
                      labelcolor=_FG)
@@ -419,7 +524,8 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
                  color=_FG, fontsize=FS_SUPTITLE, fontweight='bold', y=1.01)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     os.makedirs(figdir, exist_ok=True)
-    fp = os.path.join(figdir, f'ccgp_epochs_sd_{condition}_{voxRes}.png')
+    fp = os.path.join(figdir,
+                      f'ccgp_epochs_sd_{metric}_{condition}_{voxRes}.png')
     fig.savefig(fp, dpi=150, bbox_inches='tight', facecolor=_BG); plt.close(fig)
     print(f'Saved: {fp}')
 
@@ -505,6 +611,17 @@ def main():
                      help='FDR level for the across-subject t-tests marked on the '
                           'figures (default 0.05; raise to 0.1 for a more lenient '
                           'threshold).')
+    ap.add_argument('--sd_metric', default='count',
+                     choices=sorted(SD_METRICS),
+                     help="How to report shattering dimensionality. 'count' "
+                          "(default) is the raw number of the 35 balanced "
+                          "dichotomies that are separable -- the quantity the "
+                          "term denotes, with a planar ring at 4 and full "
+                          "shattering at 35, and chance measured from the "
+                          "pre-stimulus epoch. 'mean_acc' is mean decoding "
+                          "accuracy over all 35 (0.5-1.0): more sensitive, but "
+                          "0.51 does not say how many dichotomies separate. "
+                          "Pass both by running twice; the filenames differ.")
     ap.add_argument('--family', default='hypothesis',
                      choices=['hypothesis', 'all'],
                      help="Which tests form the corrected family. 'hypothesis' "
@@ -558,7 +675,7 @@ def main():
                     family=args.family)
         figure_sd(df, cond, args.bands, args.rois, args.voxRes, figdir,
                   sharey=args.sharey, q=args.fdr_q, scope=args.fdr_scope,
-                  family=args.family)
+                  family=args.family, metric=args.sd_metric)
     print_summary(df)
     print_dichotomy_contrast(df, q=args.fdr_q)
 
