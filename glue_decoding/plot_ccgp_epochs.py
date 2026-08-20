@@ -160,6 +160,42 @@ def bh_fdr(pvals, q=0.05):
     return out
 
 
+SCOPE_LABEL = {'panel': 'FDR per panel', 'figure': 'FDR figure-wide',
+               'none': 'uncorrected'}
+
+
+def apply_correction(fam, scope, q):
+    """
+    fam: {panel_key: (test_keys, pvals)} -> {test_key: bool significant}.
+
+    The FAMILY you correct over is a judgment call, not a fact, so it is a
+    knob rather than a hardcoded choice:
+      'panel'  (default) BH within each (band, roi) panel separately -- each
+               panel treated as its own pre-specified analysis. 12 tests per
+               family here, so markedly more lenient than figure-wide.
+      'figure' BH over every test in the figure at once. Strictest, and the
+               safest against the "uncorrected multiple comparisons" objection
+               this dataset has already drawn once.
+      'none'   raw p < q. Report the scope if you use this.
+    Whichever is used is written into the figure legend, so a reader never has
+    to guess how strict the marks are.
+    """
+    sig = {}
+    if scope == 'figure':
+        ks = [k for v in fam.values() for k in v[0]]
+        ps = [pp for v in fam.values() for pp in v[1]]
+        sig.update(zip(ks, bh_fdr(ps, q)))
+        return sig
+    for ks, ps in fam.values():
+        arr = np.asarray(ps, float)
+        if scope == 'none':
+            m = np.isfinite(arr) & (arr < q)
+        else:
+            m = bh_fdr(arr, q)
+        sig.update(zip(ks, m))
+    return sig
+
+
 def ttest_vs(df, col, mu=0.0):
     """One-sample t-test ACROSS SUBJECTS against mu. Returns (mean, p)."""
     v = df[col].values
@@ -185,27 +221,31 @@ def style_ax(ax):
     ax.set_axisbelow(True)
 
 
-def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05):
+def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
+                scope='panel'):
     cdf = df[df.condition == condition]
     bands = [b for b in bands if b in set(cdf.band.unique())]
     rois = [r for r in rois if r in set(cdf.roi.unique())]
     if not bands or not rois:
         print(f'  no data for {condition}'); return
 
-    # PASS 1 -- every test in this figure, so FDR can be applied over the whole
-    # family at once rather than per panel (per-panel correction would still
-    # leave the figure-wide error rate uncontrolled).
-    keys, pv = [], []
+    # PASS 1 -- collect every test, grouped by panel so the correction family
+    # can be chosen (see apply_correction).
+    fam = {}
     for band in bands:
         for roi in rois:
+            ks, ps = [], []
             for d in DICHOTOMIES:
                 for ep in EPOCH_ORDER:
                     ss = cdf[(cdf.band == band) & (cdf.roi == roi) & (cdf.epoch == ep)]
-                    _, p = ttest_vs(ss, f'delta_{d}', 0.0)
-                    keys.append((band, roi, d, ep)); pv.append(p)
-    sig = dict(zip(keys, bh_fdr(pv, q)))
-    n_tested = int(np.isfinite(np.asarray(pv, float)).sum())
-    print(f'  CCGP: {sum(sig.values())}/{n_tested} tests significant at FDR q<{q}')
+                    _, pp = ttest_vs(ss, f'delta_{d}', 0.0)
+                    ks.append((band, roi, d, ep)); ps.append(pp)
+            fam[(band, roi)] = (ks, ps)
+    sig = apply_correction(fam, scope, q)
+    n_tested = sum(int(np.isfinite(np.asarray(v[1], float)).sum()) for v in fam.values())
+    per_fam = len(next(iter(fam.values()))[1]) if fam else 0
+    print(f'  CCGP: {sum(sig.values())}/{n_tested} significant | {SCOPE_LABEL[scope]} '
+          f'q<{q} ({per_fam} tests per family)')
 
     n_r, n_c = len(bands), len(rois)
     fig, axes = plt.subplots(n_r, n_c, figsize=(5.0 * n_c + 2.4, 3.8 * n_r + 1.6),
@@ -264,7 +304,7 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
     h += [plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=10),
           plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=7,
                      markerfacecolor=_BG, markeredgewidth=1.8)]
-    l += [f'p < {q} (FDR)', 'n.s.']
+    l += [f'p < {q} ({SCOPE_LABEL[scope]})', 'n.s.']
     leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.99, 0.5),
                      fontsize=FS_LEGEND, framealpha=0.25, edgecolor='#444444',
                      labelcolor=_FG)
@@ -278,24 +318,30 @@ def figure_ccgp(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05
     print(f'Saved: {fp}')
 
 
-def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05):
+def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05,
+              scope='panel'):
     cdf = df[df.condition == condition]
     bands = [b for b in bands if b in set(cdf.band.unique())]
     rois = [r for r in rois if r in set(cdf.roi.unique())]
     if not bands or not rois:
         return
 
-    # SD is a mean decoding ACCURACY, so the null is 0.5, not 0.
-    keys, pv = [], []
+    # SD is a mean decoding ACCURACY, so the null is 0.5, not 0. A panel here
+    # is one BAND (its three ROI lines), matching the figure's layout.
+    fam = {}
     for band in bands:
+        ks, ps = [], []
         for roi in rois:
             for ep in EPOCH_ORDER:
                 ss = cdf[(cdf.band == band) & (cdf.roi == roi) & (cdf.epoch == ep)]
-                _, p = ttest_vs(ss, 'sd', 0.5)
-                keys.append((band, roi, ep)); pv.append(p)
-    sig = dict(zip(keys, bh_fdr(pv, q)))
-    n_tested = int(np.isfinite(np.asarray(pv, float)).sum())
-    print(f'  SD:   {sum(sig.values())}/{n_tested} tests significant at FDR q<{q}')
+                _, pp = ttest_vs(ss, 'sd', 0.5)
+                ks.append((band, roi, ep)); ps.append(pp)
+        fam[band] = (ks, ps)
+    sig = apply_correction(fam, scope, q)
+    n_tested = sum(int(np.isfinite(np.asarray(v[1], float)).sum()) for v in fam.values())
+    per_fam = len(next(iter(fam.values()))[1]) if fam else 0
+    print(f'  SD:   {sum(sig.values())}/{n_tested} significant | {SCOPE_LABEL[scope]} '
+          f'q<{q} ({per_fam} tests per family)')
 
     fig, axes = plt.subplots(1, len(bands), figsize=(5.2 * len(bands) + 2.6, 5.2),
                               facecolor=_BG, squeeze=False, sharey=sharey)
@@ -335,7 +381,7 @@ def figure_sd(df, condition, bands, rois, voxRes, figdir, sharey=False, q=0.05):
           plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=10),
           plt.Line2D([0], [0], marker='o', ls='', color='#dddddd', ms=7,
                      markerfacecolor=_BG, markeredgewidth=1.8)]
-    l += ['Chance (0.5)', f'p < {q} (FDR)', 'n.s.']
+    l += ['Chance (0.5)', f'p < {q} ({SCOPE_LABEL[scope]})', 'n.s.']
     leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.99, 0.5),
                      fontsize=FS_LEGEND, framealpha=0.25, edgecolor='#444444',
                      labelcolor=_FG)
@@ -387,8 +433,16 @@ def main():
     ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
     ap.add_argument('--fdr_q', type=float, default=0.05,
                      help='FDR level for the across-subject t-tests marked on the '
-                          'figures (Benjamini-Hochberg, corrected over every '
-                          'band x roi x epoch x dichotomy test in that figure).')
+                          'figures (default 0.05; raise to 0.1 for a more lenient '
+                          'threshold).')
+    ap.add_argument('--fdr_scope', default='panel',
+                     choices=['panel', 'figure', 'none'],
+                     help="Family the correction is applied over. 'panel' (default) "
+                          "corrects within each subplot separately -- 12 tests per "
+                          "family, the most lenient corrected option. 'figure' "
+                          "corrects over every test in the figure (strictest). "
+                          "'none' is uncorrected. Whichever is used is written into "
+                          "the figure legend.")
     ap.add_argument('--sharey', action='store_true',
                      help='Force one y-scale across all panels (off by default, so '
                           'each panel autoscales to its own range).')
@@ -421,9 +475,9 @@ def main():
         if cond not in set(df.condition.unique()):
             continue
         figure_ccgp(df, cond, args.bands, args.rois, args.voxRes, figdir,
-                    sharey=args.sharey, q=args.fdr_q)
+                    sharey=args.sharey, q=args.fdr_q, scope=args.fdr_scope)
         figure_sd(df, cond, args.bands, args.rois, args.voxRes, figdir,
-                  sharey=args.sharey, q=args.fdr_q)
+                  sharey=args.sharey, q=args.fdr_q, scope=args.fdr_scope)
     print_summary(df)
 
 
