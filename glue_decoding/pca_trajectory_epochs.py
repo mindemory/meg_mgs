@@ -88,6 +88,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from scipy.linalg import orthogonal_procrustes
 
 from constants import SUBJECT_LIST, ANGLE_MAPPING, get_bids_root, AMP_PHASE_BANDS
@@ -287,6 +288,126 @@ def _style(ax):
         s.set_edgecolor(_GRID)
 
 
+def smooth_time(G, tv, ms):
+    """
+    Centered moving average over the time axis, width `ms` milliseconds.
+
+    Purely cosmetic -- the group mean at single-sample resolution is jittery
+    enough in 3D that the path reads as noise rather than as a trajectory. The
+    width is stamped on the figure so it is never an invisible choice, and
+    every quantitative number in this script (ring fidelity, radius, the
+    shuffled null) is computed on UNSMOOTHED data.
+    """
+    if not ms or G.shape[0] < 3:
+        return G
+    dt = float(np.median(np.diff(tv)))
+    w = max(1, int(round((ms / 1000.0) / dt)))
+    if w < 2:
+        return G
+    k = np.ones(w) / w
+    out = np.empty_like(G)
+    for li in range(G.shape[1]):
+        for d in range(G.shape[2]):
+            out[:, li, d] = np.convolve(G[:, li, d], k, mode='same')
+    # np.convolve's 'same' tapers the ends toward zero because it pads with
+    # zeros; restore the raw values there rather than letting the trajectory
+    # dive to the origin at the first and last samples.
+    h = w // 2
+    out[:h] = G[:h]
+    if h:
+        out[-h:] = G[-h:]
+    return out
+
+
+def figure_trajectory_3d(G, tv, band, condition, roi, voxRes, figdir,
+                          smooth_ms=50, elev=22, azim=-62):
+    """
+    ONE continuous trajectory per location: PC1 x PC2 horizontally, TIME
+    vertically, with a translucent plane at every epoch boundary.
+
+    This is the honest shape for the analysis. Splitting the path into
+    per-epoch panels implied four separate objects, gave them different path
+    lengths (fixation is 1.0 s, stimulus 0.2 s), and silently dropped the
+    0.8-1.0 s stretch that belongs to no epoch. Here time is an axis, so the
+    path is continuous and the epoch boundaries are just planes crossing it --
+    including that unlabelled stretch, which is data like any other.
+    """
+    Gs = smooth_time(G, tv, smooth_ms)
+    lim = float(np.nanmax(np.abs(Gs))) * 1.12
+
+    fig = plt.figure(figsize=(12.5, 13.5), facecolor=_BG)
+    ax = fig.add_subplot(111, projection='3d', facecolor=_BG)
+
+    # Distinct epoch edges, in time order.
+    bounds = sorted({b for ep in EPOCHS.values() for b in ep})
+    sq = np.array([[-lim, -lim], [lim, -lim], [lim, lim], [-lim, lim]])
+    for b in bounds:
+        if not (tv.min() <= b <= tv.max()):
+            continue
+        verts = [[(x, y, b) for x, y in sq]]
+        pc = Poly3DCollection(verts, facecolor='#9aa0a6', alpha=0.10,
+                              edgecolor='#7a7f85', linewidths=1.1, zorder=1)
+        ax.add_collection3d(pc)
+
+    for li in range(len(LOC_BY_ANGLE)):
+        ax.plot(Gs[:, li, 0], Gs[:, li, 1], tv, color=LOC_COLOURS[li],
+                lw=2.6, alpha=0.95, zorder=3)
+    # A ring of markers on each boundary plane: the geometry at that instant.
+    for b in bounds:
+        if not (tv.min() <= b <= tv.max()):
+            continue
+        ti = int(np.argmin(np.abs(tv - b)))
+        ax.scatter(Gs[ti, :, 0], Gs[ti, :, 1], np.full(len(LOC_BY_ANGLE), b),
+                   c=LOC_COLOURS, s=55, depthshade=False, edgecolors='k',
+                   linewidths=0.6, zorder=4)
+
+    # Epoch names on the FRONT-LEFT edge, opposite the time axis. Putting them
+    # on the same side wrote them straight over the z tick labels and the
+    # 'Time (s)' label, which at this azimuth all live on the right.
+    for ep, (lo, hi) in EPOCHS.items():
+        ax.text(-lim * 1.10, -lim * 1.10, (lo + hi) / 2.0,
+                EPOCH_LABELS.get(ep, ep), color=_FG, fontsize=FS_LEGEND,
+                fontweight='bold', ha='right', va='center', zorder=6)
+
+    ax.set_xlim(-lim, lim); ax.set_ylim(-lim, lim)
+    ax.set_zlim(float(tv.min()), float(tv.max()))
+    ax.set_xlabel('PC 1', fontsize=FS_AXIS_LABEL, fontweight='bold',
+                  color=_FG, labelpad=12)
+    ax.set_ylabel('PC 2', fontsize=FS_AXIS_LABEL, fontweight='bold',
+                  color=_FG, labelpad=12)
+    ax.set_zlabel('Time (s)', fontsize=FS_AXIS_LABEL, fontweight='bold',
+                  color=_FG, labelpad=26)
+    ax.set_xticks([]); ax.set_yticks([])
+    ax.tick_params(axis='z', colors=_FG, labelsize=FS_TICK)
+    for pane in (ax.xaxis, ax.yaxis, ax.zaxis):
+        pane.set_pane_color((0, 0, 0, 1.0))
+        pane._axinfo['grid']['color'] = (0.2, 0.2, 0.2, 1.0)
+    ax.view_init(elev=elev, azim=azim)
+    ax.set_box_aspect((1, 1, 1.5))
+
+    h = [plt.Line2D([0], [0], color=LOC_COLOURS[i], lw=3)
+         for i in range(len(LOC_BY_ANGLE))]
+    leg = ax.legend(h, [f'{int(a)}°' for a in ANGLES_DEG], loc='center left',
+                    bbox_to_anchor=(1.02, 0.5), fontsize=FS_LEGEND,
+                    framealpha=0.25, edgecolor='#444444', labelcolor=_FG,
+                    title='Target angle')
+    leg.get_frame().set_facecolor('#1a1a1a')
+    leg.get_title().set_color(_FG); leg.get_title().set_fontsize(FS_AXIS_LABEL)
+
+    fig.suptitle(f'{roi.capitalize()}  |  {band.capitalize()}', color=_FG,
+                 fontsize=FS_SUPTITLE, fontweight='bold', y=0.95)
+    if smooth_ms:
+        fig.text(0.5, 0.915, f'{smooth_ms:.0f} ms smoothing (display only)',
+                 ha='center', color='#aaaaaa', fontsize=FS_TICK)
+    os.makedirs(figdir, exist_ok=True)
+    fp = os.path.join(figdir, f'pca_traj3d_{condition}_{band}_{roi}_{voxRes}.png')
+    # pad_inches: the longest epoch label defines the left edge and sits flush
+    # against it under a bare tight bbox.
+    fig.savefig(fp, dpi=150, bbox_inches='tight', pad_inches=0.35,
+                facecolor=_BG); plt.close(fig)
+    print(f'Saved: {fp}')
+
+
 def figure_trajectories(G, tv, band, condition, roi, voxRes, figdir, epochs):
     """One 2D panel per epoch, all in the SAME frame -- that is the point."""
     n = len(epochs)
@@ -400,7 +521,7 @@ def subject_worker(subjID, band, condition, roi, voxRes, bids_root,
 
 
 def run_cell(res, band, condition, roi, voxRes, bids_root, figdir,
-             epochs, n_shuffles=20):
+             epochs, n_shuffles=20, smooth_ms=50, elev=22, azim=-62):
     """Assemble one (band, roi) cell from already-computed worker results."""
     per_subj, tv = [], None
     null_subj = [[] for _ in range(n_shuffles)]
@@ -441,6 +562,8 @@ def run_cell(res, band, condition, roi, voxRes, bids_root, figdir,
         msg += f' null={np.nanmean(r_null[:, dm]):.3f}'
     print(msg, flush=True)
 
+    figure_trajectory_3d(G, tv, band, condition, roi, voxRes, figdir,
+                          smooth_ms=smooth_ms, elev=elev, azim=azim)
     figure_trajectories(G, tv, band, condition, roi, voxRes, figdir, epochs)
     figure_timecourse(tv, r, rad, r_null, rad_null, band, condition, roi,
                        voxRes, figdir)
@@ -478,6 +601,19 @@ def main():
                           'worker holds one subject-cell\'s (n_trials, '
                           'n_times, n_features) float32 array, so if the box '
                           'is memory-tight rather than core-tight, cap this.')
+    ap.add_argument('--smooth_ms', type=float, default=50,
+                     help='Moving-average width for the 3D trajectory, in ms '
+                          '(default 50; 0 disables). DISPLAY ONLY -- the group '
+                          'mean at single-sample resolution reads as noise in '
+                          '3D. Every number this script reports (ring '
+                          'fidelity, radius, the shuffled null) is computed on '
+                          'unsmoothed data, and the width is printed on the '
+                          'figure.')
+    ap.add_argument('--elev', type=float, default=22,
+                     help='3D elevation angle (default 22).')
+    ap.add_argument('--azim', type=float, default=-62,
+                     help='3D azimuth angle (default -62). Worth sweeping if '
+                          'the ring is edge-on from the default view.')
     ap.add_argument('--figdir', default=None)
     args = ap.parse_args()
 
@@ -521,7 +657,9 @@ def main():
         for (b, r), res in by_cell.items():
             try:
                 run_cell(res, b, condition, r, args.voxRes, bids_root, figdir,
-                         args.epochs, n_shuffles=args.n_shuffles)
+                         args.epochs, n_shuffles=args.n_shuffles,
+                         smooth_ms=args.smooth_ms, elev=args.elev,
+                         azim=args.azim)
             except Exception:
                 traceback.print_exc()
     print('Done.')
