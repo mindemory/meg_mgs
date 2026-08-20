@@ -75,7 +75,15 @@ import sys
 import argparse
 import traceback
 
+# Pinned BEFORE numpy loads. Parallelism here is across SUBJECTS, and each
+# worker's SVD would otherwise open its own BLAS thread pool -- n_jobs x n_cores
+# threads fighting over the same cores, which runs slower than serial.
+for _v in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
+           'NUMEXPR_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS'):
+    os.environ.setdefault(_v, '1')
+
 import numpy as np
+from joblib import Parallel, delayed
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -180,7 +188,14 @@ def gpa(clouds, n_iter=10):
 # ------------------------------------------------------------- per subject --
 
 def load_subject(subjID, band, condition, roi, voxRes, bids_root):
-    """(X, y, tv) with X (n_trials, n_times, F). Read from disk ONCE."""
+    """
+    (X, y, tv) with X (n_trials, n_times, F), float32. Read from disk ONCE.
+
+    float32 halves the largest array in the program. Everything downstream is
+    a mean or an SVD of a 10xF matrix, so the precision is irrelevant, but the
+    memory is not: with many workers in flight this array is what decides how
+    many fit at once.
+    """
     want_phase = (condition == 'ampPhase')
     g04 = load_g04_band(subjID, LOCK_TYPE, band, voxRes, bids_root,
                         want_phase=want_phase, roi=roi)
@@ -188,29 +203,29 @@ def load_subject(subjID, band, condition, roi, voxRes, bids_root):
     y = g04['target_labels'].astype(int)
     X = build_features(condition, g04['amp'], g04['phase'] if want_phase else None)
     del g04
-    return zscore_per_timepoint(X), y, tv
+    return np.asarray(zscore_per_timepoint(X), dtype=np.float32), y, tv
 
 
-def trajectory_from(X, y, tv, cv=False, seed=0, shuffle=False):
+def trajectory_from(X, Xd, y, cv=False, seed=0, shuffle=False):
     """
     coords (n_times, n_loc, 2) in this subject's delay-defined basis.
 
     Takes already-loaded arrays rather than a subject id so the shuffled null
     can reuse them: the null needs the whole pipeline rerun per permutation,
-    but NOT the MEG file reread, and rereading it 20x per subject was the
-    difference between minutes and hours.
+    but NOT the MEG file reread.
+
+    PROJECT FIRST, THEN AVERAGE. Averaging is linear, so the mean of the
+    projected trials equals the projection of the mean -- identical answer, but
+    it replaces a Python loop over ~270 timepoints (each doing fancy indexing
+    over the full F-dimensional array) with one (n_trials, n_times, F) @ (F, 2)
+    matmul. Xd is passed in because the delay average only has to be taken
+    once, not once per permutation.
     """
     if shuffle:
         # Permute the labels, then redo EVERYTHING downstream -- the basis is
         # refit on the shuffled means too. A null that reused the real basis
         # would be testing a different, easier question.
         y = np.random.default_rng(seed).permutation(y)
-
-    lo, hi = EPOCHS[REF_EPOCH]
-    tmask = (tv >= lo) & (tv < hi)
-    if not tmask.any():
-        return None
-    Xd = X[:, tmask, :].mean(axis=1)                  # (n_trials, F)
 
     if cv:
         rng = np.random.default_rng(seed + 1)
@@ -222,9 +237,15 @@ def trajectory_from(X, y, tv, cv=False, seed=0, shuffle=False):
     M = condition_means(Xd, y, fit)
     if not np.isfinite(M).all():
         return None
-    B = pca2(M)                                       # (F, 2)
-    return np.stack([condition_means(X[:, t, :], y) @ B
-                     for t in range(X.shape[1])])
+    B = pca2(M).astype(X.dtype)                       # (F, 2)
+
+    Xp = X @ B                                        # (n_trials, n_times, 2)
+    out = np.full((X.shape[1], len(LOC_BY_ANGLE), 2), np.nan)
+    for li, loc in enumerate(LOC_BY_ANGLE):
+        idx = (y == loc)
+        if idx.any():
+            out[:, li, :] = Xp[idx].mean(axis=0)
+    return out
 
 
 # ------------------------------------------------------------------ group ---
@@ -344,33 +365,60 @@ def figure_timecourse(tv, r, rad, r_null, rad_null, band, condition, roi,
 
 # ------------------------------------------------------------------- main ---
 
-def run_cell(subjects, band, condition, roi, voxRes, bids_root, figdir,
-             epochs, cv=False, n_shuffles=20):
-    # One pass over subjects: read the file once, then compute the real
-    # trajectory and every shuffle from the same in-memory arrays.
+def subject_worker(subjID, band, condition, roi, voxRes, bids_root,
+                    cv, n_shuffles):
+    """
+    All of one subject's work, done where that subject's data already lives.
+
+    Returns (subjID, tv, real_coords, [null_coords per shuffle]) -- only the
+    (n_times, n_loc, 2) projections cross the process boundary, never the
+    (n_trials, n_times, n_features) array, which is the whole reason the
+    shuffles are computed here rather than in the parent.
+
+    Seeds derive from subjID and the shuffle index, never from completion
+    order, so the result does not depend on how the work was scheduled.
+    """
+    try:
+        X, y, tv = load_subject(subjID, band, condition, roi, voxRes, bids_root)
+    except Exception as e:
+        return (subjID, None, None, None, f'{type(e).__name__}: {e}')
+    try:
+        lo, hi = EPOCHS[REF_EPOCH]
+        tmask = (tv >= lo) & (tv < hi)
+        if not tmask.any():
+            return (subjID, tv, None, None, f'no samples in {REF_EPOCH}')
+        Xd = X[:, tmask, :].mean(axis=1)              # (n_trials, F), once
+        real = trajectory_from(X, Xd, y, cv=cv, seed=subjID)
+        if real is None:
+            return (subjID, tv, None, None, 'no usable basis')
+        nulls = [trajectory_from(X, Xd, y, cv=cv, seed=1000 * k + subjID,
+                                  shuffle=True)
+                 for k in range(n_shuffles)]
+    finally:
+        del X
+    return (subjID, tv, real, nulls, None)
+
+
+def run_cell(res, band, condition, roi, voxRes, bids_root, figdir,
+             epochs, n_shuffles=20):
+    """Assemble one (band, roi) cell from already-computed worker results."""
     per_subj, tv = [], None
     null_subj = [[] for _ in range(n_shuffles)]
-    for s in subjects:
-        try:
-            X, y, t = load_subject(s, band, condition, roi, voxRes, bids_root)
-        except Exception as e:
-            print(f'  sub-{s:02d}: {type(e).__name__}: {e}')
+    for subjID, t, real, nulls, err in sorted(res, key=lambda r: r[0]):
+        if err is not None:
+            print(f'  sub-{subjID:02d}: {err}')
+            continue
+        if real is None:
             continue
         if tv is None:
             tv = t
         elif t.size != tv.size:
-            print(f'  sub-{s:02d}: time axis mismatch, skipping.')
+            print(f'  sub-{subjID:02d}: time axis mismatch, skipping.')
             continue
-        c = trajectory_from(X, y, t, cv=cv, seed=s)
-        if c is None:
-            del X
-            continue
-        per_subj.append(c)
-        for k in range(n_shuffles):
-            cs = trajectory_from(X, y, t, cv=cv, seed=1000 * k + s, shuffle=True)
+        per_subj.append(real)
+        for k, cs in enumerate(nulls):
             if cs is not None:
                 null_subj[k].append(cs)
-        del X
     if len(per_subj) < 3:
         print(f'  {band}/{condition}/{roi}: only {len(per_subj)} subjects, skipping.')
         return
@@ -424,6 +472,12 @@ def main():
                      help='Label-permuted runs through the identical pipeline '
                           '(default 20). Set 0 to skip, but then the figure '
                           'cannot show whether alignment alone made the ring.')
+    ap.add_argument('--n_jobs', type=int, default=-1,
+                     help='Workers over the flattened (subject x band x roi) '
+                          'task list; -1 (default) uses every core. Each '
+                          'worker holds one subject-cell\'s (n_trials, '
+                          'n_times, n_features) float32 array, so if the box '
+                          'is memory-tight rather than core-tight, cap this.')
     ap.add_argument('--figdir', default=None)
     args = ap.parse_args()
 
@@ -431,19 +485,45 @@ def main():
     figdir = args.figdir or os.path.join(
         bids_root, 'derivatives', 'glueDecoding', 'pcaTrajectoryEpochs', 'figures')
 
+    # The unit of parallel work is ONE (subject, band, roi) -- not one subject
+    # and not one cell. Parallelising over subjects alone caps at 21 workers
+    # and then runs the 9 cells one after another; parallelising over cells
+    # alone caps at 9. Flattening gives 21 x 3 x 3 = 189 independent tasks,
+    # every one of which is a separate file read plus its own shuffles, so a
+    # 40-core box stays busy to the end instead of draining at each barrier.
+    tasks = [(s, band, roi)
+             for band in args.bands
+             for roi in args.rois
+             for s in args.subjects]
+    conds = [c for c in args.conditions]
     print(f'pca_trajectory_epochs | basis={REF_EPOCH} | cv={args.cv} | '
-          f'shuffles={args.n_shuffles} | subjects={len(args.subjects)}')
-    for condition in args.conditions:
-        for band in args.bands:
-            if condition == 'ampPhase' and band not in AMP_PHASE_BANDS:
-                continue
-            for roi in args.rois:
-                try:
-                    run_cell(args.subjects, band, condition, roi, args.voxRes,
-                             bids_root, figdir, args.epochs, cv=args.cv,
-                             n_shuffles=args.n_shuffles)
-                except Exception:
-                    traceback.print_exc()
+          f'shuffles={args.n_shuffles} | n_jobs={args.n_jobs}')
+    print(f'  conditions={conds} bands={args.bands} rois={args.rois} '
+          f'subjects={len(args.subjects)}')
+
+    for condition in conds:
+        bands = [b for b in args.bands
+                 if condition != 'ampPhase' or b in AMP_PHASE_BANDS]
+        cells = [(s, b, r) for b in bands for r in args.rois
+                 for s in args.subjects]
+        if not cells:
+            continue
+        print(f'  {condition}: {len(cells)} subject-cells over {args.n_jobs} workers ...',
+              flush=True)
+        out = Parallel(n_jobs=args.n_jobs, verbose=5)(
+            delayed(subject_worker)(s, b, condition, r, args.voxRes, bids_root,
+                                     args.cv, args.n_shuffles)
+            for (s, b, r) in cells)
+
+        by_cell = {}
+        for (s, b, r), res in zip(cells, out):
+            by_cell.setdefault((b, r), []).append(res)
+        for (b, r), res in by_cell.items():
+            try:
+                run_cell(res, b, condition, r, args.voxRes, bids_root, figdir,
+                         args.epochs, n_shuffles=args.n_shuffles)
+            except Exception:
+                traceback.print_exc()
     print('Done.')
 
 
