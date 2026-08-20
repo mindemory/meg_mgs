@@ -54,7 +54,23 @@ from constants import get_bids_root
 from visual_geometry_epochs_cell import EPOCH_ORDER
 
 _BG, _FG, _GRID = '#000000', '#e0e0e0', '#1c1c1c'
-FS_SUPTITLE, FS_PANEL_TTL, FS_AXIS_LABEL, FS_ROW_LABEL, FS_TICK = 18, 14, 13, 14, 10
+# Slide scale, matching plot_timeseries.py / the intrinsic-dim figures.
+FS_SUPTITLE, FS_PANEL_TTL, FS_AXIS_LABEL, FS_ROW_LABEL, FS_TICK = 26, 21, 20, 21, 17
+FS_LEGEND = 15
+FS_NOTE   = 14   # the per-panel btwn-subj / pts-per-manifold footnote
+
+def _epoch_ticklabels(ax, epochs):
+    """Horizontal and wrapped at the space rather than rotated: at slide font
+    size 'Stimulus' and 'Memory delay' collide on one line, and the wrap costs
+    less legibility than a 30-degree rotation. Rotation is kept for the
+    4-epoch case, where wrapping alone is not enough."""
+    wrap = len(epochs) <= 3
+    ax.set_xticklabels(
+        [EPOCH_LABELS.get(e, e).replace(' ', '\n') if wrap
+         else EPOCH_LABELS.get(e, e) for e in epochs],
+        rotation=(0 if wrap else 30),
+        ha=('center' if wrap else 'right'), fontsize=FS_TICK)
+
 
 ROI_COLOURS = {'visual': '#FFC629', 'parietal': '#A78BFA', 'frontal': '#34D399'}
 BAND_LABELS = {'theta': 'Theta (4-8 Hz)', 'alpha': 'Alpha (8-12 Hz)',
@@ -62,7 +78,9 @@ BAND_LABELS = {'theta': 'Theta (4-8 Hz)', 'alpha': 'Alpha (8-12 Hz)',
                'highgamma': 'High gamma (80-150 Hz)'}
 COND_LABELS = {'ampOnly': 'Amplitude', 'ampPhase': 'Amplitude + Phase'}
 EPOCH_LABELS = {'fixation': 'Fixation', 'stimulus': 'Stimulus',
-                 'early_delay': 'Early delay', 'late_delay': 'Late delay'}
+                 'early_delay': 'Memory delay', 'late_delay': 'Late delay'}
+# Late delay is off by default; pass --epochs to bring it back.
+EPOCHS_DEFAULT = ('fixation', 'stimulus', 'early_delay')
 
 # Metric columns glue may emit. Only those actually present are plotted, since
 # the exact set depends on the glue version rather than on anything here.
@@ -73,7 +91,12 @@ CANDIDATE_METRICS = {
     'center_correlation': 'Center correlation',
 }
 
-REAL_C, SHUF_C = '#FFC629', '#888888'
+# The REAL line takes its COLUMN'S ROI colour, so colour means the same thing
+# here as in every other figure in the set (mango = visual, violet = parietal,
+# mint = frontal) instead of a single orange that happened to be visual's.
+# Shuffled stays neutral grey and dashed -- it is the same reference in every
+# panel, so giving it a colour would imply a distinction it does not carry.
+SHUF_C = '#9aa0a6'
 
 
 def style_ax(ax):
@@ -99,7 +122,7 @@ def mean_sem(v):
 
 
 def figure_metric(df, metric, label, condition, bands, rois, voxRes, figdir,
-                  has_shuffle, sharey=False):
+                  has_shuffle, sharey=False, epochs=EPOCHS_DEFAULT):
     cdf = df[df.condition == condition]
     bands = [b for b in bands if b in set(cdf.band.unique())]
     rois = [r for r in rois if r in set(cdf.roi.unique())]
@@ -112,23 +135,24 @@ def figure_metric(df, metric, label, condition, bands, rois, voxRes, figdir,
     # count), so a shared axis both invites a comparison that is confounded AND
     # flattens the epoch-to-epoch structure inside each panel behind the
     # between-ROI offset. --sharey restores it when that is what is wanted.
-    fig, axes = plt.subplots(n_r, n_c, figsize=(4.4 * n_c + 2.0, 3.2 * n_r + 1.4),
+    fig, axes = plt.subplots(n_r, n_c, figsize=(5.2 * n_c + 2.6, 4.0 * n_r + 1.8),
                               facecolor=_BG, squeeze=False, sharey=sharey)
-    x = np.arange(len(EPOCH_ORDER))
+    x = np.arange(len(epochs))
     for r, band in enumerate(bands):
         for c, roi in enumerate(rois):
             ax = axes[r][c]; style_ax(ax)
             sub = cdf[(cdf.band == band) & (cdf.roi == roi)]
-            for is_shuf, col, lab in ((False, REAL_C, 'Real'),
+            real_c = ROI_COLOURS.get(roi, '#FFC629')
+            for is_shuf, col, lab in ((False, real_c, 'Real'),
                                        (True, SHUF_C, 'Shuffled')):
                 if is_shuf and not has_shuffle:
                     continue
                 s2 = sub[sub.shuffle == is_shuf] if has_shuffle else sub
                 m, e = [], []
-                for ep in EPOCH_ORDER:
+                for ep in epochs:
                     mm, ee, _ = mean_sem(s2[s2.epoch == ep][metric].values)
                     m.append(mm); e.append(ee)
-                ax.errorbar(x, m, yerr=e, color=col, lw=2.0, marker='o', ms=6,
+                ax.errorbar(x, m, yerr=e, color=col, lw=2.8, marker='o', ms=8,
                             capsize=4, zorder=4 if not is_shuf else 3,
                             ls='-' if not is_shuf else '--',
                             label=lab if (r == 0 and c == 0) else None)
@@ -152,22 +176,22 @@ def figure_metric(df, metric, label, condition, bands, rois, voxRes, figdir,
                 # Top-left: the shuffled line sits low and flat, so a
                 # bottom-right annotation lands on top of it.
                 ax.text(0.03, 0.97, '  '.join(note), transform=ax.transAxes,
-                        ha='left', va='top', fontsize=8.5, color='#888888')
+                        ha='left', va='top', fontsize=FS_NOTE, color='#8a8f94')
             ax.set_xticks(x)
-            ax.set_xticklabels([EPOCH_LABELS.get(e, e) for e in EPOCH_ORDER],
-                                rotation=30, ha='right', fontsize=FS_TICK)
+            _epoch_ticklabels(ax, epochs)
             if r == 0:
                 ax.set_title(roi.capitalize(), fontsize=FS_PANEL_TTL,
                              color=ROI_COLOURS.get(roi, _FG), fontweight='bold', pad=8)
             if c == 0:
-                ax.set_ylabel(label, fontsize=FS_AXIS_LABEL, fontweight='bold')
-                ax.text(-0.30, 0.5, BAND_LABELS.get(band, band),
+                ax.set_ylabel(label, fontsize=FS_AXIS_LABEL, fontweight='bold',
+                              labelpad=10)
+                ax.text(-0.42, 0.5, BAND_LABELS.get(band, band),
                         transform=ax.transAxes, fontsize=FS_ROW_LABEL, color=_FG,
                         ha='right', va='center', rotation=90, fontweight='bold')
     h, l = axes[0][0].get_legend_handles_labels()
     if h:
         leg = fig.legend(h, l, loc='center left', bbox_to_anchor=(0.99, 0.5),
-                         fontsize=11, framealpha=0.25, edgecolor='#444444',
+                         fontsize=FS_LEGEND, framealpha=0.25, edgecolor='#444444',
                          labelcolor=_FG)
         leg.get_frame().set_facecolor('#1a1a1a')
     fig.suptitle(f'{label}  |  {COND_LABELS.get(condition, condition)}',
@@ -181,7 +205,7 @@ def figure_metric(df, metric, label, condition, bands, rois, voxRes, figdir,
 
 
 def figure_delta(df, metric, label, condition, bands, rois, voxRes, figdir,
-                 sharey=False):
+                 sharey=False, epochs=EPOCHS_DEFAULT):
     """
     REAL minus SHUFFLED per epoch -- the quantity that actually bears on "did
     the code change over the delay".
@@ -207,33 +231,34 @@ def figure_delta(df, metric, label, condition, bands, rois, voxRes, figdir,
     if not bands or not rois:
         return
     n_r, n_c = len(bands), len(rois)
-    fig, axes = plt.subplots(n_r, n_c, figsize=(4.4 * n_c + 2.0, 3.2 * n_r + 1.4),
+    fig, axes = plt.subplots(n_r, n_c, figsize=(5.2 * n_c + 2.6, 4.0 * n_r + 1.8),
                               facecolor=_BG, squeeze=False, sharey=sharey)
-    x = np.arange(len(EPOCH_ORDER))
+    x = np.arange(len(epochs))
     for r, band in enumerate(bands):
         for c, roi in enumerate(rois):
             ax = axes[r][c]; style_ax(ax)
             sub = cdf[(cdf.band == band) & (cdf.roi == roi)]
             m, e = [], []
-            for ep in EPOCH_ORDER:
+            for ep in epochs:
                 s2 = sub[sub.epoch == ep]
                 rm, re_, _ = mean_sem(s2[s2.shuffle == False][metric].values)
                 sm, se_, _ = mean_sem(s2[s2.shuffle == True][metric].values)
                 m.append(rm - sm)
                 e.append(float(np.hypot(re_, se_)))
-            ax.errorbar(x, m, yerr=e, color=REAL_C, lw=2.0, marker='o', ms=6,
+            ax.errorbar(x, m, yerr=e, color=ROI_COLOURS.get(roi, '#FFC629'),
+                        lw=2.8, marker='o', ms=8,
                         capsize=4, zorder=4)
             ax.axhline(0.0, color='#888888', lw=1.2, ls=':', zorder=2)
             ax.set_xticks(x)
-            ax.set_xticklabels([EPOCH_LABELS.get(ep, ep) for ep in EPOCH_ORDER],
-                                rotation=30, ha='right', fontsize=FS_TICK)
+            _epoch_ticklabels(ax, epochs)
             if r == 0:
                 ax.set_title(roi.capitalize(), fontsize=FS_PANEL_TTL,
                              color=ROI_COLOURS.get(roi, _FG), fontweight='bold', pad=8)
             if c == 0:
-                ax.set_ylabel(f'{label}\nreal $-$ shuffled', fontsize=FS_AXIS_LABEL,
+                ax.set_ylabel(f'{label}\nreal $-$ shuffled', labelpad=10,
+                              fontsize=FS_AXIS_LABEL,
                               fontweight='bold')
-                ax.text(-0.30, 0.5, BAND_LABELS.get(band, band),
+                ax.text(-0.42, 0.5, BAND_LABELS.get(band, band),
                         transform=ax.transAxes, fontsize=FS_ROW_LABEL, color=_FG,
                         ha='right', va='center', rotation=90, fontweight='bold')
     fig.suptitle(f'{label}: real $-$ shuffled  |  {COND_LABELS.get(condition, condition)}',
@@ -283,6 +308,11 @@ def main():
     ap.add_argument('--bands', nargs='+', default=['theta', 'alpha', 'beta'])
     ap.add_argument('--conditions', nargs='+', default=['ampOnly', 'ampPhase'])
     ap.add_argument('--rois', nargs='+', default=['visual', 'parietal', 'frontal'])
+    ap.add_argument('--epochs', nargs='+', default=list(EPOCHS_DEFAULT),
+                     choices=list(EPOCH_ORDER),
+                     help='Epochs to show, in order (default fixation stimulus '
+                          'early_delay, with early_delay labelled "Memory '
+                          'delay"). Pass late_delay to include it.')
     ap.add_argument('--sharey', action='store_true',
                      help='Force one y-scale across all panels. Off by default: '
                           'capacity is not comparable across ROIs at unequal '
@@ -335,10 +365,11 @@ def main():
         for m in metrics:
             figure_metric(df, m, CANDIDATE_METRICS[m], cond, args.bands,
                           args.rois, args.voxRes, figdir, has_shuffle,
-                          sharey=args.sharey)
+                          sharey=args.sharey, epochs=args.epochs)
             if has_shuffle:
                 figure_delta(df, m, CANDIDATE_METRICS[m], cond, args.bands,
-                             args.rois, args.voxRes, figdir, sharey=args.sharey)
+                             args.rois, args.voxRes, figdir,
+                             sharey=args.sharey, epochs=args.epochs)
     print_summary(df, metrics, has_shuffle)
 
 
